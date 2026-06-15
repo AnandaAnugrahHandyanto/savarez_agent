@@ -7681,7 +7681,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
-        if canonical == "compress":
+        if canonical in {"compress", "archive"}:
             return await self._handle_compress_command(event)
 
         if canonical == "usage":

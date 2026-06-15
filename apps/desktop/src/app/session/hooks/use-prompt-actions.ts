@@ -1017,6 +1017,19 @@ export function usePromptActions({
         // messages from the REST API to update the transcript.
         compress: async ({ arg, command, recordInput, sessionHint }) => {
           const sid = sessionHint || activeSessionIdRef.current
+          const commandName = command.split(/\s+/, 1)[0]?.toLowerCase() ?? command.toLowerCase()
+          let focusArg = arg?.trim() ?? ''
+          let deep = commandName === '/archive'
+
+          if (focusArg) {
+            const parts = focusArg.split(/\s+/, 2)
+            const first = parts[0]?.toLowerCase()
+
+            if (first === '--deep' || first === 'deep' || first === '--archive' || first === 'archive') {
+              deep = true
+              focusArg = focusArg.slice(parts[0].length).trim()
+            }
+          }
 
           if (!sid) {
             notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
@@ -1028,11 +1041,12 @@ export function usePromptActions({
             appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, text) : text)
 
           try {
-            render(`compressing…`)
+            render(deep ? `archiving…` : `compressing…`)
 
             const result = await requestGateway<SessionCompressResponse>('session.compress', {
               session_id: sid,
-              ...(arg ? { focus_topic: arg } : {})
+              ...(focusArg ? { focus_topic: focusArg } : {}),
+              ...(deep ? { deep: true } : {})
             })
 
             // Re-fetch messages from the REST API to get the compressed transcript.
@@ -1053,10 +1067,14 @@ export function usePromptActions({
             if (result.summary?.headline) {
               const prefix = result.summary.noop ? '' : '✓ '
 
-              render(`${prefix}${result.summary.headline}`)
+              render(`${prefix}${deep ? 'Archived: ' : ''}${result.summary.headline}`)
 
               if (result.summary.token_line) {
                 render(`  ${result.summary.token_line}`)
+              }
+
+              if (deep) {
+                render(`  Live model context: ${result.after_messages ?? 'unknown'} messages`)
               }
 
               if (result.summary.note) {
@@ -1073,8 +1091,11 @@ export function usePromptActions({
             }
 
             render(
-              `compressed ${result.removed} messages${result.usage?.total ? ` · ${result.usage.total} tok` : ''}`
+              `${deep ? 'archived' : 'compressed'} ${result.removed} messages${result.usage?.total ? ` · ${result.usage.total} tok` : ''}`
             )
+            if (deep) {
+              render(`live model context: ${result.after_messages ?? 'unknown'} messages`)
+            }
           } catch (err) {
             render(`error: ${err instanceof Error ? err.message : String(err)}`)
           }

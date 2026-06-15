@@ -7541,7 +7541,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
-        elif canonical == "compress":
+        elif canonical in {"compress", "archive"}:
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
@@ -8158,6 +8158,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
           information related to *focus* while being more aggressive
           about discarding everything else.  Inspired by Claude Code's
           ``/compact <focus>`` feature.
+        * ``/archive [<focus>]`` or ``/compress --deep [<focus>]`` —
+          archive-style compression. Keeps only a small live tail and
+          summarizes almost everything else.
         * ``/compress here [N]`` — boundary-aware compression. Summarize
           everything *except* the most recent ``N`` exchanges (default
           2), which are preserved verbatim. Inspired by Claude Code's
@@ -8186,10 +8189,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Args after the command word (e.g. "/compress here 3" -> "here 3").
         raw_args = ""
+        command_name = "compress"
         if cmd_original:
             _parts = cmd_original.strip().split(None, 1)
+            if _parts:
+                command_name = _parts[0].lstrip("/").lower()
             if len(_parts) > 1:
                 raw_args = _parts[1].strip()
+
+        deep = command_name == "archive"
+        if raw_args:
+            _arg_parts = raw_args.split(None, 1)
+            if _arg_parts and _arg_parts[0].lower() in {"--deep", "deep", "--archive", "archive"}:
+                deep = True
+                raw_args = _arg_parts[1].strip() if len(_arg_parts) > 1 else ""
 
         partial, keep_last, focus_topic = parse_partial_compress_args(raw_args)
         focus_topic = focus_topic or ""
@@ -8227,7 +8240,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     system_prompt=_sys_prompt,
                     tools=_tools,
                 )
-                if partial:
+                if deep:
+                    focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
+                    print(f"🗜️  Archiving {original_count} messages (~{approx_tokens:,} tokens), "
+                          f"keeping a small live tail{focus_suffix}...")
+                elif partial:
                     print(f"🗜️  Summarizing up to here: compressing {len(head)} of "
                           f"{original_count} messages (~{approx_tokens:,} tokens), "
                           f"keeping last {keep_last} exchange(s) verbatim...")
@@ -8249,6 +8266,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                     force=True,
+                    deep=deep,
                 )
                 # Re-append the verbatim tail after the compressed head.
                 # The split guarantees `tail` begins on a user turn, so the

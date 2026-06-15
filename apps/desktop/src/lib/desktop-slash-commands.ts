@@ -119,6 +119,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Backend-executed commands that render useful inline output
   { name: '/agents', description: 'Show active desktop sessions and running tasks', aliases: ['/tasks'], surface: exec() },
   { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
+  { name: '/archive', description: 'Deep-compress this conversation into an archive summary', surface: action('compress') },
   { name: '/compress', description: 'Compress this conversation context', surface: action('compress') },
   { name: '/debug', description: 'Create a debug report', surface: exec() },
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },

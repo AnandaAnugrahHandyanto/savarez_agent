@@ -10,7 +10,7 @@ class DummyAgent:
         self.session_id = "new-session"
         self.calls = []
 
-    def _compress_context(self, messages, system_message, *, approx_tokens=None, focus_topic=None, force=False):
+    def _compress_context(self, messages, system_message, *, approx_tokens=None, focus_topic=None, force=False, deep=False):
         self.calls.append(
             {
                 "messages": messages,
@@ -18,6 +18,7 @@ class DummyAgent:
                 "approx_tokens": approx_tokens,
                 "focus_topic": focus_topic,
                 "force": force,
+                "deep": deep,
             }
         )
         return ([{"role": "user", "content": "[CONTEXT SUMMARY]: compacted"}], "new system prompt")
@@ -54,5 +55,38 @@ def test_manual_compress_does_not_pass_cached_system_prompt(monkeypatch):
     assert call["system_message"] is None
     assert call["system_message"] != cli.agent._cached_system_prompt
     assert call["focus_topic"] == "database schema"
+    assert call["deep"] is False
     assert cli.session_id == "new-session"
     assert cli._pending_title is None
+
+
+def test_manual_archive_passes_deep_mode(monkeypatch):
+    """The /archive alias should use archive-style deep compression."""
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.conversation_history = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    cli.agent = DummyAgent()
+    cli.session_id = "old-session"
+    cli._pending_title = "old title"
+    cli._busy_command = lambda _message: nullcontext()
+
+    monkeypatch.setattr(
+        "agent.manual_compression_feedback.summarize_manual_compression",
+        lambda *args, **kwargs: {
+            "noop": False,
+            "headline": "archived",
+            "token_line": "tokens reduced",
+            "note": "",
+        },
+    )
+
+    cli._manual_compress("/archive recovery context")
+
+    assert len(cli.agent.calls) == 1
+    call = cli.agent.calls[0]
+    assert call["focus_topic"] == "recovery context"
+    assert call["deep"] is True

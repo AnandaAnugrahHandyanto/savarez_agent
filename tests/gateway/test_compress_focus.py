@@ -112,3 +112,32 @@ async def test_compress_no_focus_passes_none():
 
     # No focus line in response
     assert "Focus:" not in result
+
+
+@pytest.mark.asyncio
+async def test_archive_passes_deep_mode_to_agent():
+    """The /archive command should request archive-style deep compression."""
+    history = _make_history()
+    compressed = [history[0], history[-1]]
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100),
+    ):
+        result = await runner._handle_compress_command(_make_event("/archive recovery context"))
+
+    agent_instance.context_compressor.has_content_to_compress.assert_called_once_with(
+        history, deep=True
+    )
+    agent_instance._compress_context.assert_called_once()
+    call_kwargs = agent_instance._compress_context.call_args
+    assert call_kwargs.kwargs.get("focus_topic") == "recovery context"
+    assert call_kwargs.kwargs.get("deep") is True
+    assert result.startswith("🗜️ Archive:")

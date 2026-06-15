@@ -1785,6 +1785,51 @@ class TestTokenBudgetTailProtection:
         # But at least 3 (hard minimum)
         assert tail_size >= 3
 
+    def test_deep_mode_uses_small_archive_tail_on_long_context_model(self):
+        """Archive mode should not protect a huge 1M-model tail.
+
+        Normal compression may preserve roughly the configured 50K-token tail.
+        Deep compression keeps a much smaller absolute live tail so recovered
+        or bloated sessions actually turn into a compact handoff.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                summary_target_ratio=0.10,
+                protect_first_n=2,
+                protect_last_n=20,
+                quiet_mode=True,
+            )
+
+        messages = []
+        for i in range(120):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({"role": role, "content": f"message {i} " + ("x" * 2000)})
+
+        head_end = c._protect_head_size(messages)
+        normal_cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=c._tail_token_budget_for_mode(deep=False),
+            protect_last_n=c._protect_last_n_for_mode(deep=False),
+        )
+        deep_cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=c._tail_token_budget_for_mode(deep=True),
+            protect_last_n=c._protect_last_n_for_mode(deep=True),
+            max_tail_messages=c._max_tail_messages_for_mode(deep=True),
+        )
+
+        normal_tail = len(messages) - normal_cut
+        deep_tail = len(messages) - deep_cut
+
+        assert normal_tail > 60
+        assert deep_tail < normal_tail // 2
+        assert deep_tail <= 8
+        assert deep_tail >= 3
+
     def test_min_tail_always_3_messages(self, budget_compressor):
         """Even with a tiny token budget, at least 3 messages are protected."""
         c = budget_compressor
