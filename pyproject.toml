@@ -176,6 +176,10 @@ mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
 nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.4"]
 sms = ["aiohttp==3.13.4"]
+# LLM Guard — prompt-injection scanning for tool results.  Optional because the
+# PromptInjection scanner loads a transformer model on first use (~200ms startup).
+# Enable via: HERMES_LLM_GUARD=1 or security.llm_guard_enabled: true in config.yaml
+llm-guard = ["llm-guard==0.3.14"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk

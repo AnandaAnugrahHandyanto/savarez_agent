@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
+from tools.llm_guard_scanner import scan_tool_result as _llm_guard_scan
 
 logger = logging.getLogger(__name__)
 
@@ -333,7 +334,8 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     (content lists with image_url parts) pass through unwrapped so the
     list structure stays valid for vision-capable adapters.
     """
-    wrapped = _maybe_wrap_untrusted(name, content)
+    scanned = _llm_guard_scan(name, content)
+    wrapped = _maybe_wrap_untrusted(name, scanned)
     return {
         "role": "tool",
         "name": name,

@@ -150,6 +150,30 @@ are useful. They are not boundaries.
   is operator review before install. Reviewing a skill means
   reading its Python code and scripts, not just its SKILL.md
   description — skills execute arbitrary Python at import time.
+- **Tool-result delimiter wrapping** annotates content from
+  high-risk tools (`web_extract`, `web_search`, `browser_*`,
+  `mcp_*`) with `<untrusted_tool_result>` XML tags that instruct
+  the model to treat the payload as data rather than instructions.
+  This is a behavioral nudge, not a guarantee.
+- **LLM Guard** (optional, off by default) runs every tool result
+  through a transformer-based prompt-injection classifier and a
+  literal-string blocklist before the content enters the model
+  context. Enable via `security.llm_guard.enabled: true` in
+  `config.yaml` (requires `pip install hermes-agent[llm-guard]`).
+  Three knobs control behavior:
+  - `fail_open` (default `true`) — when the scanner errors or the
+    library is unavailable, content passes through. Set to `false`
+    to block on scan failure (fail-closed).
+  - `block_action: replace` (default) — flagged content is
+    replaced with a `[BLOCKED by llm-guard: …]` notice; the job
+    continues.
+  - `block_action: raise` — flagged content raises
+    `LLMGuardInjectionError`, stopping the current job and logging
+    a warning. Use this posture when the cost of a missed injection
+    outweighs the cost of false-positive job termination.
+  LLM Guard is a heuristic; a motivated attacker can craft payloads
+  that evade ML classifiers. It reduces accidental injection
+  surface; it is not a containment boundary.
 
 ### 2.5 Plugin Trust Model
 

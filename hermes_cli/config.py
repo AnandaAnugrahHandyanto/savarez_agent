@@ -2072,6 +2072,17 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        # LLM Guard — transformer-based prompt-injection scanning for tool results.
+        # Requires: pip install hermes-agent[llm-guard]
+        # Env overrides: HERMES_LLM_GUARD, HERMES_LLM_GUARD_FAIL_OPEN,
+        #                HERMES_LLM_GUARD_BLOCK_ACTION
+        "llm_guard": {
+            "enabled": False,       # master switch
+            "fail_open": True,      # true = pass through on scan error / library missing
+                                    # false = block the job on scan error (fail-closed)
+            "block_action": "replace",  # "replace": substitute a blocked-content notice
+                                        # "raise":   stop the job and log a warning
+        },
         "website_blocklist": {
             "enabled": False,
             "domains": [],
@@ -5456,9 +5467,16 @@ _SECURITY_COMMENT = """
 # tokens, and passwords are masked in tool output, logs, and chat
 # responses before the model or user ever sees them. Set redact_secrets
 # to false to disable (e.g. when developing the redactor itself).
+#
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
+#
+# LLM Guard scans every tool result for prompt injection using a
+# transformer model before the content reaches the LLM context.
+# Requires: pip install hermes-agent[llm-guard]
+# Env overrides: HERMES_LLM_GUARD, HERMES_LLM_GUARD_FAIL_OPEN,
+#                HERMES_LLM_GUARD_BLOCK_ACTION
 #
 # security:
 #   redact_secrets: true
@@ -5466,6 +5484,10 @@ _SECURITY_COMMENT = """
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
 #   tirith_fail_open: true
+#   llm_guard:
+#     enabled: false
+#     fail_open: true        # false = block the job on scan error (fail-closed)
+#     block_action: replace  # replace | raise (raise stops the job immediately)
 """
 
 _FALLBACK_COMMENT = """
