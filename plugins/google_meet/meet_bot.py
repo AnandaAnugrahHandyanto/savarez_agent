@@ -55,6 +55,8 @@ SAY_QUEUE_FILENAME = "say_queue.jsonl"
 SAY_PCM_FILENAME = "speaker.pcm"
 CALL_ERROR_STRIKE_LIMIT = 3
 MAX_TRANSCRIPT_TEXT_LEN = 500
+MEET_MEDIA_PROXY_BYPASS = "74.125.250.0/24,74.125.247.128,142.250.82.0/24"
+MEET_WEBRTC_PROXY_POLICY = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
 
 
 def _debug_status_enabled() -> bool:
@@ -1527,10 +1529,16 @@ def _mac_audio_device_index(device_name: str) -> str:
 
 
 def _apply_meet_proxy_args(chrome_args: list[str]) -> None:
-    """Append a Chromium proxy arg when the runtime explicitly configures one."""
+    """Append deterministic Chromium proxy/media args when a Meet proxy is set."""
     proxy_server = os.environ.get("HERMES_MEET_PROXY_SERVER", "").strip()
-    if proxy_server:
-        chrome_args.append(f"--proxy-server={proxy_server}")
+    if not proxy_server:
+        return
+
+    chrome_args.append(f"--proxy-server={proxy_server}")
+    proxy_bypass = os.environ.get("HERMES_MEET_PROXY_BYPASS", MEET_MEDIA_PROXY_BYPASS).strip()
+    if proxy_bypass:
+        chrome_args.append(f"--proxy-bypass-list={proxy_bypass}")
+    chrome_args.append(MEET_WEBRTC_PROXY_POLICY)
 
 
 def _build_browser_launch_config(*, realtime_enabled: bool) -> tuple[list[str], list[str]]:

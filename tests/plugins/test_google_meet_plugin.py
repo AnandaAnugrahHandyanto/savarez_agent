@@ -2988,15 +2988,35 @@ def test_cmd_install_realtime_skips_when_deps_present(capsys):
     assert "already installed" in out
 
 
-def test_meet_proxy_env_adds_chromium_proxy_arg(monkeypatch):
+def test_meet_proxy_env_pins_media_routing_args(monkeypatch):
     from plugins.google_meet.meet_bot import _apply_meet_proxy_args
 
     args = []
     monkeypatch.setenv("HERMES_MEET_PROXY_SERVER", "http://proxy.example:8080")
+    monkeypatch.delenv("HERMES_MEET_PROXY_BYPASS", raising=False)
 
     _apply_meet_proxy_args(args)
 
-    assert args == ["--proxy-server=http://proxy.example:8080"]
+    assert args == [
+        "--proxy-server=http://proxy.example:8080",
+        "--proxy-bypass-list=74.125.250.0/24,74.125.247.128,142.250.82.0/24",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    ]
+
+
+def test_meet_proxy_bypass_can_be_disabled_without_disabling_webrtc_policy(monkeypatch):
+    from plugins.google_meet.meet_bot import _apply_meet_proxy_args
+
+    args = []
+    monkeypatch.setenv("HERMES_MEET_PROXY_SERVER", "http://proxy.example:8080")
+    monkeypatch.setenv("HERMES_MEET_PROXY_BYPASS", "")
+
+    _apply_meet_proxy_args(args)
+
+    assert args == [
+        "--proxy-server=http://proxy.example:8080",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    ]
 
 
 def test_transcribe_browser_config_uses_fake_device_and_fake_ui_flags_only(monkeypatch):

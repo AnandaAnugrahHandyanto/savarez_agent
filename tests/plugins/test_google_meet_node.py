@@ -365,30 +365,41 @@ def test_server_handle_request_transcript(tmp_path, monkeypatch):
 
     got = {}
 
-    def fake_transcript(last=None):
+    def fake_transcript(last=None, *, include_finished=False, session_id=None):
         got["last"] = last
+        got["include_finished"] = include_finished
+        got["session_id"] = session_id
         return {"ok": True, "lines": ["a", "b"], "total": 2}
 
     monkeypatch.setattr(pm, "transcript", fake_transcript)
 
     s = NodeServer(token_path=tmp_path / "t.json")
     tok = s.ensure_token()
-    req = protocol.make_request("transcript", tok, {"last": 5})
+    req = protocol.make_request(
+        "transcript",
+        tok,
+        {"last": 5, "include_finished": True, "session_id": "s1"},
+    )
     resp = asyncio.run(s._handle_request(req))
     assert resp["type"] == "response"
     assert resp["payload"]["lines"] == ["a", "b"]
     assert got["last"] == 5
+    assert got["include_finished"] is True
+    assert got["session_id"] == "s1"
 
 
-def test_server_handle_request_say_enqueues_when_active(tmp_path, monkeypatch):
+def test_server_handle_request_say_delegates_to_process_manager(tmp_path, monkeypatch):
     from plugins.google_meet.node.server import NodeServer
     from plugins.google_meet.node import protocol
     from plugins.google_meet import process_manager as pm
 
-    out = tmp_path / "meet-out"
-    out.mkdir()
-    monkeypatch.setattr(pm, "_read_active",
-                        lambda: {"pid": 1, "meeting_id": "m", "out_dir": str(out)})
+    got = {}
+
+    def fake_enqueue_say(text):
+        got["text"] = text
+        return {"ok": True, "enqueued_id": "q1"}
+
+    monkeypatch.setattr(pm, "enqueue_say", fake_enqueue_say)
 
     s = NodeServer(token_path=tmp_path / "t.json")
     tok = s.ensure_token()
@@ -396,26 +407,27 @@ def test_server_handle_request_say_enqueues_when_active(tmp_path, monkeypatch):
     resp = asyncio.run(s._handle_request(req))
     assert resp["type"] == "response"
     assert resp["payload"]["ok"] is True
-    assert resp["payload"]["enqueued"] is True
-    q = (out / "say_queue.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert len(q) == 1
-    assert json.loads(q[0])["text"] == "hello"
+    assert resp["payload"]["enqueued_id"] == "q1"
+    assert got["text"] == "hello"
 
 
-def test_server_handle_request_say_without_active_still_ok(tmp_path, monkeypatch):
+def test_server_handle_request_say_without_active_preserves_rejection(tmp_path, monkeypatch):
     from plugins.google_meet.node.server import NodeServer
     from plugins.google_meet.node import protocol
     from plugins.google_meet import process_manager as pm
 
-    monkeypatch.setattr(pm, "_read_active", lambda: None)
+    monkeypatch.setattr(
+        pm,
+        "enqueue_say",
+        lambda text: {"ok": False, "reason": "no active meeting"},
+    )
 
     s = NodeServer(token_path=tmp_path / "t.json")
     tok = s.ensure_token()
     req = protocol.make_request("say", tok, {"text": "hi"})
     resp = asyncio.run(s._handle_request(req))
     assert resp["type"] == "response"
-    assert resp["payload"]["ok"] is True
-    assert resp["payload"]["enqueued"] is False
+    assert resp["payload"] == {"ok": False, "reason": "no active meeting"}
 
 
 def test_server_handle_request_wraps_pm_exceptions(tmp_path, monkeypatch):
