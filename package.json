@@ -40,5 +40,10 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "joi": "^18.2.1",
+    "vite": "^8.0.16"
   }
 }
