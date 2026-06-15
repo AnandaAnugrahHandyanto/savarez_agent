@@ -67,6 +67,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MediaKind,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -166,7 +167,9 @@ def check_telegram_requirements() -> bool:
 
 # Matches every character that MarkdownV2 requires to be backslash-escaped
 # when it appears outside a code span or fenced code block.
-_MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
+# NOTE: '|' rimosso — Rich Text nativo supporta tabelle GFM, non MarkdownV2.
+# MarkdownV2 legacy è deprecato in favore di sendRichMessage.
+_MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-={}.!\\])')
 
 
 def _escape_mdv2(text: str) -> str:
@@ -344,6 +347,7 @@ class TelegramAdapter(BasePlatformAdapter):
     - Forum topics (thread_id support)
     - Media messages
     """
+    MEDIA_KINDS = frozenset({MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.VOICE, MediaKind.DOCUMENT})
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
@@ -2533,6 +2537,45 @@ class TelegramAdapter(BasePlatformAdapter):
             self._status_message_ids[key] = str(result.message_id)
         return result
 
+    async def _rich_final_replace(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Replace a preview message with a fresh Rich Message final.
+
+        Uses sendRichMessage (Bot API 10.1) to deliver the final content
+        with native tables, then deletes the old preview.  This avoids
+        MarkdownV2 edit limitations that destroy rich formatting.
+        """
+        # Send the rich final
+        rich_result = await self._try_send_rich(chat_id, content, None, metadata)
+        if rich_result is None or not rich_result.success:
+            # Rich failed — signal caller to use legacy edit path
+            return SendResult(success=False, error="rich_final_failed", retryable=True)
+
+        new_message_id = getattr(rich_result, "message_id", None)
+
+        # Delete the old preview
+        if self._bot is not None:
+            try:
+                await self._bot.delete_message(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                )
+            except Exception as e:
+                logger.debug(
+                    "[%s] Rich final preview cleanup failed: %s",
+                    self.name, e,
+                )
+
+        return SendResult(
+            success=True,
+            message_id=str(new_message_id) if new_message_id else message_id,
+        )
+
     async def edit_message(
         self,
         chat_id: str,
@@ -2551,9 +2594,22 @@ class TelegramAdapter(BasePlatformAdapter):
         existing message with the first chunk and send the rest as
         continuation messages, returning the final chunk's id so subsequent
         edits target the most recent visible message.
+
+        NOTE: When finalize=True and rich messages are enabled, this method
+        replaces the preview with a fresh Rich Message instead of editing,
+        preserving native table/task-list formatting.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        # Rich final: replace preview with fresh Rich Message instead of edit
+        if finalize and self._should_attempt_rich(content, metadata=metadata):
+            rich_result = await self._rich_final_replace(
+                chat_id, message_id, content, metadata
+            )
+            if rich_result is not None:
+                return rich_result
+            # Rich failed — fall through to legacy edit path
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.
@@ -2583,18 +2639,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: strip MarkdownV2 escapes and retry as clean plain text
-                logger.warning(
-                    "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
+                # NOTE: Fallback a plain text DISABILITATO per rich text nativo.
+                # Se MarkdownV2 fallisce, l'errore deve essere visibile.
+                logger.error(
+                    "[%s] MarkdownV2 edit failed (NO FALLBACK): %s",
                     self.name,
                     fmt_err,
                 )
-                _plain = _strip_mdv2(content) if content else content
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=_plain,
-                )
+                raise
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -2769,64 +2821,52 @@ class TelegramAdapter(BasePlatformAdapter):
                 metadata,
                 reply_to_message_id=reply_to_id,
             )
-            for use_markdown in (True, False) if finalize else (False,):
-                try:
-                    if use_markdown:
-                        text = self.format_message(chunk)
-                    else:
-                        # Plain attempt: on finalize the MarkdownV2 attempt
-                        # failed, so degrade to clean stripped text, never
-                        # the raw chunk (raw ** / ``` markers would render
-                        # literally); streaming previews stay raw.
-                        text = _strip_mdv2(chunk) if finalize else chunk
-                    sent_msg = await self._bot.send_message(
-                        chat_id=int(chat_id),
-                        text=text,
-                        parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
-                        reply_to_message_id=reply_to_id,
-                        **thread_kwargs,
-                        **self._link_preview_kwargs(),
-                        **self._notification_kwargs(metadata),
-                    )
-                    break
-                except Exception as send_err:
-                    if "reply message not found" in str(send_err).lower():
-                        # Drop the reply anchor and try again.  Private DM
-                        # topic fallback needs the anchor and topic id together;
-                        # forum topics can still safely keep message_thread_id.
-                        retry_thread_kwargs = (
-                            {}
-                            if metadata and metadata.get("telegram_dm_topic_reply_fallback")
-                            else self._thread_kwargs_for_send(
-                                chat_id, thread_id, metadata, reply_to_message_id=None
-                            )
+            # NOTE: Fallback a plain text disabilitato per rich text nativo.
+            # Se MarkdownV2 fallisce, l'errore deve essere visibile — non
+            # silenziato con strip. Il modello deve generare markdown valido.
+            try:
+                text = self.format_message(chunk) if finalize else chunk
+                sent_msg = await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN_V2 if finalize else None,
+                    reply_to_message_id=reply_to_id,
+                    **thread_kwargs,
+                    **self._link_preview_kwargs(),
+                    **self._notification_kwargs(metadata),
+                )
+            except Exception as send_err:
+                if "reply message not found" in str(send_err).lower():
+                    retry_thread_kwargs = (
+                        {}
+                        if metadata and metadata.get("telegram_dm_topic_reply_fallback")
+                        else self._thread_kwargs_for_send(
+                            chat_id, thread_id, metadata, reply_to_message_id=None
                         )
-                        try:
-                            sent_msg = await self._bot.send_message(
-                                chat_id=int(chat_id),
-                                text=_strip_mdv2(chunk) if finalize else chunk,
-                                **retry_thread_kwargs,
-                                **self._link_preview_kwargs(),
-                                **self._notification_kwargs(metadata),
-                            )
-                            break
-                        except Exception as _retry_err:
-                            logger.warning(
-                                "[%s] Overflow continuation no-reply retry failed: %s",
-                                self.name, _retry_err,
-                            )
-                            sent_msg = None
-                            break
-                    if use_markdown:
-                        # try plain text on next loop iteration
-                        continue
-                    logger.warning(
-                        "[%s] Overflow continuation send failed: %s",
+                    )
+                    try:
+                        sent_msg = await self._bot.send_message(
+                            chat_id=int(chat_id),
+                            text=text,
+                            parse_mode=ParseMode.MARKDOWN_V2 if finalize else None,
+                            **retry_thread_kwargs,
+                            **self._link_preview_kwargs(),
+                            **self._notification_kwargs(metadata),
+                        )
+                    except Exception as _retry_err:
+                        logger.warning(
+                            "[%s] Overflow continuation no-reply retry failed: %s",
+                            self.name, _retry_err,
+                        )
+                        sent_msg = None
+                else:
+                    logger.error(
+                        "[%s] Overflow continuation send failed (NO FALLBACK): %s",
                         self.name, send_err,
                     )
-                    sent_msg = None
-                    break
+                    raise  # Propaga l'errore invece di silenziarlo
             if sent_msg is None:
+                break
                 # Continuation failed — the user has chunk 1 + however many
                 # continuations succeeded, but NOT the full response.  Do not
                 # report success: the stream consumer treats a successful edit
@@ -4903,7 +4943,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
         #    before the normal MarkdownV2 conversions run.
-        text = _wrap_markdown_tables(text)
+        #    NOTE: Disabled by user request — modern Telegram clients support
+        #    MarkdownV2 tables natively (Bot API 10.1+ Rich Messages).
+        #    text = _wrap_markdown_tables(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
