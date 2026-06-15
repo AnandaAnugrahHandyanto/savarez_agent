@@ -286,6 +286,7 @@ def compress_context(
     approx_tokens: Optional[int] = None,
     task_id: str = "default",
     focus_topic: Optional[str] = None,
+    conversation_history: Optional[list] = None,
     force: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
@@ -299,6 +300,9 @@ def compress_context(
         focus_topic: Optional focus string for guided compression — the
             summariser will prioritise preserving information related to
             this topic.  Inspired by Claude Code's ``/compact <focus>``.
+        conversation_history: Previously-persisted history for the active turn.
+            Passed through to the SQLite flush so compression only writes the
+            pending mid-turn tail before rotating the session.
         force: If True, bypass any active summary-failure cooldown.  Set
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
@@ -512,6 +516,14 @@ def compress_context(
             old_title = agent._session_db.get_session_title(agent.session_id)
             # Trigger memory extraction on the old session before it rotates.
             agent.commit_memory_session(messages)
+            # Flush pending messages to SQLite BEFORE closing the old session.
+            # _persist_session only runs at turn-exit, so without this flush
+            # intermediate sessions created by chained mid-turn compressions
+            # lose all their messages to SQLite (#46567).
+            agent._flush_messages_to_session_db(
+                messages,
+                conversation_history=conversation_history,
+            )
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
