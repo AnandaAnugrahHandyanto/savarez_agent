@@ -3457,6 +3457,11 @@ class TestRunConversation:
             m.get("_post_tool_progress_synthetic")
             for m in result["messages"]
         )
+        for call_args in agent.client.chat.completions.create.call_args_list[1:]:
+            assert not any(
+                "_post_tool_progress_synthetic" in message
+                for message in call_args.kwargs["messages"]
+            )
 
     def test_repeated_post_tool_progress_only_fails_with_explicit_final(self, agent):
         self._setup_agent(agent)
@@ -3480,9 +3485,75 @@ class TestRunConversation:
             m.get("_post_tool_progress_synthetic")
             for m in result["messages"]
         )
+        assert [m.get("role") for m in result["messages"]][-3:] == [
+            "assistant",
+            "tool",
+            "assistant",
+        ]
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "자료 수집 중 발견한 핵심은 A입니다.",
+            "확인 중 오류를 발견했습니다.",
+            "분석 중간 결과: 원인은 캐시입니다.",
+        ],
+    )
+    def test_post_tool_progress_phrases_inside_final_answers_are_not_retried(self, agent, content):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        final = _mock_response(content=content, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, final]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something and report final")
+
+        assert result["final_response"] == content
+        assert result["api_calls"] == 2
+
+    def test_prior_turn_tool_results_do_not_trigger_progress_retry(self, agent):
+        self._setup_agent(agent)
+        agent.messages = [
+            {"role": "user", "content": "search previous thing"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "prior-call",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "prior-call",
+                "name": "web_search",
+                "content": "prior result",
+            },
+            {"role": "assistant", "content": "작업한 일 : 이전 검색 완료"},
+        ]
+        response = _mock_response(content="잠시만요", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [response]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("new turn without tools")
+
+        assert result["final_response"] == "잠시만요"
+        assert result["api_calls"] == 1
         assert not any(
-            isinstance(m.get("content"), str)
-            and "You just executed tool calls" in m.get("content", "")
+            m.get("_post_tool_progress_synthetic")
             for m in result["messages"]
         )
 
@@ -3506,47 +3577,6 @@ class TestRunConversation:
 
         assert result["final_response"].startswith("작업한 일")
         assert result["api_calls"] == 2
-
-    @pytest.mark.parametrize(
-        "content",
-        [
-            "확인 중 발견한 문제는 권한 설정 누락입니다.",
-            "분석 중 확인한 결과 캐시가 원인이었습니다.",
-        ],
-    )
-    def test_post_tool_status_words_inside_final_answer_are_not_progress_only(self, agent, content):
-        self._setup_agent(agent)
-        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
-        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
-        final = _mock_response(content=content, finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [resp1, final]
-
-        with (
-            patch("run_agent.handle_function_call", return_value="search result"),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("search something and report final")
-
-        assert result["final_response"] == content
-        assert result["api_calls"] == 2
-
-    def test_prior_turn_tool_results_do_not_trigger_post_tool_progress_nudge(self, agent):
-        self._setup_agent(agent)
-        messages = [
-            {"role": "user", "content": "search"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
-            {"role": "tool", "tool_call_id": "c1", "content": "result"},
-            {"role": "assistant", "content": "작업한 일 : searched"},
-            {"role": "user", "content": "quick status?"},
-        ]
-
-        assert not agent._looks_like_post_tool_progress_only(
-            "확인중",
-            messages,
-            current_turn_user_idx=4,
-        )
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)

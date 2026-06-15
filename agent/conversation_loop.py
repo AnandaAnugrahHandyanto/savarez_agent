@@ -705,8 +705,11 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
-            # Strip internal thinking-prefill marker
-            api_msg.pop("_thinking_prefill", None)
+            # Strip Hermes-internal scaffolding markers before provider calls.
+            # Strict OpenAI-compatible providers reject unknown top-level
+            # message fields, and synthetic retry flags are transcript-only.
+            for key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+                api_msg.pop(key, None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields
@@ -4281,11 +4284,7 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
-                if agent._looks_like_post_tool_progress_only(
-                    final_response,
-                    messages,
-                    current_turn_user_idx=current_turn_user_idx,
-                ):
+                if agent._looks_like_post_tool_progress_only(final_response, messages):
                     agent._post_tool_progress_retried = getattr(
                         agent, "_post_tool_progress_retried", 0
                     ) + 1
@@ -4324,12 +4323,18 @@ def run_conversation(
                     )
                     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     final_msg["content"] = final_response
-                    while (
-                        messages
-                        and isinstance(messages[-1], dict)
-                        and messages[-1].get("_post_tool_progress_synthetic")
-                    ):
-                        messages.pop()
+                    # Internal progress-nudge turns are for the retry API calls only.
+                    # Do not persist them as user-visible/resumable conversation
+                    # history, especially on the exhaustion path where they are no
+                    # longer at the transcript tail after the failure response.
+                    messages = [
+                        msg for msg in messages
+                        if not (
+                            isinstance(msg, dict)
+                            and msg.get("_post_tool_progress_synthetic")
+                        )
+                    ]
+                    agent._session_messages = messages
                     messages.append(final_msg)
                     break
 
