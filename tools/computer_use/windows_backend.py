@@ -309,7 +309,9 @@ def _switch_desktop_via_keybd(direction: str, overlay_client) -> bool:
 
     The overlay subprocess (full-screen tkinter window) is killed by any
     virtual-desktop transition, so we stop it before switching and restart
-    it on the new desktop.
+    it on the new desktop — but only if it was running, so a deliberately
+    disabled overlay (``computer_use.overlay: false`` /
+    ``HERMES_COMPUTER_USE_OVERLAY=0``) is never resurrected by a switch.
     """
     if direction not in ("left", "right"):
         return False
@@ -331,22 +333,30 @@ def _switch_desktop_via_keybd(direction: str, overlay_client) -> bool:
            _key_event(VK_LWIN, False),
            _key_event(VK_CONTROL, False)]
 
+    # Capture liveness before stop() clears _proc. Only an overlay that was
+    # actually running comes back: a user who disabled it leaves _dead set,
+    # and force-clearing _dead here (as an earlier revision did) would
+    # resurrect a deliberately-killed overlay on every desktop switch. start()
+    # already no-ops while _dead is set, so this guard is the single source of
+    # truth for whether the overlay returns.
+    overlay_was_live = overlay_client._proc is not None and not overlay_client._dead
+
     try:
         overlay_client.stop()
         _send_inputs(seq)
-        # The virtual-desktop transition is asynchronous — a brief delay
-        # before restarting the overlay avoids racing the DWM compositor.
-        time.sleep(0.15)
-        overlay_client._dead = False
-        overlay_client.start()
+        if overlay_was_live:
+            # The virtual-desktop transition is asynchronous — a brief delay
+            # before restarting the overlay avoids racing the DWM compositor.
+            time.sleep(0.15)
+            overlay_client.start()
         return True
     except Exception as e:
         logger.warning("switch_desktop SendInput failed: %s", e)
-        try:
-            overlay_client._dead = False
-            overlay_client.start()
-        except Exception as e2:
-            logger.warning("switch_desktop overlay restart also failed: %s", e2)
+        if overlay_was_live:
+            try:
+                overlay_client.start()
+            except Exception as e2:
+                logger.warning("switch_desktop overlay restart also failed: %s", e2)
         return False
 
 
