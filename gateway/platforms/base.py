@@ -839,25 +839,47 @@ MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 # injection from one user could exfiltrate the host's secrets to that same
 # user should set this to true.
 MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
-MEDIA_DELIVERY_SAFE_ROOTS = (
-    IMAGE_CACHE_DIR,
-    AUDIO_CACHE_DIR,
-    VIDEO_CACHE_DIR,
-    DOCUMENT_CACHE_DIR,
-    SCREENSHOT_CACHE_DIR,
-    _HERMES_HOME / "image_cache",
-    _HERMES_HOME / "audio_cache",
-    _HERMES_HOME / "video_cache",
-    _HERMES_HOME / "document_cache",
-    _HERMES_HOME / "browser_screenshots",
-    # Canonical cache layout — listed alongside the legacy *_cache dirs so
-    # generated artifacts deliver on installs that have both (#31733).
-    _HERMES_HOME / "cache" / "images",
-    _HERMES_HOME / "cache" / "audio",
-    _HERMES_HOME / "cache" / "videos",
-    _HERMES_HOME / "cache" / "documents",
-    _HERMES_HOME / "cache" / "screenshots",
-)
+
+
+def _default_media_delivery_safe_roots(hermes_home: Path | None = None) -> Tuple[Path, ...]:
+    """Return Hermes-managed roots allowed for model-emitted media paths.
+
+    ``get_hermes_dir()`` intentionally selects either the legacy cache layout
+    (for example ``image_cache``) or the consolidated layout
+    (``cache/images``) based on what already exists. Tooling may still create
+    legitimate artifacts in the other Hermes-managed cache path during or
+    after a layout transition. Native attachment delivery should accept both
+    layouts while still rejecting arbitrary locations such as ``/tmp``.
+    """
+    home = hermes_home or _HERMES_HOME
+    roots = (
+        IMAGE_CACHE_DIR,
+        AUDIO_CACHE_DIR,
+        VIDEO_CACHE_DIR,
+        DOCUMENT_CACHE_DIR,
+        SCREENSHOT_CACHE_DIR,
+        home / "cache" / "images",
+        home / "cache" / "audio",
+        home / "cache" / "videos",
+        home / "cache" / "documents",
+        home / "cache" / "screenshots",
+        home / "image_cache",
+        home / "audio_cache",
+        home / "video_cache",
+        home / "document_cache",
+        home / "browser_screenshots",
+    )
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for root in roots:
+        key = str(Path(root))
+        if key not in seen:
+            seen.add(key)
+            unique.append(Path(root))
+    return tuple(unique)
+
+
+MEDIA_DELIVERY_SAFE_ROOTS = _default_media_delivery_safe_roots(_HERMES_HOME)
 
 # Default recency window for trusting freshly-produced files (seconds).
 # The agent's actual work generally completes well inside 10 minutes; legitimate

@@ -13,6 +13,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
     utf16_len,
     _log_safe_path,
+    _default_media_delivery_safe_roots,
     _prefix_within_utf16_limit,
 )
 
@@ -618,6 +619,38 @@ class TestMediaDeliveryPathValidation:
         self._patch_roots(monkeypatch, root)
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_default_safe_roots_include_both_cache_layouts(self, tmp_path):
+        roots = _default_media_delivery_safe_roots(tmp_path)
+
+        assert tmp_path / "cache" / "images" in roots
+        assert tmp_path / "image_cache" in roots
+        assert tmp_path / "cache" / "audio" in roots
+        assert tmp_path / "audio_cache" in roots
+
+    def test_filter_allows_consolidated_image_cache_file(self, tmp_path, monkeypatch):
+        media_file = tmp_path / "cache" / "images" / "mindmap.png"
+        media_file.parent.mkdir(parents=True)
+        media_file.write_bytes(b"PNG")
+        self._patch_roots(monkeypatch, *_default_media_delivery_safe_roots(tmp_path))
+
+        filtered = BasePlatformAdapter.filter_media_delivery_paths([
+            (str(media_file), False),
+        ])
+
+        assert filtered == [(str(media_file.resolve()), False)]
+
+    def test_filter_allows_legacy_image_cache_file(self, tmp_path, monkeypatch):
+        media_file = tmp_path / "image_cache" / "mindmap.png"
+        media_file.parent.mkdir(parents=True)
+        media_file.write_bytes(b"PNG")
+        self._patch_roots(monkeypatch, *_default_media_delivery_safe_roots(tmp_path))
+
+        filtered = BasePlatformAdapter.filter_media_delivery_paths([
+            (str(media_file), False),
+        ])
+
+        assert filtered == [(str(media_file.resolve()), False)]
 
     def test_rejects_existing_file_outside_safe_root(self, tmp_path, monkeypatch):
         root = tmp_path / "media-cache"
