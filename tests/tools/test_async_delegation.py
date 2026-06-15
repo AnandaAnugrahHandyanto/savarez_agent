@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import queue
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -224,6 +225,41 @@ def test_completed_records_pruned_to_cap():
 # ---------------------------------------------------------------------------
 # Integration: delegate_task(background=True) routing
 # ---------------------------------------------------------------------------
+
+def test_run_agent_dispatch_delegate_task_forwards_background(monkeypatch):
+    """AIAgent's inline delegate_task dispatcher must forward the background flag.
+
+    The model-facing schema and tools.delegate_tool support background=true, but
+    delegate_task is routed through AIAgent._dispatch_delegate_task instead of
+    the generic registry path. This regression test catches that pass-through
+    seam so background=true cannot silently degrade to synchronous delegation.
+    """
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    captured = {}
+
+    def fake_delegate_task(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    with patch("tools.delegate_tool.delegate_task", side_effect=fake_delegate_task):
+        out = agent._dispatch_delegate_task({
+            "goal": "g",
+            "context": "c",
+            "toolsets": ["terminal"],
+            "tasks": None,
+            "max_iterations": 7,
+            "acp_command": "",
+            "acp_args": [],
+            "role": "leaf",
+            "background": True,
+        })
+
+    assert out == "ok"
+    assert captured["background"] is True
+    assert captured["parent_agent"] is agent
+
 
 def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     """delegate_task(background=True) returns a handle without running the
