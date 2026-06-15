@@ -47,6 +47,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     "kenmege@yahoo.com": "Kenmege",
     "dkobi16@gmail.com": "Diyoncrz18",
+    "arnaud@nolimitdevelopment.com": "ali-nld",
     "sswdarius@gmail.com": "necoweb3",
     "peterhao@Peters-MacBook-Air.local": "pinguarmy",
     "adalsteinnhelgason@Aalsteinns-MacBook-Pro-3.local": "AIalliAI",
@@ -83,6 +84,9 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "35259607+zxcasongs@users.noreply.github.com": "zxcasongs",
+    "alfred@my-cloud.me": "alfred-smith-0",
+    "tangtaizhong792@gmail.com": "tangtaizong666",
     "github@aldo.pw": "aldoeliacim",
     "max@c60spaceship.com": "MaxFreedomPollard",
     "achaljhawar03@gmail.com": "achaljhawar",
