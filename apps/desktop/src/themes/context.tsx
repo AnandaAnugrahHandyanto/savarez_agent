@@ -16,7 +16,7 @@ import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
-import { hexToRgb, mix, readableOn } from './color'
+import { contrastRatio, hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, resolveTheme } from './user-themes'
@@ -152,6 +152,53 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? 'light' : 'dark'
 }
 
+const PREFERRED_UNREAD_BLUE = '#38bdf8'
+const UNREAD_STROKE_CANDIDATES = [
+  PREFERRED_UNREAD_BLUE,
+  '#7dd3fc',
+  '#bae6fd',
+  '#e0f2fe',
+  '#075985',
+  '#0369a1',
+  '#0c4a6e',
+  '#ffffff',
+  '#000000'
+]
+
+function distinctness(a: string, b: string): number {
+  const ar = hexToRgb(a)
+  const br = hexToRgb(b)
+
+  if (!ar || !br) {
+    return 0
+  }
+
+  return Math.sqrt((ar[0] - br[0]) ** 2 + (ar[1] - br[1]) ** 2 + (ar[2] - br[2]) ** 2)
+}
+
+export function unreadBubbleColor(): string {
+  return PREFERRED_UNREAD_BLUE
+}
+
+export function unreadStrokeColor(colors: DesktopThemeColors): string {
+  const bg = colors.sidebarBackground ?? colors.background
+  const active = colors.midground ?? colors.ring ?? colors.primary
+  const warm = colors.primary
+
+  const candidate = UNREAD_STROKE_CANDIDATES.find(color => {
+    const contrast = contrastRatio(color, bg)
+    const distinct = Math.min(distinctness(color, active), distinctness(color, warm))
+
+    return contrast >= 3 && distinct >= 60
+  })
+
+  if (candidate) {
+    return candidate
+  }
+
+  return contrastRatio('#000000', bg) >= contrastRatio('#ffffff', bg) ? '#000000' : '#ffffff'
+}
+
 // ─── CSS application ────────────────────────────────────────────────────────
 
 // Per-mode mix knobs. Light/dark fallbacks live in styles.css `:root` /
@@ -191,6 +238,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--theme-accent-soft': c.accent,
     '--theme-midground': midground,
     '--theme-warm': c.primary,
+    '--theme-unread-contrast': unreadBubbleColor(),
+    '--theme-unread-stroke': unreadStrokeColor(c),
     '--theme-background-seed': c.background,
     '--theme-sidebar-seed': c.sidebarBackground ?? c.background,
     '--theme-card-seed': c.card,
