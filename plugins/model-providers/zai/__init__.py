@@ -12,7 +12,18 @@ un-keyed clients.
 from providers import register_provider
 from providers.base import ProviderProfile
 
-zai = ProviderProfile(
+# Models that are live on the API but missing from the /models catalog.
+# glm-5.2 is callable but not listed by z.ai's /v1/models endpoint.
+_EXTRA_MODELS = ("glm-5.2",)
+
+
+class _ZaiProvider(ProviderProfile):
+    def fetch_models(self, *, api_key=None, timeout=8.0):
+        live = super().fetch_models(api_key=api_key, timeout=timeout) or []
+        return sorted(set(live) | set(_EXTRA_MODELS))
+
+
+zai = _ZaiProvider(
     name="zai",
     aliases=("glm", "z-ai", "z.ai", "zhipu"),
     env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
