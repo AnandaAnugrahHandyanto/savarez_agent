@@ -63,6 +63,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_constants import get_hermes_home
+from gateway.session_context import get_session_env
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
@@ -87,6 +88,14 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     except OSError:
         # cwd was unlinked out from under us — nothing meaningful to record.
         return None
+
+
+def _resolve_session_source(platform: str | None) -> str:
+    source = (get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
+    if source:
+        return source
+    platform = (platform or "").strip()
+    return platform or "cli"
 
 
 # OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
@@ -510,7 +519,7 @@ class AIAgent:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
             return
-        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+        source = _resolve_session_source(getattr(self, "platform", None))
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
@@ -576,7 +585,7 @@ class AIAgent:
             start_context = {
                 "old_session_id": old_session_id,
                 "carry_over_context": carry_over_context,
-                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                "platform": _resolve_session_source(getattr(self, "platform", None)),
                 "model": getattr(self, "model", ""),
                 "context_length": getattr(engine, "context_length", None),
                 "conversation_id": getattr(self, "_gateway_session_key", None),

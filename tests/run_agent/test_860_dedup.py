@@ -265,3 +265,33 @@ class TestFlushIdxInit:
         agent._flush_messages_to_session_db(messages, [])
         # Should not crash, idx should remain 0
         assert agent._last_flushed_db_idx == 0
+
+
+def test_ensure_db_session_prefers_session_source_over_platform(tmp_path):
+    """Gateway helper sessions can override the visible platform source."""
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db_path = tmp_path / "test.db"
+    db = SessionDB(db_path=db_path)
+    try:
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                platform="tui",
+                session_db=db,
+                session_id="test-session-source",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        with patch("run_agent.get_session_env", return_value="tool"):
+            agent._ensure_db_session()
+
+        row = db.get_session("test-session-source")
+        assert row is not None
+        assert row["source"] == "tool"
+    finally:
+        db.close()
