@@ -160,6 +160,35 @@ caption
         assert tags == ["MEDIA:/tmp/voice.ogg"]
         assert voice is True
 
+    def test_gateway_auto_append_keeps_real_send_asset_media_tag(self):
+        """send_asset MEDIA tags are auto-appended when the model omits them."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Quote jersey only for 24 sets"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_asset", "function": {"name": "send_asset"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_asset",
+                "content": (
+                    '{"ok": true, "key": "pricelist-jersey-short", '
+                    '"media": "MEDIA:/srv/kb/assets/pricelists/pricelist-jersey-short.png"}'
+                ),
+            },
+            {"role": "assistant", "content": "Here's the quote for 24 sets ya."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == [
+            "MEDIA:/srv/kb/assets/pricelists/pricelist-jersey-short.png"
+        ]
+        assert voice is False
+
     def test_gateway_auto_append_image_generate_json_path(self):
         """image_generate returns a local path in JSON (no MEDIA: tag); it is
         auto-appended so delivery doesn't depend on the model restating it."""
