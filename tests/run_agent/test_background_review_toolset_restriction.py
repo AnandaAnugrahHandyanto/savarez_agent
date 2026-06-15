@@ -86,12 +86,13 @@ def test_background_review_matches_parent_toolset_config():
 
 
 def test_background_review_installs_thread_local_whitelist():
-    """The review fork must install a memory/skills-only thread-local whitelist.
+    """The review fork must install a memory/skills/read_file whitelist.
 
     The schema-level toolset narrowing was lifted (for prefix-cache parity),
     so #15204's safety contract now relies on the runtime whitelist gate to
-    deny terminal/send_message/delegate_task at dispatch time. Verify the
-    whitelist is set with exactly the memory+skills tool names.
+    deny terminal/send_message/delegate_task at dispatch time.  It also
+    allows read_file so the skill review can inspect relevant external
+    files without opening write/search tools.
     """
     import run_agent
     from hermes_cli import plugins as _plugins
@@ -127,12 +128,16 @@ def test_background_review_installs_thread_local_whitelist():
     assert "skill_manage" in whitelist
     assert "skill_view" in whitelist
     assert "skills_list" in whitelist
+    assert "read_file" in whitelist
     # dangerous tools must NOT be in the whitelist
     assert "terminal" not in whitelist
     assert "send_message" not in whitelist
     assert "delegate_task" not in whitelist
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
+    assert "write_file" not in whitelist
+    assert "patch" not in whitelist
+    assert "search_files" not in whitelist
 
 
 def test_background_review_agent_tools_are_limited():

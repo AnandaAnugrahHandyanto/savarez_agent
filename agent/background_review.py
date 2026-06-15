@@ -10,7 +10,8 @@ touched.
 The fork inherits the parent's live runtime (provider, model, base_url,
 credentials, cached system prompt) so it hits the same prefix cache and
 uses the same auth.  It runs with a tool whitelist limited to memory and
-skill management tools; everything else is denied at runtime.
+skill management tools plus read-only file inspection; everything else
+is denied at runtime.
 
 See the ``hermes-agent-dev`` skill (``references/self-improvement-loop.md``)
 for invariants and PR review criteria.
@@ -474,20 +475,27 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # read_file is read-only and needed when the review fork inspects
+            # source files outside the skill directory (e.g. config schemas,
+            # existing code the skill references).  The broader file toolset
+            # (write_file, patch, search_files) stays denied.
+            review_whitelist.add("read_file")
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only memory/skill/read_file tools are allowed."
                 ),
             )
             try:
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
-                        "at runtime — do not attempt them."
+                        + "\n\nYou can use memory and skill management tools "
+                        "plus read_file for read-only inspection of external "
+                        "files. Do not copy private local file contents into "
+                        "durable skills unless necessary. Other tools are "
+                        "denied at runtime — do not attempt them."
                     ),
                     conversation_history=messages_snapshot,
                 )
