@@ -1536,6 +1536,14 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        # Gateway compact model prefix prepended to the FINAL message of a turn
+        # (disabled by default to keep replies minimal). When enabled, renders
+        # e.g. `[gpt5.5] response text`. Per-platform overrides go under
+        # display.platforms.<platform>.runtime_prefix.
+        "runtime_prefix": {
+            "enabled": False,
+            "labels": {},
+        },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 
