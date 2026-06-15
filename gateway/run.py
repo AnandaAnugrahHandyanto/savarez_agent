@@ -302,6 +302,34 @@ def _gateway_provider_error_reply(text: str) -> str:
     )
 
 
+def _format_recent_signal_chat_history(
+    recent_messages: List[Dict[str, Any]],
+    *,
+    redact_pii: bool = False,
+) -> str:
+    """Render recent Signal messages for context-prompt injection."""
+    if not recent_messages:
+        return ""
+
+    recent_lines: List[str] = []
+    for message in recent_messages:
+        timestamp_ms = message.get("ts")
+        try:
+            dt = datetime.fromtimestamp(int(timestamp_ms) / 1000.0)
+            ts_label = dt.strftime("%H:%M")
+        except (TypeError, ValueError, OSError):
+            ts_label = "??:??"
+
+        sender = str(message.get("sender") or "")
+        label = str(message.get("name") or sender or "unknown")
+        if redact_pii and sender and label == sender:
+            label = _hash_sender_id(sender)
+
+        recent_lines.append(f"[{ts_label}] {label}: {message.get('text', '')}")
+
+    return "[Recent Signal chat history]\n" + "\n".join(recent_lines) + "\n\n"
+
+
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     r"api\s+(?:call\s+)?failed"
@@ -1349,6 +1377,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    _hash_sender_id,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -8276,6 +8305,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+
+        if source.platform == Platform.SIGNAL:
+            signal_adapter = self.adapters.get(source.platform)
+            if signal_adapter and hasattr(signal_adapter, "get_recent_chat_messages"):
+                recent_messages = signal_adapter.get_recent_chat_messages(source.chat_id, n=30)
+                if recent_messages:
+                    context_prompt = (
+                        _format_recent_signal_chat_history(
+                            recent_messages,
+                            redact_pii=_redact_pii,
+                        )
+                        + context_prompt
+                    )
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

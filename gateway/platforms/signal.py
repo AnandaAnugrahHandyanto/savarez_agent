@@ -13,6 +13,7 @@ Requires:
 
 import asyncio
 import base64
+from collections import OrderedDict, deque
 import json
 import logging
 import os
@@ -63,6 +64,8 @@ SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
+SIGNAL_CHAT_HISTORY_MAX = 100  # recent messages retained per chat during runtime
+SIGNAL_CHAT_HISTORY_MAX_CHATS = 256  # distinct chats retained during runtime
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +242,7 @@ class SignalAdapter(BasePlatformAdapter):
         # Signal quote.id is the timestamp of the quoted message, so this lets
         # inbound replies identify that the user replied to a message sent by
         # this bot even after the self-sync echo was filtered above.
-        self._sent_message_timestamps: set[str] = set()
+        self._sent_message_timestamps: OrderedDict[str, None] = OrderedDict()
         self._max_sent_message_timestamps = 500
         # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
@@ -247,6 +250,8 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_uuid_by_number: Dict[str, str] = {}
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
+        self._chat_history: OrderedDict[str, deque] = OrderedDict()
+        self._max_chat_history_chats = SIGNAL_CHAT_HISTORY_MAX_CHATS
 
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, redact_phone(self.account),
@@ -658,6 +663,13 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s",
                       redact_phone(sender), chat_id[:20], (text or "")[:50])
 
+        self._append_to_chat_history(
+            chat_id=chat_id,
+            ts_ms=ts_ms,
+            sender=sender,
+            name=sender_name or sender,
+            text=text or "",
+        )
         await self.handle_message(event)
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
@@ -708,9 +720,48 @@ class SignalAdapter(BasePlatformAdapter):
         """Keep a bounded cache of outbound Signal timestamps for quote matching."""
         if timestamp is None:
             return
-        self._sent_message_timestamps.add(str(timestamp))
-        if len(self._sent_message_timestamps) > self._max_sent_message_timestamps:
-            self._sent_message_timestamps.pop()
+        timestamp_key = str(timestamp)
+        self._sent_message_timestamps[timestamp_key] = None
+        self._sent_message_timestamps.move_to_end(timestamp_key)
+        while len(self._sent_message_timestamps) > self._max_sent_message_timestamps:
+            self._sent_message_timestamps.popitem(last=False)
+
+    def _append_to_chat_history(
+        self,
+        chat_id: str,
+        ts_ms: Any,
+        sender: str,
+        name: str,
+        text: str,
+    ) -> None:
+        """Retain a bounded recent chat transcript for backlog-aware prompts."""
+        if not chat_id or not text:
+            return
+        history = self._chat_history.get(chat_id)
+        if history is None:
+            history = deque(maxlen=SIGNAL_CHAT_HISTORY_MAX)
+            self._chat_history[chat_id] = history
+        self._chat_history.move_to_end(chat_id)
+        try:
+            ts_value = int(ts_ms) if ts_ms else int(time.time() * 1000)
+        except (TypeError, ValueError):
+            ts_value = int(time.time() * 1000)
+        history.append({
+            "ts": ts_value,
+            "sender": sender,
+            "name": name or sender,
+            "text": text,
+        })
+        while len(self._chat_history) > self._max_chat_history_chats:
+            self._chat_history.popitem(last=False)
+
+    def get_recent_chat_messages(self, chat_id: str, n: int = 20) -> List[Dict[str, Any]]:
+        """Return up to the last ``n`` retained chat messages for a Signal chat."""
+        history = self._chat_history.get(chat_id)
+        if not history or n <= 0:
+            return []
+        self._chat_history.move_to_end(chat_id)
+        return list(history)[-n:]
 
     def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
         """Best-effort extraction of a Signal service ID from listContacts output."""
@@ -1060,6 +1111,14 @@ class SignalAdapter(BasePlatformAdapter):
 
         if result is not None:
             self._track_sent_timestamp(result)
+            sent_ts = (result.get("timestamp") if isinstance(result, dict) else None) or int(time.time() * 1000)
+            self._append_to_chat_history(
+                chat_id=chat_id,
+                ts_ms=sent_ts,
+                sender=self.account,
+                name="me",
+                text=plain_text,
+            )
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending
             # future edits can remove an in-progress cursor from the chat thread.
