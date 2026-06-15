@@ -1,6 +1,6 @@
 ---
 name: pinecone
-description: Managed vector database for persistent semantic retrieval in RAG pipelines, agent memory, and multi-domain knowledge bases. Use when building agents that need sub-second similarity search over embedded documents, conversations, code, or multimodal data. Covers serverless and pod-based indexes, dense/sparse/hybrid search, namespace isolation, metadata filtering, and multimodal retrieval with voyage-multimodal-3.
+description: "Vector DB for RAG, agent memory, and semantic search."
 version: 1.0.0
 author: immuhammadfurqan
 license: MIT
