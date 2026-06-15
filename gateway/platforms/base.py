@@ -4135,6 +4135,28 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    async def try_send_final_rich_response(
+        self,
+        *,
+        chat_id: str,
+        original_response: str,
+        text_content: str,
+        images: List[Tuple[str, str]],
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        force_document_attachments: bool,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        is_ephemeral_response: bool = False,
+    ) -> Optional[SendResult]:
+        """Optionally send a platform-native rich final response.
+
+        Subclasses can override this hook to combine the already-extracted text
+        and media into one richer platform message. Return ``None`` to let the
+        base legacy text/media delivery continue unchanged.
+        """
+        return None
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -4318,22 +4340,45 @@ class BasePlatformAdapter(ABC):
                         except OSError:
                             pass
 
-                # Send the text portion
-                if text_content and not _tts_caption_delivered:
+                # Send the text portion. Mark final response sends before both
+                # the rich-message hook and the legacy text path so adapters can
+                # make one final-delivery decision for text + media together.
+                _reply_anchor = _reply_anchor_for_event(event)
+                if _thread_metadata is not None:
+                    _thread_metadata = dict(_thread_metadata)
+                    _thread_metadata["notify"] = True
+                    _thread_metadata["hermes_final_response"] = True
+                else:
+                    _thread_metadata = {"notify": True, "hermes_final_response": True}
+
+                _rich_final_response_delivered = False
+                if not _tts_caption_delivered:
+                    try:
+                        _rich_result = await self.try_send_final_rich_response(
+                            chat_id=event.source.chat_id,
+                            original_response=_response_pre_extract,
+                            text_content=text_content,
+                            images=list(images),
+                            media_files=list(media_files),
+                            local_files=list(local_files),
+                            force_document_attachments=force_document_attachments,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_metadata,
+                            is_ephemeral_response=is_ephemeral_response,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[%s] Final rich response hook failed; falling back to legacy delivery",
+                            self.name,
+                            exc_info=True,
+                        )
+                        _rich_result = None
+                    if _rich_result is not None and getattr(_rich_result, "success", False):
+                        _record_delivery(_rich_result)
+                        _rich_final_response_delivered = True
+
+                if text_content and not _tts_caption_delivered and not _rich_final_response_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    _reply_anchor = _reply_anchor_for_event(event)
-                    # Mark final response messages for notification delivery.
-                    # Platform adapters that support per-message notification
-                    # control (e.g. Telegram's disable_notification) use this
-                    # flag to override silent-mode and ensure the final
-                    # response triggers a push notification.
-                    # Clone to avoid mutating the metadata shared with the
-                    # typing-indicator task (which must remain unmarked).
-                    if _thread_metadata is not None:
-                        _thread_metadata = dict(_thread_metadata)
-                        _thread_metadata["notify"] = True
-                    else:
-                        _thread_metadata = {"notify": True}
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
@@ -4361,7 +4406,7 @@ class BasePlatformAdapter(ABC):
                 human_delay = self._get_human_delay()
 
                 # Send extracted images as native attachments
-                if images:
+                if images and not _rich_final_response_delivered:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
                         await self.send_multiple_images(
@@ -4373,6 +4418,10 @@ class BasePlatformAdapter(ABC):
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
+
+                if _rich_final_response_delivered:
+                    media_files = []
+                    local_files = []
 
                 # Send extracted media files — route by file type
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
