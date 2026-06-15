@@ -26,10 +26,6 @@ on:
 
 permissions:
   contents: read
-  # Needed so the arm64 job can push/pull its registry-backed build cache
-  # to ghcr.io (cache-to/cache-from type=registry).  See the build-arm64
-  # job for why registry cache replaced the gha cache on that arch.
-  packages: write
 
 # Concurrency: push/release runs are NEVER cancelled so every merge gets
 # its own image.  PR runs reuse a PR-scoped group with
@@ -58,6 +54,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
@@ -106,6 +104,8 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Install uv (for docker tests)
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        with:
+          enable-cache: false
 
       - name: Set up Python 3.11 (for docker tests)
         run: uv python install 3.11
@@ -178,53 +178,43 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------
-  # Build arm64 natively on GitHub's free arm64 runner.  This replaces the
-  # previous QEMU-emulated arm64 build, which was ~5-10x slower and shared
-  # a cache scope with amd64.  Matches the amd64 job's shape: build+load,
-  # smoke test, then on push/release push by digest.
+  # Build arm64 natively on GitHub's free arm64 runner for PR validation only.
+  # The publish-capable arm64 path is split into a separate non-PR job below so
+  # pull_request runs never receive a package-write token before executing
+  # repository-local smoke-test actions from the checked-out PR.
   # ---------------------------------------------------------------------------
   build-arm64:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'NousResearch/hermes-agent' && github.event_name == 'pull_request'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
-    outputs:
-      digest: ${{ steps.push.outputs.digest }}
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      # Log in to ghcr.io so the registry-backed build cache below can be
-      # read (cache-from) on every event and written (cache-to) on
-      # push/release.  Uses the workflow's GITHUB_TOKEN, which is valid for
-      # the whole job — unlike the gha cache backend's short-lived Azure SAS
-      # token, which expired mid-build on slow cold-cache arm64 runs and
-      # crashed the build before the smoke test (the reason the gha cache
-      # was removed from arm64 PRs in the first place).
-      - name: Log in to ghcr.io (build cache)
+      # Log in to ghcr.io with read-only package scope so PR builds can pull
+      # the registry-backed arm64 cache without being able to push or poison it.
+      - name: Log in to ghcr.io (read-only build cache)
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build once, load into the local daemon for smoke testing.
-      #
       # PR builds use the registry-backed cache READ-ONLY (cache-from only):
       # they pull warm layers pushed by the most recent main build but never
       # write, so rapid PR pushes don't race on cache writes or pollute the
       # cache ref.  This restores warm-cache speed to arm64 PR builds (which
       # were running fully uncached and were ~45% slower than amd64, making
       # them the job most often cancelled on supersede).
-      #
-      # Registry cache (type=registry on ghcr.io) is used instead of the gha
-      # cache that previously broke here: its credential is the job-lifetime
-      # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
-      # token failure mode cannot recur.
       - name: Build image (arm64, smoke test, cache read-only PR)
-        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
@@ -236,11 +226,55 @@ jobs:
             HERMES_GIT_SHA=${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
 
+      - name: Smoke test image
+        uses: ./.github/actions/hermes-smoke-test
+        with:
+          image: ${{ env.IMAGE_NAME }}:test
+
+  # ---------------------------------------------------------------------------
+  # Build and publish arm64 digests only on main/release events.  This job keeps
+  # packages: write because it writes the registry-backed build cache and pushes
+  # digest artifacts, but it never runs for pull_request.
+  # ---------------------------------------------------------------------------
+  build-arm64-publish:
+    if: github.repository == 'NousResearch/hermes-agent' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    # Needed so the arm64 publish job can push/pull its registry-backed build
+    # cache to ghcr.io (cache-to/cache-from type=registry). See this job for why
+    # registry cache replaced the gha cache on that arch.
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      # Log in to ghcr.io so the registry-backed build cache below can be
+      # read (cache-from) and written (cache-to) on push/release.  Uses the
+      # workflow's GITHUB_TOKEN, which is valid for the whole job — unlike the
+      # gha cache backend's short-lived Azure SAS
+      # token, which expired mid-build on slow cold-cache arm64 runs and
+      # crashed the build before the smoke test (the reason the gha cache
+      # was removed from arm64 PRs in the first place).
+      - name: Log in to ghcr.io (build cache)
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # Main/release builds read AND write the registry cache so the digest
       # push below reuses layers from this smoke-test build, and so the next
       # PR/main build starts warm.
       - name: Build image (arm64, smoke test, cached publish)
-        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
@@ -308,7 +342,7 @@ jobs:
   merge:
     if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
     runs-on: ubuntu-latest
-    needs: [build-amd64, build-arm64]
+    needs: [build-amd64, build-arm64-publish]
     timeout-minutes: 10
     steps:
       - name: Download digests
@@ -329,14 +363,18 @@ jobs:
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           args=()
           for digest_file in *; do
             args+=("${IMAGE_NAME}@sha256:${digest_file}")
           done
-          if [ "${{ github.event_name }}" = "release" ]; then
-            TAG="${{ github.event.release.tag_name }}"
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG="$RELEASE_TAG"
             docker buildx imagetools create \
               -t "${IMAGE_NAME}:${TAG}" \
               "${args[@]}"
@@ -346,15 +384,15 @@ jobs:
               -t "${IMAGE_NAME}:latest" \
               "${args[@]}"
           fi
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
 
       - name: Inspect image
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            docker buildx imagetools inspect "${IMAGE_NAME}:${{ github.event.release.tag_name }}"
+          if [ "$EVENT_NAME" = "release" ]; then
+            docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}"
           else
             docker buildx imagetools inspect "${IMAGE_NAME}:main"
           fi
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
