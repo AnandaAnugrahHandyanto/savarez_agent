@@ -182,6 +182,33 @@ chmod 600 ~/.hermes/cron/jobs.json   # Your user should own it
 
 ## Performance Issues
 
+### Checking run statistics
+
+Every agent-driven cron run records wall-clock elapsed time and token
+usage.  Both the saved output doc and the delivered message include a
+`## Run Statistics` section when output is produced.  Job metadata in
+`jobs.json` stores `last_run_metadata` plus a rolling `run_history` of
+the last 20 runs.
+
+```bash
+# Per-run output doc
+cat ~/.hermes/cron/output/<job_id>/*.md | tail -20
+
+# Per-job metadata (last run + recent history)
+jq '.jobs[] | {id, name, last_run_metadata, run_history}' \
+  ~/.hermes/cron/jobs.json
+```
+
+The `## Run Statistics` section includes elapsed wall-clock time plus every
+token bucket the model reported: `input_tokens`, `output_tokens`,
+`total_tokens`, `prompt_tokens`, `completion_tokens`, `cache_read_tokens`,
+`cache_write_tokens`, and `reasoning_tokens`.
+
+Script-only (`no_agent`) jobs record elapsed time in their output doc (no
+tokens, no `run_history` entry).  Silent watchdog ticks produce no output
+at all — look at `last_run_at` on the job if you need to confirm the
+scheduler is still ticking.
+
 ### Slow job startup
 
 Each cron job creates a fresh AIAgent session, which may involve provider authentication and model loading. For time-sensitive schedules, add buffer time (e.g., `0 8 * * *` instead of `0 9 * * *`).
