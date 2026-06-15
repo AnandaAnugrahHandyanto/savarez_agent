@@ -185,10 +185,9 @@ def test_bot_state_splits_growing_same_speaker_caption_before_it_gets_too_long(t
 
     transcript = (out / "transcript.txt").read_text().splitlines()
     stripped = [line.split("] ", 1)[1] for line in transcript]
-    assert stripped == [
-        f"Alex Rivera: {first_segment}",
-        f"Alex Rivera: {second_segment} {third_segment}",
-    ]
+    final_caption = f"{first_segment} {second_segment} {third_segment}"
+    expected_chunks = state._split_caption_text(final_caption)
+    assert stripped == [f"Alex Rivera: {chunk}" for chunk in expected_chunks]
     assert all(len(line.split(": ", 1)[1]) <= 500 for line in stripped)
 
     status = json.loads((out / "status.json").read_text())
@@ -256,6 +255,121 @@ def test_bot_state_revises_caption_growth_with_punctuation_drift_and_new_row_id(
     transcript = (out / "transcript.txt").read_text().splitlines()
     assert [line.split("] ", 1)[1] for line in transcript] == [
         "Alex Rivera: do not fearful withdrawal, perhaps it's quite possible.",
+    ]
+
+
+def test_bot_state_revises_partial_word_growth_with_new_row_id(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption("Alex Rivera", "Oh, we have to rec?", caption_id="row-a")
+    state.record_caption("Alex Rivera", "Oh we have to recalculate?", caption_id="row-b")
+    state.record_caption(
+        "Alex Rivera",
+        "Oh, we have to recalculate the whole plan.",
+        caption_id="row-c",
+    )
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: Oh, we have to recalculate the whole plan.",
+    ]
+
+
+def test_bot_state_revises_long_split_caption_group_with_word_drift(tmp_path):
+    from plugins.google_meet.meet_bot import MAX_TRANSCRIPT_TEXT_LEN, _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    prefix = " ".join(["alpha"] * 60)
+    original_tail = " ".join(["emergency"] * 35)
+    revised_tail = " ".join(["merge"] * 35)
+    final_tail = " ".join(["access"] * 15)
+    original = f"{prefix} {original_tail}"
+    revised = f"{prefix} {revised_tail} {final_tail}"
+
+    state.record_caption("Alex Rivera", original, caption_id="row-a")
+    state.record_caption("Alex Rivera", revised, caption_id="row-b")
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    stripped = [line.split("] ", 1)[1] for line in transcript]
+    expected_chunks = state._split_caption_text(revised)
+    assert stripped == [f"Alex Rivera: {chunk}" for chunk in expected_chunks]
+    assert all(len(line.split(": ", 1)[1]) <= MAX_TRANSCRIPT_TEXT_LEN for line in stripped)
+
+
+def test_bot_state_revises_caption_growth_with_middle_word_drift(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption(
+        "Alex Rivera",
+        "alpha beta gamma delta old phrase shared tail one two.",
+        caption_id="row-a",
+    )
+    state.record_caption(
+        "Alex Rivera",
+        "alpha beta gamma delta new words shared tail one two three four.",
+        caption_id="row-b",
+    )
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: alpha beta gamma delta new words shared tail one two three four.",
+    ]
+
+
+def test_bot_state_revises_same_length_tail_word_correction(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption("Alex Rivera", "alpha beta gamma delta old", caption_id="row-a")
+    state.record_caption("Alex Rivera", "alpha beta gamma delta new", caption_id="row-b")
+    state.record_caption(
+        "Alex Rivera",
+        "alpha beta gamma delta new words shared tail.",
+        caption_id="row-c",
+    )
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: alpha beta gamma delta new words shared tail.",
+    ]
+
+
+def test_bot_state_keeps_separate_same_speaker_restarts(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption(
+        "Alex Rivera",
+        "Okay we should start with the project timeline.",
+        caption_id="row-a",
+    )
+    state.record_caption(
+        "Alex Rivera",
+        "Okay we should start with the budget instead.",
+        caption_id="row-b",
+    )
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: Okay we should start with the project timeline.",
+        "Alex Rivera: Okay we should start with the budget instead.",
     ]
 
 

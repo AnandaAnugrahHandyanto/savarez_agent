@@ -150,10 +150,10 @@ class _BotState:
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
-        self._seen_transcript_segments: set = set()
         self._transcript_entries: list[tuple[str, str, str, str]] = []
-        self._last_caption_text_by_caption_key: dict[str, str] = {}
-        self._speaker_by_caption_key: dict[str, str] = {}
+        self._caption_groups: list[dict] = []
+        self._caption_group_by_key: dict[str, dict] = {}
+        self._next_caption_group_id = 1
         out_dir.mkdir(parents=True, exist_ok=True)
         self.transcript_path = out_dir / "transcript.txt"
         self.caption_debug_path = out_dir / "caption_debug.jsonl"
@@ -198,10 +198,19 @@ class _BotState:
         return time.strftime("%H:%M:%S", time.localtime(self.last_caption_at))
 
     def _rewrite_transcript(self) -> None:
+        rendered: list[tuple[str, str, str, str]] = []
+        for group in self._caption_groups:
+            speaker = str(group.get("speaker") or "")
+            text = str(group.get("text") or "")
+            ts = str(group.get("ts") or "")
+            group_id = str(group.get("id") or "")
+            for chunk in self._split_caption_text(text):
+                rendered.append((ts, speaker, chunk, group_id))
+        self._transcript_entries = rendered
         with self.transcript_path.open("w", encoding="utf-8") as f:
-            for ts, speaker, text, _caption_key in self._transcript_entries:
+            for ts, speaker, text, _group_id in rendered:
                 f.write(f"[{ts}] {speaker}: {text}\n")
-        self.transcript_lines = len(self._transcript_entries)
+        self.transcript_lines = len(rendered)
 
     @staticmethod
     def _caption_suffix(previous: str, current: str) -> str:
@@ -218,6 +227,35 @@ class _BotState:
     @staticmethod
     def _caption_tokens(text: str) -> list[str]:
         return re.findall(r"[\w']+", (text or "").lower())
+
+    @classmethod
+    def _caption_token_prefix_len(cls, previous: str, current: str) -> int:
+        previous_tokens = cls._caption_tokens(previous)
+        current_tokens = cls._caption_tokens(current)
+        prefix_len = 0
+        for left, right in zip(previous_tokens, current_tokens):
+            if left != right:
+                break
+            prefix_len += 1
+        return prefix_len
+
+    @staticmethod
+    def _caption_token_lcs_len(previous_tokens: list[str], current_tokens: list[str]) -> int:
+        if not previous_tokens or not current_tokens:
+            return 0
+        previous_len = len(previous_tokens)
+        current_len = len(current_tokens)
+        row = [0] * (current_len + 1)
+        for previous_idx in range(previous_len - 1, -1, -1):
+            next_row = row[:]
+            previous_token = previous_tokens[previous_idx]
+            for current_idx in range(current_len - 1, -1, -1):
+                if previous_token == current_tokens[current_idx]:
+                    next_row[current_idx] = 1 + row[current_idx + 1]
+                else:
+                    next_row[current_idx] = max(row[current_idx], next_row[current_idx + 1])
+            row = next_row
+        return row[0]
 
     @classmethod
     def _is_caption_token_prefix(cls, previous: str, current: str) -> bool:
@@ -241,32 +279,34 @@ class _BotState:
             return True
         if cls._is_caption_token_prefix(previous_norm, current_norm):
             return True
+        normalized_previous = " ".join(cls._caption_tokens(previous_norm))
+        normalized_current = " ".join(cls._caption_tokens(current_norm))
+        if normalized_previous and normalized_current.startswith(normalized_previous):
+            return True
+        previous_tokens = cls._caption_tokens(previous_norm)
+        current_tokens = cls._caption_tokens(current_norm)
+        token_prefix_len = cls._caption_token_prefix_len(previous_norm, current_norm)
+        if (
+            len(previous_tokens) == len(current_tokens)
+            and token_prefix_len >= 4
+            and token_prefix_len >= len(previous_tokens) - 1
+        ):
+            return True
+        if len(current_tokens) > len(previous_tokens):
+            if len(previous_tokens) <= 2 and token_prefix_len >= 1:
+                return True
+            if token_prefix_len >= 4 and token_prefix_len >= len(previous_tokens) - 1:
+                return True
+            lcs_len = cls._caption_token_lcs_len(previous_tokens, current_tokens)
+            suffix_overlap = lcs_len - token_prefix_len
+            if (
+                token_prefix_len >= 4
+                and suffix_overlap >= 2
+                and lcs_len >= len(previous_tokens) - 2
+            ):
+                return True
         prefix_len = cls._common_prefix_len(previous_lower, current_lower)
         return prefix_len >= 80 and cls._is_caption_revision(previous_norm, current_norm)
-
-    def _revision_caption_key_for_speaker(
-        self,
-        speaker: str,
-        text: str,
-        *,
-        exclude_caption_key: str,
-    ) -> str:
-        best_key = ""
-        best_score = -1
-        current_norm = re.sub(r"\s+", " ", text or "").strip().lower()
-        for caption_key, previous in self._last_caption_text_by_caption_key.items():
-            if caption_key == exclude_caption_key:
-                continue
-            if self._speaker_by_caption_key.get(caption_key) != speaker:
-                continue
-            if not self._is_cross_caption_key_revision(previous, text):
-                continue
-            previous_norm = re.sub(r"\s+", " ", previous or "").strip().lower()
-            score = self._common_prefix_len(previous_norm, current_norm)
-            if score > best_score:
-                best_key = caption_key
-                best_score = score
-        return best_key
 
     @staticmethod
     def _split_caption_text(text: str) -> list[str]:
@@ -285,73 +325,90 @@ class _BotState:
             chunks.append(remaining)
         return chunks
 
-    def _record_caption_segment(
+    def _new_caption_group(self, speaker: str, text: str, ts: str, caption_key: str) -> dict:
+        group_id = f"caption-group-{self._next_caption_group_id}"
+        self._next_caption_group_id += 1
+        group = {
+            "id": group_id,
+            "speaker": speaker,
+            "text": text,
+            "ts": ts,
+            "caption_keys": {caption_key},
+        }
+        self._caption_groups.append(group)
+        self._caption_group_by_key[caption_key] = group
+        return group
+
+    def _caption_group_revision_score(self, previous: str, current: str) -> int:
+        previous_norm = re.sub(r"\s+", " ", previous or "").strip().lower()
+        current_norm = re.sub(r"\s+", " ", current or "").strip().lower()
+        char_score = self._common_prefix_len(previous_norm, current_norm)
+        token_score = self._caption_token_prefix_len(previous_norm, current_norm) * 1000
+        return token_score + char_score
+
+    def _revision_caption_group_for_speaker(
         self,
         speaker: str,
         text: str,
-        ts: str,
         *,
-        combine_with_previous: bool = False,
-        allow_revision: bool = True,
-        caption_key: str = "",
-    ) -> None:
-        text = (text or "").strip()
-        if not text:
-            return
-        chunks = self._split_caption_text(text)
-        if len(chunks) > 1:
-            for idx, chunk in enumerate(chunks):
-                self._record_caption_segment(
-                    speaker,
-                    chunk,
-                    ts,
-                    combine_with_previous=combine_with_previous and idx == 0,
-                    allow_revision=idx == 0,
-                    caption_key=caption_key,
-                )
-            return
-
-        segment_key = f"{caption_key}|{speaker}|{text}" if caption_key else f"{speaker}|{text}"
-        if segment_key in self._seen_transcript_segments:
-            return
-
-        recent_start = max(0, len(self._transcript_entries) - 24)
-        for idx in range(len(self._transcript_entries) - 1, recent_start - 1, -1):
-            _, previous_speaker, previous_text, previous_caption_key = self._transcript_entries[idx]
-            if caption_key and previous_caption_key != caption_key:
+        exclude_caption_key: str,
+    ) -> Optional[dict]:
+        candidates: list[tuple[int, dict]] = []
+        for group in reversed(self._caption_groups[-24:]):
+            if group.get("speaker") != speaker:
                 continue
-            if previous_speaker != speaker:
+            caption_keys = group.get("caption_keys")
+            if isinstance(caption_keys, set) and exclude_caption_key in caption_keys:
                 continue
+            previous = str(group.get("text") or "")
+            if not self._is_cross_caption_key_revision(previous, text):
+                continue
+            candidates.append((self._caption_group_revision_score(previous, text), group))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+            return None
+        return candidates[0][1]
+
+    def _resolve_caption_group(self, speaker: str, text: str, caption_key: str) -> Optional[dict]:
+        group = self._caption_group_by_key.get(caption_key)
+        if group:
+            previous = str(group.get("text") or "")
             if (
-                allow_revision
-                and self._is_caption_revision(previous_text, text)
-                and len(text) <= MAX_TRANSCRIPT_TEXT_LEN
+                self._same_caption_text(previous, text)
+                or self._is_cross_caption_key_revision(previous, text)
+                or self._is_caption_revision(previous, text)
             ):
-                self._transcript_entries[idx] = (ts, speaker, text, caption_key)
-                self._seen_transcript_segments.add(segment_key)
-                self._rewrite_transcript()
-                return
-            if combine_with_previous:
-                combined = f"{previous_text} {text}".strip()
-                if len(combined) <= MAX_TRANSCRIPT_TEXT_LEN:
-                    self._transcript_entries[idx] = (ts, speaker, combined, caption_key)
-                    combined_key = (
-                        f"{caption_key}|{speaker}|{combined}"
-                        if caption_key
-                        else f"{speaker}|{combined}"
-                    )
-                    self._seen_transcript_segments.add(combined_key)
-                    self._rewrite_transcript()
-                    return
-            break
+                return group
+            return None
+        return self._revision_caption_group_for_speaker(
+            speaker,
+            text,
+            exclude_caption_key=caption_key,
+        )
 
-        self._seen_transcript_segments.add(segment_key)
-        self._transcript_entries.append((ts, speaker, text, caption_key))
-        self.transcript_lines = len(self._transcript_entries)
-        line = f"[{ts}] {speaker}: {text}\n"
-        # Atomic-ish append — good enough for a single-writer.
-        with self.transcript_path.open("a", encoding="utf-8") as f:
-            f.write(line)
+    def _upsert_caption_group(self, speaker: str, text: str, ts: str, caption_key: str) -> bool:
+        group = self._resolve_caption_group(speaker, text, caption_key)
+        if group is None:
+            self._new_caption_group(speaker, text, ts, caption_key)
+            self._rewrite_transcript()
+            return True
+
+        previous = str(group.get("text") or "")
+        caption_keys = group.get("caption_keys")
+        if not isinstance(caption_keys, set):
+            caption_keys = set()
+            group["caption_keys"] = caption_keys
+        caption_keys.add(caption_key)
+        self._caption_group_by_key[caption_key] = group
+        if self._same_caption_text(previous, text):
+            return False
+        group["text"] = text
+        group["speaker"] = speaker
+        group["ts"] = ts
+        self._rewrite_transcript()
+        return True
 
     def record_caption(
         self,
@@ -398,40 +455,7 @@ class _BotState:
             return
         self._seen.add(key)
         ts = self._touch_caption_progress()
-        previous_full = self._last_caption_text_by_caption_key.get(caption_key, "")
-        if not previous_full and caption_id:
-            revision_caption_key = self._revision_caption_key_for_speaker(
-                speaker,
-                text,
-                exclude_caption_key=caption_key,
-            )
-            if revision_caption_key:
-                caption_key = revision_caption_key
-                previous_full = self._last_caption_text_by_caption_key.get(caption_key, "")
-        if previous_full and self._same_caption_text(previous_full, text):
-            self._flush()
-            return
-        self._last_caption_text_by_caption_key[caption_key] = text
-        self._speaker_by_caption_key[caption_key] = speaker
-
-        if previous_full:
-            suffix = self._caption_suffix(previous_full, text)
-            if suffix:
-                self._record_caption_segment(
-                    speaker,
-                    suffix,
-                    ts,
-                    combine_with_previous=True,
-                    caption_key=caption_key,
-                )
-                self._flush()
-                return
-            if self._is_caption_revision(previous_full, text):
-                self._record_caption_segment(speaker, text, ts, caption_key=caption_key)
-                self._flush()
-                return
-
-        self._record_caption_segment(speaker, text, ts, caption_key=caption_key)
+        self._upsert_caption_group(speaker, text, ts, caption_key)
         self._flush()
 
     # -------- status file ----------------------------------------------
