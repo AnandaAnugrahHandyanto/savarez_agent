@@ -265,6 +265,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "glm-4.5",
         "glm-4.5-flash",
+        # Free-tier vision models (1 concurrency, rate-limited)
+        "glm-4.6v-flash",
+        "glm-4v-flash",
+        "glm-4.1v-thinking-flash",
     ],
     "xai": _xai_curated_models(),
     "nvidia": [
