@@ -2018,6 +2018,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2112,7 +2113,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "model": model}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2153,12 +2154,22 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model beats top-level model, which beats config-resolved
+            # delegation model. Whitespace-only strings are treated as omitted
+            # so the next level can supply a value.
+            task_model_raw = t.get("model") if isinstance(t.get("model"), str) else None
+            top_model_raw = model if isinstance(model, str) else None
+            effective_model = (
+                (task_model_raw.strip() if task_model_raw else None)
+                or (top_model_raw.strip() if top_model_raw else None)
+                or creds["model"]
+            )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=effective_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2891,6 +2902,15 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override (e.g. 'anthropic/claude-haiku-4', "
+                                "'openrouter/x-ai/grok-4'). Overrides the top-level 'model' "
+                                "for this task only. When omitted, inherits the top-level "
+                                "model or the configured delegation model."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2903,6 +2923,17 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override the model used by child agents for this call "
+                    "(e.g. 'anthropic/claude-haiku-4', 'openrouter/x-ai/grok-4'). "
+                    "Overrides the configured delegation model. Per-task 'model' "
+                    "in 'tasks[]' beats this top-level value. When omitted, "
+                    "children use delegation.model from config.yaml (or inherit "
+                    "from the parent when no delegation model is configured)."
+                ),
             },
             "acp_command": {
                 "type": "string",
@@ -2948,6 +2979,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

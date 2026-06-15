@@ -36,6 +36,12 @@ class SwarmWorkerSpec:
     skills: list[str] = field(default_factory=list)
     priority: int = 0
     max_runtime_seconds: Optional[int] = None
+    model: Optional[str] = None
+    """Per-worker model override (mirrors ``kb.create_task``'s
+    ``model_override``). When set, the dispatcher spawns this worker
+    with ``hermes -m <model>`` so it uses the requested model instead
+    of ``profile``'s default. Symmetric with the single-task
+    ``hermes kanban create --model`` flag."""
 
 
 @dataclass(frozen=True)
@@ -170,6 +176,7 @@ def create_swarm(
             workspace_path=workspace_path,
             skills=spec.skills or None,
             max_runtime_seconds=spec.max_runtime_seconds,
+            model_override=spec.model,
         )
         worker_ids.append(worker_id)
 
@@ -268,12 +275,24 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
 
 
 def parse_worker_arg(raw: str) -> SwarmWorkerSpec:
-    """Parse CLI ``--worker profile:title[:skill,skill]`` values."""
+    """Parse CLI ``--worker profile:title[:skill,skill][@model]`` values.
 
+    ``@model`` is an optional tail override (e.g. ``coder:Write tests@kimi-k2.7-code``).
+    Empty / missing ``@model`` means "use the profile's default", which
+    is encoded as ``model=None`` on the resulting :class:`SwarmWorkerSpec`.
+    """
+    # Split off optional @model first, then handle profile:title[:skills].
+    model: Optional[str] = None
+    if "@" in raw:
+        raw, _, model_part = raw.partition("@")
+        model = model_part.strip() or None
     parts = [p.strip() for p in raw.split(":", 2)]
     if len(parts) < 2:
         raise ValueError("worker must be profile:title or profile:title:skill,skill")
     skills: list[str] = []
     if len(parts) == 3 and parts[2]:
         skills = [s.strip() for s in parts[2].split(",") if s.strip()]
-    return SwarmWorkerSpec(profile=parts[0], title=parts[1], body=parts[1], skills=skills)
+    return SwarmWorkerSpec(
+        profile=parts[0], title=parts[1], body=parts[1],
+        skills=skills, model=model,
+    )

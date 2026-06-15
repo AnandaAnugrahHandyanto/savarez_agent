@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli import kanban_pipeline as kp
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
@@ -79,6 +80,13 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        # Per-task model override (added in this branch to surface the
+        # column in `hermes kanban create --json` and `hermes kanban show
+        # --json`). The dispatcher uses this when spawning the worker;
+        # surfacing it lets callers verify the override without reading
+        # the SQLite DB directly. The dispatcher cmd's `-m <model>` is
+        # added at kanban_db.py:6843 when this field is truthy.
+        "model_override": t.model_override,
     }
 
 
@@ -307,6 +315,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("title", help="Task title")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
+    p_create.add_argument("--model", dest="model_override", default=None,
+                          help="Override the assignee profile's default model for "
+                               "this task only. The dispatcher passes `-m <model>` "
+                               "to the spawned worker (so `hermes kanban show` and "
+                               "the worker log reflect the requested model id). "
+                               "Use this for one-off model swaps without creating a "
+                               "new profile; for stable routing, prefer a dedicated "
+                               "profile (e.g. --assignee coder for kimi-k2.7-code).")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
     p_create.add_argument("--workspace", default="scratch",
@@ -383,6 +399,33 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
     p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
     p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- pipeline (4-profile orchestration preset) ---
+    p_pipeline = sub.add_parser(
+        "pipeline",
+        help="Create a Kanban Pipeline graph: parallel fan-out of the 4-profile "
+             "(coder / reviewer / researcher / analyst) preset. Simpler than "
+             "`swarm` (no verifier/synthesizer step) — the 4 roles ARE the "
+             "verification + synthesis.",
+    )
+    p_pipeline.add_argument("goal", help="The multi-role job to do. Becomes the goal "
+                                          "in every child card's body and the root title.")
+    p_pipeline.add_argument("--preset", default="4-profile",
+                            help="Pipeline preset (default: 4-profile). "
+                                 "Preset choices are resolved at handler time.")
+    p_pipeline.add_argument("--coder-model", default=None,
+                            help="Override the coder's model (default: kimi-k2.7-code)")
+    p_pipeline.add_argument("--reviewer-model", default=None,
+                            help="Override the reviewer's model (default: glm-5.1)")
+    p_pipeline.add_argument("--researcher-model", default=None,
+                            help="Override the researcher's model (default: deepseek-v4-pro)")
+    p_pipeline.add_argument("--analyst-model", default=None,
+                            help="Override the analyst's model (default: deepseek-v4-flash)")
+    p_pipeline.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_pipeline.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_pipeline.add_argument("--created-by", default=None, help="Author profile for the root card")
+    p_pipeline.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
+    p_pipeline.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
@@ -924,6 +967,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "init":     _cmd_init,
             "create":   _cmd_create,
             "swarm":    _cmd_swarm,
+            "pipeline": _cmd_pipeline,
             "list":     _cmd_list,
             "ls":       _cmd_list,
             "show":     _cmd_show,
@@ -1346,6 +1390,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            model_override=getattr(args, "model_override", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1395,6 +1440,54 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         print("Workers: " + ", ".join(created.worker_ids))
         print(f"Verifier: {created.verifier_id}")
         print(f"Synthesizer: {created.synthesizer_id}")
+    return 0
+
+
+def _cmd_pipeline(args: argparse.Namespace) -> int:
+    """Create a Kanban Pipeline graph from a registered preset.
+
+    Mirrors the structure of :func:`_cmd_swarm` but uses the preset
+    (4-profile by default) to fill in the worker spec list, so the user
+    does not need to know which model each role needs — the preset
+    encodes the validated model + skill mapping.
+
+    Per-role model overrides (``--coder-model``, ``--reviewer-model``,
+    ``--researcher-model``, ``--analyst-model``) win over the preset
+    defaults. Per-role skill overrides are not yet exposed on the CLI
+    (the 4-profile preset has fixed skills per role; future presets
+    with variable skills can add ``--coder-skill`` flags here).
+    """
+    overrides: dict[str, dict[str, Any]] = {}
+    if args.coder_model:
+        overrides.setdefault("coder", {})["model"] = args.coder_model
+    if args.reviewer_model:
+        overrides.setdefault("reviewer", {})["model"] = args.reviewer_model
+    if args.researcher_model:
+        overrides.setdefault("researcher", {})["model"] = args.researcher_model
+    if args.analyst_model:
+        overrides.setdefault("analyst", {})["model"] = args.analyst_model
+
+    try:
+        with kb.connect_closing() as conn:
+            created = kp.create_pipeline(
+                conn,
+                goal=args.goal,
+                preset=args.preset,
+                overrides=overrides or None,
+                tenant=args.tenant,
+                created_by=args.created_by or _profile_author(),
+                priority=args.priority,
+                idempotency_key=getattr(args, "idempotency_key", None),
+            )
+    except ValueError as exc:
+        print(f"kanban pipeline: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"Pipeline root: {created.root_id}  (preset: {created.preset})")
+        for role, tid in created.worker_ids.items():
+            print(f"  {role:11s} {tid}")
     return 0
 
 
