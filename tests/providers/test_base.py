@@ -220,8 +220,10 @@ class TestFetchModels:
         p.fetch_models()
 
         req = mock_urlopen.call_args[0][0]
-        assert req.get_header("X-Custom") == "value"
-        assert req.get_header("X-API-Version") == "2"
+        # urllib.request.Request normalises header names on add_header()
+        # so X-Custom becomes X-custom. get_header() is case-sensitive.
+        assert req.get_header("X-custom") == "value"
+        assert req.get_header("X-api-version") == "2"
 
     @mock.patch("urllib.request.urlopen")
     def test_parses_list_response(self, mock_urlopen):
