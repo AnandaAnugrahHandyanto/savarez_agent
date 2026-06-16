@@ -289,6 +289,8 @@ export const zh: Translations = {
       intro: '这些是仅桌面端的显示偏好。模式控制明暗；主题控制强调色与对话界面样式。',
       colorMode: '颜色模式',
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
+      textScaleTitle: '文字缩放',
+      textScaleDesc: '调整桌面界面大小。Cmd/Ctrl +/- 会使用同一保存设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       translucencyTitle: '窗口透明',

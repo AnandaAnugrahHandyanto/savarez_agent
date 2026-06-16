@@ -10,6 +10,14 @@ import { cn } from '@/lib/utils'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
+import {
+  $zoomLevel,
+  MAX_ZOOM_PERCENT,
+  MIN_ZOOM_PERCENT,
+  setZoomPercent,
+  ZOOM_PERCENT_STEP,
+  zoomLevelToPercent
+} from '@/store/zoom'
 import { useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -137,6 +145,8 @@ export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const translucency = useStore($translucency)
+  const zoomLevel = useStore($zoomLevel)
+  const zoomPercent = zoomLevelToPercent(zoomLevel)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
@@ -183,6 +193,32 @@ export function AppearanceSettings() {
             }
             description={a.colorModeDesc}
             title={a.colorMode}
+          />
+
+          <ListRow
+            action={
+              <div className="flex items-center gap-3">
+                <input
+                  aria-label={a.textScaleTitle}
+                  className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+                  max={MAX_ZOOM_PERCENT}
+                  min={MIN_ZOOM_PERCENT}
+                  onChange={event => {
+                    triggerHaptic('selection')
+                    void setZoomPercent(Number(event.target.value))
+                  }}
+                  step={ZOOM_PERCENT_STEP}
+                  style={{ accentColor: 'var(--dt-primary)' }}
+                  type="range"
+                  value={zoomPercent}
+                />
+                <span className="w-12 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                  {zoomPercent}%
+                </span>
+              </div>
+            }
+            description={a.textScaleDesc}
+            title={a.textScaleTitle}
           />
 
           <ListRow

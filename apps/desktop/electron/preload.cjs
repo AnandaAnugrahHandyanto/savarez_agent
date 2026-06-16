@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
+  getZoomLevel: () => ipcRenderer.invoke('hermes:zoom:get'),
+  setZoomLevel: payload => ipcRenderer.invoke('hermes:zoom:set', payload),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
@@ -93,6 +95,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:window-state-changed', listener)
     return () => ipcRenderer.removeListener('hermes:window-state-changed', listener)
+  },
+  onZoomChanged: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:zoom-changed', listener)
+    return () => ipcRenderer.removeListener('hermes:zoom-changed', listener)
   },
   onPreviewFileChanged: callback => {
     const listener = (_event, payload) => callback(payload)

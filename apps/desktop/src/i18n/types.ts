@@ -211,6 +211,8 @@ export interface Translations {
       intro: string
       colorMode: string
       colorModeDesc: string
+      textScaleTitle: string
+      textScaleDesc: string
       toolViewTitle: string
       toolViewDesc: string
       translucencyTitle: string

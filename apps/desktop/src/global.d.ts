@@ -56,6 +56,8 @@ declare global {
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
+      getZoomLevel?: () => Promise<{ zoomLevel: number }>
+      setZoomLevel?: (payload: { zoomLevel: number }) => Promise<{ zoomLevel: number }>
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
@@ -88,6 +90,7 @@ declare global {
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
+      onZoomChanged?: (callback: (payload: { zoomLevel: number }) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       onPowerResume?: (callback: () => void) => () => void

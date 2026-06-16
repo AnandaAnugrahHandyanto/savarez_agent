@@ -3516,6 +3516,17 @@ function clampZoomLevel(value) {
   return Math.min(Math.max(value, -9), 9)
 }
 
+function broadcastZoomLevelChanged(zoomLevel) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win || win.isDestroyed()) continue
+    try {
+      win.webContents.send('hermes:zoom-changed', { zoomLevel })
+    } catch {
+      // Window may be navigating; the next settings open refreshes from IPC.
+    }
+  }
+}
+
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) return
   const next = clampZoomLevel(zoomLevel)
@@ -3525,6 +3536,7 @@ function setAndPersistZoomLevel(window, zoomLevel) {
       `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
     )
     .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
+  broadcastZoomLevelChanged(next)
 }
 
 function restorePersistedZoomLevel(window) {
@@ -3537,6 +3549,7 @@ function restorePersistedZoomLevel(window) {
       if (stored == null || !window || window.isDestroyed()) return
       const level = clampZoomLevel(Number(stored))
       window.webContents.setZoomLevel(level)
+      broadcastZoomLevelChanged(level)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
@@ -5043,6 +5056,7 @@ function wireCommonWindowHandlers(win) {
   installDevToolsShortcut(win)
   installZoomShortcuts(win)
   installContextMenu(win)
+  win.webContents.on('did-finish-load', () => restorePersistedZoomLevel(win))
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
 
@@ -5256,7 +5270,6 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
-    restorePersistedZoomLevel(mainWindow)
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
@@ -5748,6 +5761,14 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   for (const win of BrowserWindow.getAllWindows()) {
     applyWindowTranslucency(win)
   }
+})
+
+ipcMain.handle('hermes:zoom:get', async event => ({ zoomLevel: event.sender.getZoomLevel() }))
+ipcMain.handle('hermes:zoom:set', async (event, payload) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  setAndPersistZoomLevel(win, payload && payload.zoomLevel)
+
+  return { zoomLevel: win && !win.isDestroyed() ? win.webContents.getZoomLevel() : 0 }
 })
 
 ipcMain.handle('hermes:openExternal', (_event, url) => {

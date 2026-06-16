@@ -294,6 +294,8 @@ export const en: Translations = {
         'These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and chat surface styling.',
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
+      textScaleTitle: 'Text Scale',
+      textScaleDesc: 'Adjust the desktop UI size. Cmd/Ctrl +/- changes use the same saved setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       translucencyTitle: 'Window Translucency',
