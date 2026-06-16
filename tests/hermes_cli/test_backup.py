@@ -1888,3 +1888,76 @@ class TestRestoreCronJobsIfEmptied:
         result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
         assert result is not None
         assert result["job_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# .env auto-restore after update/config migration loss (issue #26804)
+# ---------------------------------------------------------------------------
+
+class TestRestoreEnvKeysIfRemoved:
+    """`hermes update` snapshots `.env` before migration. If the migration
+    drops user-owned keys, the post-update safety net should merge them back
+    from the pre-update snapshot while keeping current/live values authoritative
+    for keys that still exist."""
+
+    def _make_snapshot(self, hermes_home: Path, label="pre-update"):
+        from hermes_cli.backup import create_quick_snapshot
+        return create_quick_snapshot(label=label, hermes_home=hermes_home, keep=5)
+
+    def test_restores_missing_user_env_keys_from_pre_update_snapshot(self, tmp_path):
+        from hermes_cli.backup import restore_env_keys_if_removed
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        env_path = hermes_home / ".env"
+        env_path.write_text(
+            "OPENROUTER_API_KEY=sk-live\n"
+            "TELEGRAM_BOT_TOKEN=12345:abc\n"
+            "DEEPSEEK_API_KEY=ds-old\n",
+            encoding="utf-8",
+        )
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Simulate a post-update template rewrite that kept only a known key.
+        env_path.write_text("OPENROUTER_API_KEY=sk-rotated\n", encoding="utf-8")
+
+        result = restore_env_keys_if_removed(snap_id, hermes_home=hermes_home)
+
+        assert result is not None
+        assert result["restored"] is True
+        assert result["key_count"] == 2
+        assert result["keys"] == ["TELEGRAM_BOT_TOKEN", "DEEPSEEK_API_KEY"]
+        assert result["snapshot_id"] == snap_id
+
+        saved = env_path.read_text(encoding="utf-8")
+        assert "OPENROUTER_API_KEY=sk-rotated" in saved
+        assert "TELEGRAM_BOT_TOKEN=12345:abc" in saved
+        assert "DEEPSEEK_API_KEY=ds-old" in saved
+        assert "OPENROUTER_API_KEY=sk-live" not in saved
+
+    def test_noop_when_live_env_still_has_snapshot_keys(self, tmp_path):
+        from hermes_cli.backup import restore_env_keys_if_removed
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        env_path = hermes_home / ".env"
+        env_path.write_text(
+            "OPENROUTER_API_KEY=sk-live\n"
+            "TELEGRAM_BOT_TOKEN=12345:abc\n",
+            encoding="utf-8",
+        )
+        snap_id = self._make_snapshot(hermes_home)
+
+        assert restore_env_keys_if_removed(snap_id, hermes_home=hermes_home) is None
+        assert env_path.read_text(encoding="utf-8") == (
+            "OPENROUTER_API_KEY=sk-live\n"
+            "TELEGRAM_BOT_TOKEN=12345:abc\n"
+        )
+
+    def test_noop_without_pre_update_snapshot(self, tmp_path):
+        from hermes_cli.backup import restore_env_keys_if_removed
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("OPENROUTER_API_KEY=sk-live\n", encoding="utf-8")
+
+        assert restore_env_keys_if_removed(None, hermes_home=hermes_home) is None
+        assert restore_env_keys_if_removed("", hermes_home=hermes_home) is None

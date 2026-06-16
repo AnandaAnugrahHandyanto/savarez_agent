@@ -11,6 +11,7 @@ HERMES_HOME root.
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -691,6 +692,8 @@ def restore_quick_snapshot(
 # Relative path of the cron job database inside HERMES_HOME. Kept in sync with
 # the entry in ``_QUICK_STATE_FILES`` and with ``cron/jobs.py``'s ``JOBS_FILE``.
 _CRON_JOBS_REL = "cron/jobs.json"
+_ENV_FILE_REL = ".env"
+_ENV_ASSIGNMENT_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
 def _count_cron_jobs(path: Path) -> Optional[int]:
@@ -785,6 +788,111 @@ def restore_cron_jobs_if_emptied(
         snapshot_id,
     )
     return {"restored": True, "job_count": snap_count, "snapshot_id": snapshot_id}
+
+
+def _read_env_key_lines(path: Path) -> Optional[Dict[str, str]]:
+    """Return the first assignment line for each env key in ``path``.
+
+    ``None`` means the file could not be read and callers should avoid acting.
+    Comments, blank lines, and malformed lines are ignored. The line text is
+    preserved verbatim except for the trailing newline so recovery can append
+    the user's original value without reformatting or expanding secrets.
+    """
+    if not path.exists():
+        return {}
+    if not path.is_file():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    key_lines: Dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _ENV_ASSIGNMENT_RE.match(line)
+        if not match:
+            continue
+        key = match.group(1)
+        key_lines.setdefault(key, line)
+    return key_lines
+
+
+def restore_env_keys_if_removed(
+    snapshot_id: str,
+    hermes_home: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Restore env assignments that disappeared during ``hermes update``.
+
+    Issue #26804 showed update/config-migration paths can drop user-owned
+    ``.env`` keys while leaving a valid but incomplete file. The pre-update
+    quick snapshot already captures ``.env``; this safety net compares key
+    presence after migration and appends any assignments that existed before
+    the update but are now missing. Existing live keys always win, so rotated
+    or intentionally changed values are not overwritten.
+
+    Returns:
+        ``None`` when no action was taken. On restore, returns
+        ``{"restored": True, "key_count": N, "keys": [...], "snapshot_id": ...}``.
+    """
+    if not snapshot_id:
+        return None
+
+    home = hermes_home or get_hermes_home()
+    live_path = home / _ENV_FILE_REL
+    snap_path = _quick_snapshot_root(home) / snapshot_id / _ENV_FILE_REL
+
+    snapshot_keys = _read_env_key_lines(snap_path)
+    if not snapshot_keys:
+        return None
+
+    live_keys = _read_env_key_lines(live_path)
+    if live_keys is None:
+        return None
+
+    missing_keys = [key for key in snapshot_keys if key not in live_keys]
+    if not missing_keys:
+        return None
+
+    try:
+        live_text = live_path.read_text(encoding="utf-8") if live_path.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    additions = [snapshot_keys[key] for key in missing_keys]
+    updated_text = live_text
+    if updated_text and not updated_text.endswith("\n"):
+        updated_text += "\n"
+    updated_text += "\n".join(additions) + "\n"
+
+    try:
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        live_path.write_text(updated_text, encoding="utf-8")
+        try:
+            live_path.chmod(0o600)
+        except OSError:
+            pass
+    except (OSError, PermissionError) as exc:
+        logger.error(
+            ".env keys were removed during update but auto-restore failed: %s",
+            exc,
+        )
+        return None
+
+    logger.warning(
+        "Restored %d .env key(s) from pre-update snapshot %s: %s",
+        len(missing_keys),
+        snapshot_id,
+        ", ".join(missing_keys),
+    )
+    return {
+        "restored": True,
+        "key_count": len(missing_keys),
+        "keys": missing_keys,
+        "snapshot_id": snapshot_id,
+    }
 
 
 def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
