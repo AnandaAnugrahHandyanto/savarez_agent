@@ -496,7 +496,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
             <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
             {reasoningSupported && (
-              <label className="flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-2 text-xs">
                 {m.reasoning}
                 <Select onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)} value={effortValue}>
                   <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
@@ -510,7 +510,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     ))}
                   </SelectContent>
                 </Select>
-              </label>
+              </div>
             )}
             {fastSupported && (
               <label className="flex items-center gap-2 text-xs">
