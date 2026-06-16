@@ -1499,6 +1499,12 @@ DEFAULT_CONFIG = {
         # responses and content messages are never touched.  Default 0
         # (disabled) preserves prior behavior.
         "ephemeral_system_ttl": 0,
+        # Follow-up question suggestions. When enabled, the agent appends
+        # 2-N contextual follow-up questions after each response, similar
+        # to Claude.ai's suggestion UI. Gated by config so users who find
+        # it noisy can turn it off.
+        "followup_questions": False,
+        "followup_count": 3,         # number of suggestions (2-5)
         # Per-platform display/streaming overrides. Each key is a gateway
         # platform ("telegram", "discord", "slack", …) mapping to a dict of
         # display settings that override the global value for that platform

@@ -319,6 +319,31 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # Follow-up question suggestions. When display.followup_questions is
+    # enabled, instruct the model to append contextual follow-up questions
+    # at the end of each response. Stable for the lifetime of the agent
+    # (config doesn't change mid-session).
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _disp = _cfg.get("display", {}) if isinstance(_cfg.get("display"), dict) else {}
+        _fu_enabled = _disp.get("followup_questions", False)
+        _fu_count = max(2, min(5, int(_disp.get("followup_count", 3))))
+    except Exception:
+        _fu_enabled = False
+        _fu_count = 3
+    if _fu_enabled:
+        stable_parts.append(
+            f"After each response, suggest {_fu_count} relevant follow-up "
+            f"questions the user might want to ask next. Present them as a "
+            f"numbered list at the end of your response, separated by a blank "
+            f"line, under a heading like \"**Suggested follow-ups:**\". "
+            f"Questions should be concise, contextual, and help the user "
+            f"explore the topic further. Do not include follow-ups when the "
+            f"response is a simple acknowledgment, greeting, or when the "
+            f"conversation has clearly concluded."
+        )
+
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
 
