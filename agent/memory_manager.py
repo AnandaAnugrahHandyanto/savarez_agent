@@ -32,6 +32,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
+from agent.memory_governance import (
+    govern_candidates,
+    normalize_candidates,
+    render_governed_context,
+    sanitize_legacy_context,
+)
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
@@ -430,16 +436,70 @@ class MemoryManager:
 
     # -- Prefetch / recall ---------------------------------------------------
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
-        """Collect prefetch context from all providers.
+    @staticmethod
+    def _provider_prefetch_candidates(provider: MemoryProvider, query: str, *, session_id: str = "") -> Optional[List[Any]]:
+        """Return optional structured recall candidates from a provider.
 
-        Returns merged context text labeled by provider. Empty providers
-        are skipped. Failures in one provider don't block others.
+        ``prefetch_candidates`` is deliberately optional so existing providers
+        remain compatible.  Returning ``None`` means the provider does not
+        support structured candidates; raising is handled by the caller so it
+        can fall back to legacy ``prefetch``.
+        """
+        method = getattr(provider, "prefetch_candidates", None)
+        if method is None or not callable(method):
+            return None
+        # The base-class no-op exists for documentation/type checking. Treat it
+        # as "capability not implemented" so legacy providers still use prefetch().
+        if getattr(provider.__class__, "prefetch_candidates", None) is MemoryProvider.prefetch_candidates:
+            return None
+        result = method(query, session_id=session_id)
+        if result is None:
+            return []
+        if isinstance(result, list):
+            return result
+        if isinstance(result, tuple):
+            return list(result)
+        return [result]
+
+    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+        """Collect governed prefetch context from all providers.
+
+        Providers that expose optional structured candidates are filtered,
+        reranked, and redacted before rendering. Legacy text-only providers
+        remain supported with best-effort redaction/sanitization. Failures in
+        one provider don't block others.
         """
         parts = []
         for provider in self._providers:
             try:
+                raw_candidates = self._provider_prefetch_candidates(
+                    provider, query, session_id=session_id
+                )
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' prefetch_candidates failed; falling back to legacy prefetch: %s",
+                    provider.name, e,
+                )
+                raw_candidates = None
+
+            if raw_candidates is not None:
+                try:
+                    candidates = normalize_candidates(raw_candidates, provider=provider.name)
+                    governed = govern_candidates(candidates, query)
+                    result = render_governed_context(provider.name, governed)
+                    if result and result.strip():
+                        parts.append(result)
+                    continue
+                except Exception as e:
+                    logger.debug(
+                        "Memory provider '%s' governed prefetch failed (non-fatal): %s",
+                        provider.name, e,
+                    )
+                    continue
+
+            try:
                 result = provider.prefetch(query, session_id=session_id)
+                result = sanitize_legacy_context(result)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:

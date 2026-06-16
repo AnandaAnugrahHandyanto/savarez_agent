@@ -3386,6 +3386,70 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_governed_memory_candidates_are_injected_with_session_scope(self, agent, monkeypatch):
+        """Conversation loop should inject governed structured memory into the API request.
+
+        This is the integration seam above MemoryManager unit tests: a provider
+        gets the live session_id, returns structured candidates, core governance
+        filters them, and only the governed context is appended to the current
+        API-call user message without mutating the persisted conversation.
+        """
+        from agent.memory_manager import MemoryManager
+        from tests.agent.test_memory_provider import CandidateMemoryProvider
+
+        self._setup_agent(agent)
+        monkeypatch.setenv("HERMES_PROFILE", "default")
+        provider = CandidateMemoryProvider(candidates=[
+            {
+                "content": "Hermes memory governance injects current session scoped context.",
+                "profile": "default",
+                "trust_score": 0.9,
+                "tags": "current,hermes-memory",
+            },
+            {
+                "content": "Researcher profile memory must not enter default session context.",
+                "profile": "researcher",
+                "trust_score": 1.0,
+            },
+            {
+                "content": "Hermes memory governance old raw injection contract.",
+                "profile": "default",
+                "status": "superseded",
+                "trust_score": 1.0,
+            },
+        ])
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+        agent._memory_manager = mgr
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch.object(agent, "_persist_session") as persist_mock,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("what is the current Hermes memory governance contract?")
+
+        assert result["final_response"] == "Final answer"
+        assert provider.candidate_queries == [(
+            "what is the current Hermes memory governance contract?",
+            agent.session_id,
+        )]
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_messages = [m for m in sent_messages if m.get("role") == "user"]
+        assert len(user_messages) == 1
+        sent_user_content = user_messages[0]["content"]
+        assert "<memory-context>" in sent_user_content
+        assert "current session scoped context" in sent_user_content
+        assert "Researcher profile memory" not in sent_user_content
+        assert "old raw injection contract" not in sent_user_content
+        persisted_messages = persist_mock.call_args.args[0]
+        assert persisted_messages[0]["content"] == "what is the current Hermes memory governance contract?"
+        assert "memory-context" not in persisted_messages[0]["content"]
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"
