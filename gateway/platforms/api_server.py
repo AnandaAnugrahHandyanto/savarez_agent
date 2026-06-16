@@ -1172,6 +1172,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                "kanban_api": True,
+                "kanban_read": True,
+                "kanban_write": True,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -1200,6 +1203,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "kanban_tasks": {"method": "GET", "path": "/api/kanban/tasks"},
+                "kanban_task_create": {"method": "POST", "path": "/api/kanban/tasks"},
+                "kanban_task": {"method": "GET", "path": "/api/kanban/tasks/{task_id}"},
+                "kanban_task_patch": {"method": "PATCH", "path": "/api/kanban/tasks/{task_id}"},
+                "kanban_task_assign": {"method": "POST", "path": "/api/kanban/tasks/{task_id}/assign"},
+                "kanban_task_comment": {"method": "POST", "path": "/api/kanban/tasks/{task_id}/comment"},
+                "kanban_assignees": {"method": "GET", "path": "/api/kanban/assignees"},
+                "kanban_dispatch_state": {"method": "GET", "path": "/api/kanban/dispatch/state"},
             },
         })
 
@@ -4196,6 +4207,19 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Kanban board API (read/write the shared kanban over bearer auth).
+            # Handlers live in a dedicated module; registered here so the
+            # change to this file is additive (import + routes only).
+            from functools import partial
+            from gateway.platforms import kanban_api
+            self._app.router.add_get("/api/kanban/tasks", partial(kanban_api.handle_list_tasks, self))
+            self._app.router.add_post("/api/kanban/tasks", partial(kanban_api.handle_create_task, self))
+            self._app.router.add_get("/api/kanban/assignees", partial(kanban_api.handle_assignees, self))
+            self._app.router.add_get("/api/kanban/dispatch/state", partial(kanban_api.handle_dispatch_state, self))
+            self._app.router.add_get("/api/kanban/tasks/{task_id}", partial(kanban_api.handle_get_task, self))
+            self._app.router.add_patch("/api/kanban/tasks/{task_id}", partial(kanban_api.handle_patch_task, self))
+            self._app.router.add_post("/api/kanban/tasks/{task_id}/assign", partial(kanban_api.handle_assign_task, self))
+            self._app.router.add_post("/api/kanban/tasks/{task_id}/comment", partial(kanban_api.handle_comment_task, self))
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
