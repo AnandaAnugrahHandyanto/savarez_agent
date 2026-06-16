@@ -2390,6 +2390,39 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertIn("截图说明", captured["message_request"].request_body.content)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_image_file_rejects_oversized_image_before_upload(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _ImageAPI:
+            def create(self, request):
+                raise AssertionError("oversized image must not reach upload API")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    image=_ImageAPI(),
+                    message=SimpleNamespace(),
+                )
+            )
+        )
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".png", delete=False) as tmp:
+            tmp.write(b"12345")
+            image_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu._FEISHU_IMAGE_UPLOAD_LIMIT_BYTES", 4):
+                result = asyncio.run(adapter.send_image_file(chat_id="oc_chat", image_path=image_path))
+        finally:
+            os.unlink(image_path)
+
+        self.assertFalse(result.success)
+        self.assertIn("exceeds Feishu image limit", result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_video_uploads_file_and_sends_media_message(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -2439,6 +2472,72 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(captured["upload_request"].request_body.file_type, "mp4")
         self.assertEqual(captured["message_request"].request_body.msg_type, "media")
         self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_video_123"}')
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_video_rejects_oversized_video_before_upload(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _FileAPI:
+            def create(self, request):
+                raise AssertionError("oversized video must not reach upload API")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=SimpleNamespace(),
+                )
+            )
+        )
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".mp4", delete=False) as tmp:
+            tmp.write(b"12345")
+            video_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu._FEISHU_VIDEO_UPLOAD_LIMIT_BYTES", 4):
+                result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
+        finally:
+            os.unlink(video_path)
+
+        self.assertFalse(result.success)
+        self.assertIn("exceeds Feishu video limit", result.error)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_document_rejects_oversized_file_before_upload(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _FileAPI:
+            def create(self, request):
+                raise AssertionError("oversized file must not reach upload API")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=SimpleNamespace(),
+                )
+            )
+        )
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+            tmp.write(b"12345")
+            file_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu._FEISHU_DOCUMENT_UPLOAD_LIMIT_BYTES", 4):
+                result = asyncio.run(adapter.send_document(chat_id="oc_chat", file_path=file_path))
+        finally:
+            os.unlink(file_path)
+
+        self.assertFalse(result.success)
+        self.assertIn("exceeds Feishu file limit", result.error)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_voice_uploads_opus_and_sends_audio_message(self):
