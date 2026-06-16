@@ -3850,21 +3850,40 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     if not pids:
         return
 
+    # Capture the gateway's own process group at call time so _send_signal
+    # can refuse to killpg() a group that includes the gateway itself.
+    # MCP children spawned with start_new_session=True get their own pgid,
+    # but at least one code path can leave a child in the gateway's group.
+    _getpgid = getattr(os, "getpgid", None)
+    _gateway_pgid: int | None = _getpgid(os.getpid()) if _getpgid else None
+
     def _send_signal(pid: int, sig: int, server_name: str) -> None:
         """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
         pgid = pgids.get(pid)
         killpg = getattr(os, "killpg", None)
         if pgid is not None and killpg is not None:
-            try:
-                killpg(pgid, sig)
-                return
-            except (ProcessLookupError, PermissionError, OSError) as exc:
-                # Pgroup gone (all members exited) or refused — fall back to
-                # the per-pid path so we still try the direct child if alive.
-                logger.debug(
-                    "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
-                    pgid, sig, server_name, exc,
+            # Guard: never send a group signal to our own process group.
+            # If a tracked MCP pid shares the gateway's pgid (e.g. it was
+            # spawned without start_new_session=True), killpg would deliver
+            # SIGTERM to the gateway itself, triggering its SIGTERM handler
+            # and crashing the session (issue #47134).
+            if _gateway_pgid is not None and pgid == _gateway_pgid:
+                logger.warning(
+                    "Refusing killpg(%d, %d) for MCP server '%s': "
+                    "pgid matches gateway's own process group — using per-pid kill instead",
+                    pgid, sig, server_name,
                 )
+            else:
+                try:
+                    killpg(pgid, sig)
+                    return
+                except (ProcessLookupError, PermissionError, OSError) as exc:
+                    # Pgroup gone (all members exited) or refused — fall back to
+                    # the per-pid path so we still try the direct child if alive.
+                    logger.debug(
+                        "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
+                        pgid, sig, server_name, exc,
+                    )
         try:
             os.kill(pid, sig)
         except (ProcessLookupError, PermissionError, OSError):
