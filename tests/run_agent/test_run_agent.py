@@ -97,6 +97,22 @@ def agent_with_memory_tool():
         return a
 
 
+def test_dispatch_delegate_task_forwards_background_flag(agent):
+    """AIAgent's delegate_task dispatch must preserve async background requests."""
+    with patch("tools.delegate_tool.delegate_task", return_value="ok") as mock_delegate:
+        assert agent._dispatch_delegate_task(
+            {
+                "goal": "slow background task",
+                "context": "context",
+                "toolsets": ["web"],
+                "role": "leaf",
+                "background": True,
+            }
+        ) == "ok"
+
+    assert mock_delegate.call_args.kwargs["background"] is True
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
