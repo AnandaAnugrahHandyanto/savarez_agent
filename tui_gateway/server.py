@@ -152,13 +152,14 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 # lingers forever — one leaked python process per refresh (#38591 fallout).
 # After this grace window, an orphaned (transport-detached, not-running) WS
 # session is reaped: its _SlashWorker is closed and the session finalized.
-# Set to 0 to disable (park forever, pre-fix behaviour).
+# Set to 0 to disable (park forever).  Default bumped to 3600s (1h)
+# so laptop sleep/wake doesn't orphan a session.
 try:
     _ws_orphan_reap_grace = float(
-        os.environ.get("HERMES_TUI_WS_ORPHAN_REAP_GRACE_S") or "20"
+        os.environ.get("HERMES_TUI_WS_ORPHAN_REAP_GRACE_S") or "3600"
     )
 except (ValueError, TypeError):
-    _ws_orphan_reap_grace = 20.0
+    _ws_orphan_reap_grace = 3600.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
