@@ -772,7 +772,14 @@ class SessionDB:
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
         err = str(exc).lower()
-        return "no such module" in err and "fts5" in err
+        # "no such module: fts5" — entire fts5 extension is absent.
+        if "no such module" in err and "fts5" in err:
+            return True
+        # "no such tokenizer: trigram" — fts5 exists but the optional trigram
+        # tokenizer is not compiled in (e.g. SQLite < 3.34 or stripped builds).
+        if "no such tokenizer" in err:
+            return True
+        return False
 
     def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
         self._fts_enabled = False
@@ -868,7 +875,19 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             if not self._is_fts5_unavailable_error(exc):
                 raise
-            self._warn_fts5_unavailable(exc)
+            err = str(exc).lower()
+            if "no such tokenizer" in err:
+                # Only the optional trigram tokenizer is missing; the base fts5
+                # porter-stemmer index still works.  Log at INFO (not WARNING)
+                # and do NOT clear _fts_enabled so callers that only need base
+                # FTS are unaffected.  CJK/substring search falls back to LIKE.
+                logger.info(
+                    "SQLite trigram tokenizer unavailable for %s; "
+                    "CJK/substring search will fall back to LIKE. (%s)",
+                    self.db_path, exc,
+                )
+            else:
+                self._warn_fts5_unavailable(exc)
             return False
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
@@ -1174,13 +1193,12 @@ class SessionDB:
                     if fts5_available:
                         # Recreate virtual tables + triggers with the new inline-mode
                         # schema that indexes content || tool_name || tool_calls.
-                        if (
-                            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
-                            and self._ensure_fts_schema(
-                                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                            )
-                        ):
-                            # Backfill both indexes from every existing messages row.
+                        # Base FTS and trigram are backfilled independently so that a
+                        # missing trigram tokenizer (SQLite < 3.34 or stripped builds)
+                        # does not prevent the base index from being rebuilt or the
+                        # schema version from bumping — avoiding infinite migration
+                        # retry on every restart.
+                        if self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL):
                             cursor.execute(
                                 "INSERT INTO messages_fts(rowid, content) "
                                 "SELECT id, "
@@ -1189,6 +1207,13 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
+                        else:
+                            fts_migrations_complete = False
+                        # Trigram is optional; its failure does not block the
+                        # schema-version bump or base FTS availability.
+                        if self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        ):
                             cursor.execute(
                                 "INSERT INTO messages_fts_trigram(rowid, content) "
                                 "SELECT id, "
@@ -1197,8 +1222,6 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
-                        else:
-                            fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
             if current_version < 12:

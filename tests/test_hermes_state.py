@@ -50,6 +50,24 @@ class _NoFtsExistingTableConnection(sqlite3.Connection):
         return super().cursor(factory or _NoFtsExistingTableCursor)
 
 
+class _NoTrigramCursor(sqlite3.Cursor):
+    """Simulate a SQLite build that has fts5 but lacks the optional trigram tokenizer.
+
+    SQLite >= 3.34 ships the trigram tokenizer; stripped or older builds raise
+    "no such tokenizer: trigram" when the virtual table DDL is executed.
+    """
+
+    def executescript(self, sql_script):
+        if "tokenize='trigram'" in sql_script or 'tokenize="trigram"' in sql_script:
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().executescript(sql_script)
+
+
+class _NoTrigramConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoTrigramCursor)
+
+
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""
@@ -329,6 +347,46 @@ class TestSessionLifecycle:
             assert len(restored.search_messages("indexed")) == 2
         finally:
             restored.close()
+
+    def test_db_initializes_when_trigram_tokenizer_missing(self, tmp_path, monkeypatch):
+        """SQLite builds that have fts5 but lack the optional trigram tokenizer
+        (SQLite < 3.34 or stripped builds) must not crash on DB init.
+
+        Regression test for the crash in SessionDB.__init__ where
+        _is_fts5_unavailable_error did not match "no such tokenizer: trigram"
+        so the OperationalError propagated uncaught.  After the fix:
+        - _fts_enabled must remain True (base FTS still works)
+        - messages_fts (porter-stemmer) is created; messages_fts_trigram is not
+        - write/read and search_messages all work normally
+        """
+        real_connect = sqlite3.connect
+
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_trigram)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            # Only the trigram tokenizer is missing — base FTS must still be on.
+            assert db._fts_enabled is True
+            assert db._fts_table_exists("messages_fts") is True
+            assert db._fts_table_exists("messages_fts_trigram") is False
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="trigram tokenizer optional")
+
+            messages = db.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["content"] == "trigram tokenizer optional"
+
+            # Porter-stemmer FTS search must still work even without trigram.
+            results = db.search_messages("trigram")
+            assert len(results) == 1
+            assert "trigram" in results[0].get("snippet", "").lower()
+        finally:
+            db.close()
 
 
 # =========================================================================
