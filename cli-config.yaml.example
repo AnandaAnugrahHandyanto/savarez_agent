@@ -735,7 +735,7 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
-#       rich_messages: false          # Opt in to Bot API 10.1 rich messages; default uses legacy MarkdownV2
+#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default true, set false to force legacy MarkdownV2
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
