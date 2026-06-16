@@ -1497,7 +1497,7 @@ class AIAgent:
         self._flush_messages_to_session_db(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Remove private empty-response retry/failure scaffolding from transcript tails.
+        """Remove private retry/failure scaffolding before transcript persistence.
 
         Also rewinds past any trailing tool-result / assistant(tool_calls) pair
         that the failed iteration left hanging. Without this, the tail ends at
@@ -1506,6 +1506,18 @@ class AIAgent:
         providers silently reject (returns empty content), causing the
         empty-retry loop to fire forever. See #<TBD>.
         """
+        # Post-tool progress nudges are internal retry prompts, not durable
+        # conversation history.  They may be followed by a later assistant
+        # failure sentinel on abnormal exit paths, so remove them wherever they
+        # appear rather than only when they are the transcript tail.
+        messages[:] = [
+            msg for msg in messages
+            if not (
+                isinstance(msg, dict)
+                and msg.get("_post_tool_progress_synthetic")
+            )
+        ]
+
         # Pass 1: strip the flagged scaffolding messages themselves.
         dropped_scaffolding = False
         while (

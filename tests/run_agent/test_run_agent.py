@@ -3457,6 +3457,12 @@ class TestRunConversation:
             m.get("_post_tool_progress_synthetic")
             for m in result["messages"]
         )
+        retry_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        synthetic_assistant = retry_messages[-2]
+        assert synthetic_assistant["role"] == "assistant"
+        assert synthetic_assistant["content"].startswith("정보수집중")
+        assert "reasoning" not in synthetic_assistant
+        assert "reasoning_content" not in synthetic_assistant
 
     def test_repeated_post_tool_progress_only_fails_with_explicit_final(self, agent):
         self._setup_agent(agent)
@@ -3481,6 +3487,26 @@ class TestRunConversation:
             for m in result["messages"]
         )
         assert [m.get("role") for m in result["messages"]][-3:] == [
+            "assistant",
+            "tool",
+            "assistant",
+        ]
+
+    def test_post_tool_progress_synthetics_are_removed_when_not_tail(self, agent):
+        messages = [
+            {"role": "user", "content": "search"},
+            {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "web_search"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "result"},
+            {"role": "assistant", "content": "분석 중입니다", "_post_tool_progress_synthetic": True},
+            {"role": "user", "content": "final now", "_post_tool_progress_synthetic": True},
+            {"role": "assistant", "content": "I encountered repeated errors"},
+        ]
+
+        agent._drop_trailing_empty_response_scaffolding(messages)
+
+        assert not any(m.get("_post_tool_progress_synthetic") for m in messages)
+        assert [m["role"] for m in messages] == [
+            "user",
             "assistant",
             "tool",
             "assistant",

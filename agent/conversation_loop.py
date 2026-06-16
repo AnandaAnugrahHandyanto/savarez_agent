@@ -4295,8 +4295,14 @@ def run_conversation(
                             "⚠️ Model returned only a progress update after "
                             "tool calls — nudging for final answer"
                         )
-                        interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
-                        interim_msg["_post_tool_progress_synthetic"] = True
+                        from agent.redact import redact_sensitive_text
+
+                        interim_msg = {
+                            "role": "assistant",
+                            "content": redact_sensitive_text(final_response, force=True),
+                            "finish_reason": "incomplete",
+                            "_post_tool_progress_synthetic": True,
+                        }
                         messages.append(interim_msg)
                         messages.append({
                             "role": "user",
