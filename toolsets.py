@@ -244,8 +244,14 @@ TOOLSETS = {
     },
     
     "delegation": {
-        "description": "Spawn subagents and coordinate dynamic workflows with isolated context",
-        "tools": ["delegate_task", "dynamic_workflow"],
+        "description": "Spawn subagents with isolated context",
+        "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "dynamic_workflow": {
+        "description": "Coordinate phased background subagent workflows with dependency tracking, status, and cancellation",
+        "tools": ["dynamic_workflow"],
         "includes": []
     },
 

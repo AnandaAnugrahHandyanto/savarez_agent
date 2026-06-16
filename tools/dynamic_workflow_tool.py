@@ -644,7 +644,7 @@ DYNAMIC_WORKFLOW_SCHEMA = {
 
 registry.register(
     name="dynamic_workflow",
-    toolset="delegation",
+    toolset="dynamic_workflow",
     schema=DYNAMIC_WORKFLOW_SCHEMA,
     handler=lambda args, **kw: handle_dynamic_workflow(args, parent_agent=kw.get("parent_agent")),
     emoji="DW",
