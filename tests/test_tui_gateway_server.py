@@ -116,13 +116,19 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
     try:
         pending = FakeDb("pending")
         monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(pending))
-        result = server._methods["handoff.fail"]("r1", {"session_id": sid, "error": "timed out"})
+        result = server._methods["handoff.fail"](
+            "r1", {"session_id": sid, "error": "timed out"}
+        )
         assert result["result"] == {"failed": True, "state": "failed"}
         assert pending.failed_with == "timed out"
 
         completed = FakeDb("completed")
-        monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(completed))
-        result = server._methods["handoff.fail"]("r2", {"session_id": sid, "error": "late timeout"})
+        monkeypatch.setattr(
+            server, "_session_db", lambda _session: DbContext(completed)
+        )
+        result = server._methods["handoff.fail"](
+            "r2", {"session_id": sid, "error": "late timeout"}
+        )
         assert result["result"] == {"failed": False, "state": "completed"}
         assert completed.failed_with is None
     finally:
@@ -946,7 +952,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
     )
     monkeypatch.setattr(
-        server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
+        server,
+        "_init_session",
+        lambda sid, key, agent, history, cols=80, **_kwargs: None,
     )
 
     resp = server.handle_request({
@@ -1090,13 +1098,11 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.resume",
-                "params": {"session_id": target, "profile": "worker"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": target, "profile": "worker"},
+        })
 
         assert "error" not in resp
         sid = resp["result"]["session_id"]
@@ -1153,23 +1159,34 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     `model_config.provider`, is still restored.
     """
     # Bare "custom" bucket, no explicit model_config.provider: no provider override restored.
-    ov = server._stored_session_runtime_overrides({"model": "my-model", "billing_provider": "custom"})
+    ov = server._stored_session_runtime_overrides({
+        "model": "my-model",
+        "billing_provider": "custom",
+    })
     assert "provider_override" not in ov
     assert ov["model_override"]["provider"] is None
 
     for bare in ("auto", "openrouter", "custom"):
-        ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": bare})
+        ov = server._stored_session_runtime_overrides({
+            "model": "m",
+            "billing_provider": bare,
+        })
         assert "provider_override" not in ov
 
     # A real provider in billing_provider is still restored.
-    ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": "anthropic"})
+    ov = server._stored_session_runtime_overrides({
+        "model": "m",
+        "billing_provider": "anthropic",
+    })
     assert ov["provider_override"] == "anthropic"
     assert ov["model_override"]["provider"] == "anthropic"
 
     # An explicit routable provider in model_config wins over the bare billing bucket.
-    ov = server._stored_session_runtime_overrides(
-        {"model": "m", "billing_provider": "custom", "model_config": {"provider": "custom:myendpoint"}}
-    )
+    ov = server._stored_session_runtime_overrides({
+        "model": "m",
+        "billing_provider": "custom",
+        "model_config": {"provider": "custom:myendpoint"},
+    })
     assert ov["provider_override"] == "custom:myendpoint"
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
@@ -1276,6 +1293,8 @@ def test_resolve_model_reads_model_subkey_when_no_default(monkeypatch):
     )
 
     assert server._resolve_model() == "nvidia/Qwen3.6-35B-A3B-NVFP4"
+
+
 def _sync_test_session(**extra):
     session = {
         "agent": types.SimpleNamespace(model="old/model"),
@@ -1415,7 +1434,9 @@ def test_config_sync_config_wins_over_env_seed(monkeypatch):
     # the per-turn sync must follow config.yaml edits, not stay pinned to it.
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", "seed/model")
     monkeypatch.delenv("HERMES_MODEL", raising=False)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "new/model"}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"model": {"default": "new/model"}}
+    )
     session = _sync_test_session(config_model_seen=("seed/model", ""))
     calls = []
     monkeypatch.setattr(
@@ -3072,9 +3093,19 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
     session = _session()
     session["agent"] = None
     server._sessions["sid"] = session
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "broken/model", "provider": "openrouter"}})
-    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: seen.__setitem__("build", seen["build"] + 1))
-    monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"default": "broken/model", "provider": "openrouter"}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args: seen.__setitem__("build", seen["build"] + 1),
+    )
+    monkeypatch.setattr(
+        server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1)
+    )
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
 
@@ -3090,20 +3121,20 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
             }
         raise RuntimeError(f"unexpected provider {requested}")
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider
+    )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "claude-sonnet-4.6 --provider anthropic",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic",
+            },
+        })
 
         assert resp["result"]["value"] == "claude-sonnet-4-6"
         assert seen["build"] == 0
@@ -3115,14 +3146,26 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
         server._sessions.pop("sid", None)
 
 
-def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(monkeypatch):
+def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(
+    monkeypatch,
+):
     seen = {"build": 0, "wait": 0}
     session = _session()
     session["agent"] = None
     server._sessions["sid"] = session
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "broken/model", "provider": "openrouter"}})
-    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: seen.__setitem__("build", seen["build"] + 1))
-    monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"default": "broken/model", "provider": "openrouter"}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args: seen.__setitem__("build", seen["build"] + 1),
+    )
+    monkeypatch.setattr(
+        server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1)
+    )
 
     def fake_runtime_provider(*, requested=None, **_kwargs):
         if requested is None:
@@ -3131,20 +3174,20 @@ def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(mo
             raise RuntimeError("missing anthropic API key")
         raise RuntimeError(f"unexpected provider {requested}")
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider
+    )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "claude-sonnet-4.6 --provider anthropic",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic",
+            },
+        })
 
         assert resp["error"]["code"] == 5001
         assert "anthropic" in resp["error"]["message"].lower()
@@ -4904,31 +4947,43 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     )
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
-    resp = server.handle_request({
-        "id": "1",
-        "method": "session.create",
-        "params": {"cols": 80},
-    })
-    sid = resp["result"]["session_id"]
+    # Isolate from sibling-test leakage: daemon build threads from prior
+    # session.create tests in the same shard process mutate the shared
+    # ``server._sessions`` dict under ``_sessions_lock`` and can replace/pop
+    # entries mid-run, which would flip this build thread's ``replaced`` check
+    # to True and trigger a spurious unregister. Snapshot, clear, and restore
+    # so this test sees only its own session regardless of shard composition.
+    _saved_sessions = dict(server._sessions)
+    server._sessions.clear()
 
-    # Wait for the build to finish (ready event inside session dict).
-    session = server._sessions[sid]
-    session["agent_ready"].wait(timeout=2.0)
+    try:
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.create",
+            "params": {"cols": 80},
+        })
+        sid = resp["result"]["session_id"]
 
-    # Build finished without a close race — nothing should have been
-    # cleaned up by the orphan check.
-    assert closed_workers == [], (
-        f"build thread closed its own worker despite no race: {closed_workers}"
-    )
-    assert unregistered_keys == [], (
-        f"build thread unregistered its own notify despite no race: {unregistered_keys}"
-    )
+        # Wait for the build to finish (ready event inside session dict).
+        session = server._sessions[sid]
+        built = session["agent_ready"].wait(timeout=10.0)
+        assert built, "agent build did not complete within timeout"
 
-    # Session should have the live worker installed.
-    assert session.get("slash_worker") is not None
+        # Build finished without a close race — nothing should have been
+        # cleaned up by the orphan check.
+        assert closed_workers == [], (
+            f"build thread closed its own worker despite no race: {closed_workers}"
+        )
+        assert unregistered_keys == [], (
+            f"build thread unregistered its own notify despite no race: {unregistered_keys}"
+        )
 
-    # Cleanup
-    server._sessions.pop(sid, None)
+        # Session should have the live worker installed.
+        assert session.get("slash_worker") is not None
+    finally:
+        # Cleanup + restore sibling sessions we snapshotted.
+        server._sessions.clear()
+        server._sessions.update(_saved_sessions)
 
 
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
@@ -6743,7 +6798,10 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
         # Should have triggered an agent turn
         assert len(turns) == 1
-        assert "[IMPORTANT: Background process proc_poller_test completed normally" in turns[0]
+        assert (
+            "[IMPORTANT: Background process proc_poller_test completed normally"
+            in turns[0]
+        )
     finally:
         server._sessions.pop("sid_poll", None)
         while not process_registry.completion_queue.empty():
