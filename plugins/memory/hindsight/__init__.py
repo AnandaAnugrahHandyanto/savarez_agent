@@ -428,10 +428,16 @@ def _normalize_observation_scopes(value: Any) -> Any:
     return None
 
 
-def _utc_timestamp() -> str:
-    """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
+
+def _local_timestamp() -> str:
+    """Return current local timestamp in ISO-8601 with milliseconds and timezone offset.
+
+    Uses the user's local timezone so downstream memory extraction LLMs
+    render dates/times in the user's actual context instead of UTC.
+    Offset-aware timestamps are still unambiguous (convertible to UTC losslessly).
+    """
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 def _embedded_profile_name(config: dict[str, Any]) -> str:
     """Return the Hindsight embedded profile name for this Hermes config."""
@@ -1442,7 +1448,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
         metadata: Dict[str, str] = {
-            "retained_at": _utc_timestamp(),
+            "retained_at": _local_timestamp(),
             "message_count": str(message_count),
             "turn_index": str(turn_index),
         }
