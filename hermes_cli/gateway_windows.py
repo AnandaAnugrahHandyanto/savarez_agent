@@ -1302,10 +1302,44 @@ def stop() -> None:
         print("✗ No gateway was running")
 
 
+def _wait_for_gateway_cleanup(timeout: float = 30.0) -> bool:
+    """Wait for the old gateway to fully release all resources.
+
+    On Windows, after killing the gateway process it takes time to propagate:
+    - PID file deletion (atexit handlers of the killed process)
+    - Runtime lock release (OS-level file locks)
+    - SQLite WAL lock release
+
+    This function polls until all resources are confirmed released, or timeout.
+    Returns True if cleanup completed, False on timeout.
+    """
+    _assert_windows()
+    from gateway.status import get_running_pid, is_gateway_runtime_lock_active
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pid = get_running_pid()
+        lock_active = is_gateway_runtime_lock_active()
+        if pid is None and not lock_active:
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def restart() -> None:
     """Stop the gateway then start it again."""
     _assert_windows()
     stop()
-    # Give Windows a moment to release the listening port.
-    time.sleep(1.0)
+    # Wait for old gateway to fully release all resources
+    cleaned = _wait_for_gateway_cleanup(timeout=30.0)
+    if not cleaned:
+        # Fallback: force-clean stale PID file
+        try:
+            from gateway.status import _get_pid_path
+            stale = _get_pid_path()
+            if stale.exists():
+                stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+        print("⚠ Old gateway resources not fully released after 30s — cleaned up and starting anyway")
     start()
