@@ -1012,8 +1012,9 @@ def test_cost_saver_defaults_are_preserved_in_generated_config():
     from hermes_cli.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["agent"]["reasoning_effort"] == "medium"
-    assert DEFAULT_CONFIG["compression"]["hygiene_hard_message_limit"] == 160
+    assert DEFAULT_CONFIG["compression"]["hygiene_hard_message_limit"] == 120
     assert DEFAULT_CONFIG["compression"]["codex_gpt55_autoraise"] is False
     assert DEFAULT_CONFIG["gateway"]["codex_budget"]["enabled"] is True
-    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_api_calls"] == 80
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_api_calls"] == 50
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_accounted_tokens"] == 6_000_000
 

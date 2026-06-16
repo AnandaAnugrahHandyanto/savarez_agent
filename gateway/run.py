@@ -121,10 +121,10 @@ def _codex_budget_config(user_config: Dict[str, Any], platform_key: str) -> Dict
     return {
         "enabled": _as_bool(cfg.get("enabled"), True),
         "platform_enabled": not platforms or platform_key.lower() in platforms,
-        "warn_api_calls": _as_positive_int(cfg.get("warn_api_calls"), 40),
-        "max_api_calls": _as_positive_int(cfg.get("max_api_calls"), 80),
-        "warn_accounted_tokens": _as_positive_int(cfg.get("warn_accounted_tokens"), 5_000_000),
-        "max_accounted_tokens": _as_positive_int(cfg.get("max_accounted_tokens"), 10_000_000),
+        "warn_api_calls": _as_positive_int(cfg.get("warn_api_calls"), 30),
+        "max_api_calls": _as_positive_int(cfg.get("max_api_calls"), 50),
+        "warn_accounted_tokens": _as_positive_int(cfg.get("warn_accounted_tokens"), 4_000_000),
+        "max_accounted_tokens": _as_positive_int(cfg.get("max_accounted_tokens"), 6_000_000),
     }
 
 
@@ -8586,7 +8586,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_model = "anthropic/claude-sonnet-4.6"
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
-            _hyg_hard_msg_limit = 160
+            _hyg_hard_msg_limit = 120
             _hyg_config_context_length = None
             _hyg_provider = None
             _hyg_base_url = None
