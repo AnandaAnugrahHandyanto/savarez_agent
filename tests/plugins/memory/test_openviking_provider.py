@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import plugins.memory.openviking as openviking_module
 from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
 
 
@@ -420,3 +421,710 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_sync_turn_queues_user_and_assistant_session_messages(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._session_id = "session-1"
+    queued = []
+
+    monkeypatch.setattr(
+        provider,
+        "_enqueue_session_message",
+        lambda session_id, role, content: queued.append((session_id, role, content)) or True,
+    )
+
+    provider.sync_turn("hello", "hi")
+
+    assert provider._turn_count == 1
+    assert queued == [
+        ("session-1", "user", "hello"),
+        ("session-1", "assistant", "hi"),
+    ]
+
+
+def test_write_worker_uses_parts_payload_and_reconnects_after_post_failure(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    clients = []
+
+    class FakeClient:
+        def __init__(self, *, fail=False):
+            self.fail = fail
+            self.posts = []
+            clients.append(self)
+
+        def post(self, path, payload):
+            self.posts.append((path, payload))
+            if self.fail:
+                raise RuntimeError("stale client")
+            return {}
+
+    stale = FakeClient(fail=True)
+    fresh = FakeClient()
+    next_clients = [stale, fresh]
+    monkeypatch.setattr(provider, "_new_client", lambda: next_clients.pop(0))
+
+    provider._write_queue.put(("session-1", "user", "hello"))
+    provider._write_queue.put(None)
+
+    provider._write_worker()
+
+    expected = (
+        "/api/v1/sessions/session-1/messages",
+        {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
+    )
+    assert stale.posts == [expected]
+    assert fresh.posts == [expected]
+
+
+def test_on_session_end_skips_commit_when_async_writes_do_not_flush(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._session_id = "session-1"
+    provider._turn_count = 2
+    monkeypatch.setattr(provider, "_flush_async_writes", lambda timeout=10.0: False)
+
+    provider.on_session_end([])
+
+    provider._client.post.assert_not_called()
+    assert provider._turn_count == 2
+
+
+def test_on_session_end_commits_pending_turns_and_resets_count(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._session_id = "session-1"
+    provider._turn_count = 2
+    monkeypatch.setattr(provider, "_flush_async_writes", lambda timeout=10.0: True)
+
+    provider.on_session_end([])
+
+    provider._client.get.assert_not_called()
+    provider._client.post.assert_called_once_with("/api/v1/sessions/session-1/commit")
+    assert provider._turn_count == 0
+
+
+def test_on_session_end_commits_pending_tokens_without_turn_count(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.return_value = {"result": {"pending_tokens": 42}}
+    provider._session_id = "session-1"
+    provider._turn_count = 0
+    monkeypatch.setattr(provider, "_flush_async_writes", lambda timeout=10.0: True)
+
+    provider.on_session_end([])
+
+    provider._client.get.assert_called_once_with("/api/v1/sessions/session-1")
+    provider._client.post.assert_called_once_with("/api/v1/sessions/session-1/commit")
+    assert provider._turn_count == 0
+
+
+def test_on_session_end_skips_commit_without_turns_or_pending_tokens(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.return_value = {"result": {"pending_tokens": 0}}
+    provider._session_id = "session-1"
+    provider._turn_count = 0
+    monkeypatch.setattr(provider, "_flush_async_writes", lambda timeout=10.0: True)
+
+    provider.on_session_end([])
+
+    provider._client.get.assert_called_once_with("/api/v1/sessions/session-1")
+    provider._client.post.assert_not_called()
+    assert provider._turn_count == 0
+
+
+def test_on_memory_write_uses_content_write_without_session_turn(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._api_key = "key"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+    provider._session_id = "session-1"
+    provider._turn_count = 0
+    posts = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+            assert api_key == "key"
+            assert account == "acct"
+            assert user == "user"
+            assert agent == "agent"
+
+        def post(self, path, payload):
+            posts.append((path, payload))
+            return {"result": {"written_bytes": len(payload.get("content", ""))}}
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon=False, name=""):
+            self._target = target
+            self.daemon = daemon
+            self.name = name
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+    monkeypatch.setattr(openviking_module.threading, "Thread", ImmediateThread)
+
+    provider.on_memory_write(
+        "add",
+        "user",
+        "User prefers precise benchmark reports.",
+        metadata={"session_id": "different-session"},
+    )
+    provider.on_memory_write("replace", "user", "Updated preference")
+
+    assert len(posts) == 1
+    path, payload = posts[0]
+    assert path == "/api/v1/content/write"
+    assert payload["uri"].startswith("viking://user/user/agent/agent/memories/preferences/mem_")
+    assert payload["uri"].endswith(".md")
+    assert payload["content"] == "User prefers precise benchmark reports."
+    assert payload["mode"] == "create"
+    assert provider._session_id == "session-1"
+    assert provider._turn_count == 0
+
+
+def test_tool_remember_uses_content_write_category_subdir():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._user = "user"
+    provider._agent = "agent"
+    provider._client.post.return_value = {"result": {"written_bytes": 18}}
+
+    result = json.loads(provider._tool_remember({
+        "content": "Project Aurora launches in July.",
+        "category": "event",
+    }))
+
+    provider._client.post.assert_called_once()
+    path, payload = provider._client.post.call_args.args
+    assert path == "/api/v1/content/write"
+    assert payload["uri"].startswith("viking://user/user/agent/agent/memories/events/mem_")
+    assert payload["uri"].endswith(".md")
+    assert payload["content"] == "Project Aurora launches in July."
+    assert payload["mode"] == "create"
+    assert result["status"] == "stored"
+    assert result["uri"] == payload["uri"]
+
+
+def test_tool_remember_returns_tool_error_when_content_write_fails():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.side_effect = RuntimeError("write unavailable")
+
+    result = json.loads(provider._tool_remember({"content": "Remember this"}))
+
+    assert result == {"error": "Failed to store memory: write unavailable"}
+
+
+def test_tool_search_uses_openviking_limit_and_ignores_dead_mode():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.return_value = {
+        "result": {
+            "memories": [],
+            "resources": [],
+            "skills": [],
+            "total": 0,
+        }
+    }
+
+    result = json.loads(provider._tool_search({
+        "query": "ranking",
+        "mode": "deep",
+        "scope": "viking://user/memories/",
+        "limit": 7,
+    }))
+
+    assert result == {"results": [], "total": 0}
+    provider._client.post.assert_called_once_with(
+        "/api/v1/search/find",
+        {
+            "query": "ranking",
+            "target_uri": "viking://user/memories/",
+            "limit": 7,
+        },
+    )
+
+
+def test_search_schema_does_not_expose_dead_mode():
+    properties = openviking_module.SEARCH_SCHEMA["parameters"]["properties"]
+
+    assert "mode" not in properties
+    assert "mode=" not in openviking_module.SEARCH_SCHEMA["description"]
+    assert "durable memory" in openviking_module.SEARCH_SCHEMA["description"]
+
+
+def test_read_schema_supports_small_uri_batches():
+    properties = openviking_module.READ_SCHEMA["parameters"]["properties"]
+
+    assert "uri" in properties
+    assert "uris" in properties
+    assert openviking_module.READ_SCHEMA["parameters"]["required"] == []
+    assert "up to three" in openviking_module.READ_SCHEMA["description"]
+
+
+def test_tool_read_batches_up_to_three_unique_uris():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.side_effect = [
+        {"result": "first"},
+        {"result": "second"},
+        {"result": "third"},
+    ]
+
+    result = json.loads(provider._tool_read({
+        "uris": [
+            "viking://user/memories/one.md",
+            "viking://user/memories/two.md",
+            "viking://user/memories/two.md",
+            "viking://user/memories/three.md",
+            "viking://user/memories/four.md",
+        ],
+        "level": "full",
+    }))
+
+    assert result["requested"] == 4
+    assert result["returned"] == 3
+    assert result["truncated"] is True
+    assert [entry["uri"] for entry in result["results"]] == [
+        "viking://user/memories/one.md",
+        "viking://user/memories/two.md",
+        "viking://user/memories/three.md",
+    ]
+    assert [entry["content"] for entry in result["results"]] == ["first", "second", "third"]
+
+
+def test_history_tools_are_not_exposed_to_the_model():
+    provider = OpenVikingMemoryProvider()
+
+    schemas = {schema["name"] for schema in provider.get_tool_schemas()}
+
+    assert "viking_history_search" not in schemas
+    assert "viking_history_read" not in schemas
+
+
+def test_system_prompt_focuses_on_openviking_search_and_read():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://ov"
+    provider._client.get.return_value = {"result": [{"uri": "viking://user/memories/"}]}
+
+    prompt = provider.system_prompt_block()
+
+    assert "durable indexed memory and knowledge" in prompt
+    assert "viking_search" in prompt
+    assert "viking_read" in prompt
+    assert "up to three URIs" in prompt
+    assert "viking_history_search" not in prompt
+    assert "viking_history_read" not in prompt
+    assert "URI diagnostics" in prompt
+    assert "Hermes local session search" not in prompt
+    assert "do not use" not in prompt.lower()
+    assert "avoid session_search" not in prompt.lower()
+
+
+def test_prefetch_fetches_current_query_when_cached_result_is_missing(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._api_key = "key"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+
+    seen_payloads = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+            assert api_key == "key"
+            assert account == "acct"
+            assert user == "user"
+            assert agent == "agent"
+
+        def post(self, path, payload):
+            seen_payloads.append((path, payload))
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://memories/1",
+                            "score": 0.91,
+                            "abstract": "fresh memory",
+                        }
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "fresh memory"}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("where did we store it?")
+
+    assert result.startswith("## OpenViking Context\nTreat these OpenViking memories as evidence")
+    assert "Retrieval status: source=find" in result
+    assert "hits=1; merged=1" in result
+    assert "Ranked OpenViking evidence:" in result
+    assert "- [0.91] memory: viking://memories/1; sources=find" in result
+    assert "Abstract: fresh memory" in result
+    assert seen_payloads == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "where did we store it?",
+                "limit": 32,
+            },
+        ),
+    ]
+
+
+def test_prefetch_ignores_cached_result_for_different_query_and_fetches_fresh(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+    provider._prefetch_result = "- [0.80] stale result (viking://memories/stale)"
+    provider._prefetch_query = "old query"
+
+    seen_payloads = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            seen_payloads.append((path, payload))
+            return {
+                "result": {
+                    "memories": [],
+                    "resources": [
+                        {
+                            "uri": "viking://resources/2",
+                            "score": 0.95,
+                            "abstract": "fresh resource",
+                        }
+                    ],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "fresh resource"}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("new query")
+
+    assert "stale result" not in result
+    assert "Retrieval status: source=find" in result
+    assert "hits=1; merged=1" in result
+    assert "- [0.95] resource: viking://resources/2; sources=find" in result
+    assert seen_payloads == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "new query",
+                "limit": 32,
+            },
+        ),
+    ]
+
+
+def test_queue_prefetch_result_is_consumed_by_matching_prefetch(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+    seen_payloads = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            seen_payloads.append((path, payload))
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://memories/cached",
+                            "score": 0.88,
+                            "abstract": "cached memory",
+                        }
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "cached memory"}
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon=False, name=""):
+            self._target = target
+            self._alive = False
+            self.daemon = daemon
+            self.name = name
+
+        def start(self):
+            self._alive = True
+            self._target()
+            self._alive = False
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+    monkeypatch.setattr(openviking_module.threading, "Thread", ImmediateThread)
+
+    provider.queue_prefetch("cached query")
+    result = provider.prefetch("cached query")
+
+    assert "cached memory" in result
+    assert "viking://memories/cached" in result
+    assert seen_payloads == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "cached query",
+                "limit": 32,
+            },
+        ),
+    ]
+
+
+def test_prefetch_detail_uses_relevant_excerpt_from_long_content(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+
+    long_prefix = "\n".join(f"unrelated profile line {idx}" for idx in range(80))
+    focused_detail = (
+        f"{long_prefix}\n"
+        "John does kickboxing for energy.\n"
+        "John also practices taekwondo with his family.\n"
+        "He enjoys family fitness routines.\n"
+    )
+    seen_get_paths = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://memories/john",
+                            "score": 0.91,
+                            "abstract": "John does kickboxing for energy.",
+                        }
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            seen_get_paths.append(path)
+            return {"result": focused_detail}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("What martial arts has John done?")
+
+    assert "Detail:" in result
+    assert "kickboxing" in result
+    assert "taekwondo" in result
+    assert seen_get_paths == ["/api/v1/content/read"]
+
+
+def test_prefetch_reranks_query_overlap_without_dropping_low_scores(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://user/memories/generic",
+                            "score": 0.8,
+                            "abstract": "A generic planning note about errands.",
+                        },
+                        {
+                            "uri": "viking://user/memories/john-martial-arts",
+                            "score": 0.62,
+                            "level": 2,
+                            "category": "events",
+                            "abstract": "John practiced kickboxing and taekwondo with his family.",
+                        },
+                        {
+                            "uri": "viking://user/memories/weak",
+                            "score": 0.2,
+                            "abstract": "John mentioned martial arts once.",
+                        },
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "John practiced kickboxing and taekwondo with his family."}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("What martial arts has John done?")
+
+    assert "filtered=3" in result
+    assert "threshold=0.0" in result
+    assert "viking://user/memories/weak" in result
+    assert result.index("viking://user/memories/john-martial-arts") < result.index(
+        "viking://user/memories/generic"
+    )
+
+
+def test_prefetch_dedupes_equivalent_abstracts(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://user/memories/one",
+                            "score": 0.7,
+                            "category": "profile",
+                            "abstract": "The backpack is in the closet.",
+                        },
+                        {
+                            "uri": "viking://user/memories/two",
+                            "score": 0.68,
+                            "category": "profile",
+                            "abstract": "The backpack is in the closet.",
+                        },
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "The backpack is in the closet."}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("where is the backpack?")
+
+    assert "merged=2" in result
+    assert "filtered=1" in result
+    assert "viking://user/memories/one" in result
+    assert "viking://user/memories/two" not in result
+
+
+def test_browse_is_capped_diagnostic_output():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.return_value = {
+        "result": {
+            "uri": "viking://session",
+            "type": "dir",
+            "children": [
+                {
+                    "uri": f"viking://session/session-{idx}",
+                    "name": f"session-{idx}",
+                    "type": "dir",
+                    "abstract": "x" * 500,
+                }
+                for idx in range(40)
+            ],
+        }
+    }
+
+    result = json.loads(provider._tool_browse({"action": "list", "path": "viking://session"}))
+
+    assert result["path"] == "viking://session"
+    assert result["note"] == "Diagnostic listing only. Use search/read tools for evidence content."
+    assert len(result["entries"]) == 25
+    assert result["truncated"] is True
+    assert len(result["entries"][0]["abstract"]) < 220
+
+
+def test_handle_tool_call_reconnects_after_startup_health_failure(monkeypatch):
+    instances = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self.endpoint = endpoint
+            self.posts = []
+            self.index = len(instances)
+            instances.append(self)
+
+        def health(self):
+            return self.index > 0
+
+        def post(self, path, payload=None, **kwargs):
+            self.posts.append((path, payload or {}))
+            return {}
+
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://openviking.local")
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1")
+
+    assert provider._client is None
+
+    result = json.loads(provider.handle_tool_call("viking_remember", {"content": "stable fact"}))
+
+    assert result["status"] == "stored"
+    assert len(instances) >= 2
+    posted_clients = [client for client in instances if client.posts]
+    assert len(posted_clients) == 1
+    path, payload = posted_clients[0].posts[0]
+    assert path == "/api/v1/content/write"
+    assert payload["uri"].startswith("viking://user/default/agent/hermes/memories/preferences/mem_")
+    assert payload["uri"].endswith(".md")
+    assert payload["content"] == "stable fact"
+    assert payload["mode"] == "create"
