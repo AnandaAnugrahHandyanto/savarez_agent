@@ -22,7 +22,8 @@ import contextlib
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,77 @@ _COMBINED_REVIEW_PROMPT = (
 
 
 
+# Regex for the canonical "Skill '<name>' created./updated." message shape
+# produced by tools/skill_manager_tool._create_skill and _edit_skill.  The
+# captured group is the skill name; if this regex doesn't match, the
+# message is treated as a non-skill action and the loadability probe is
+# skipped.  The validator in tools/skill_manager_tool restricts names to
+# [a-zA-Z0-9_-]+, so the captured group is always URL/filename-safe.
+_SKILL_ACTION_PATTERN = re.compile(r"Skill '([^']+)' (?:created|updated)\.")
+
+
+def _session_skill_search_roots() -> Tuple[Any, List[Any]]:
+    """Return ``(local_skills_dir, external_dirs)`` for the LIVE session.
+
+    These are the directory roots the live (parent) session's
+    ``tools.skills_tool`` searches when resolving ``skill_view`` /
+    ``skills_list``.  ``SKILLS_DIR`` is bound at module import in the
+    parent process from ``get_hermes_home()`` (env-driven), so it
+    reflects the *parent's* session root, not the review fork's.
+
+    Returns an empty ``(missing_path, [])`` pair if the local skills dir
+    has not been created yet — caller treats that as "no skill can be
+    loadable from this root."
+    """
+    try:
+        from tools import skills_tool as _skills_tool
+        local = _skills_tool.SKILLS_DIR
+    except Exception:
+        local = None
+
+    external: List[Any] = []
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+        external = list(get_external_skills_dirs() or [])
+    except Exception as exc:  # misconfigured external_dirs must not crash
+        logger.warning(
+            "Background review: failed to resolve external skill dirs "
+            "(proceeding with local only): %s",
+            exc,
+        )
+        external = []
+
+    return local, external
+
+
+def _is_skill_in_session_root(skill_name: str) -> bool:
+    """Return True if the live session's ``skill_view`` can load the skill.
+
+    The user-facing notification promises more than "a write tool returned
+    success": it promises the skill is usable by the current session.  Use the
+    same resolver the session uses instead of duplicating path-scanning logic
+    here.  This keeps the check aligned with ``skill_view`` support for nested
+    skills, frontmatter aliases, external skill dirs, and legacy flat files.
+    """
+    name = (skill_name or "").strip()
+    if not name:
+        return False
+
+    try:
+        from tools.skills_tool import skill_view
+
+        raw = skill_view(name)
+        result = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        logger.warning(
+            "Background review: failed to verify skill %r with skill_view: %s",
+            name,
+            exc,
+        )
+        return False
+    return isinstance(result, dict) and bool(result.get("success"))
+
+
 def summarize_background_review_actions(
     review_messages: List[Dict],
     prior_snapshot: List[Dict],
@@ -282,9 +354,11 @@ def summarize_background_review_actions(
         message = data.get("message", "")
         target = data.get("target", "")
         if "created" in message.lower():
-            actions.append(message)
+            if _is_skill_action_loadable(message, data):
+                actions.append(message)
         elif "updated" in message.lower():
-            actions.append(message)
+            if _is_skill_action_loadable(message, data):
+                actions.append(message)
         elif "added" in message.lower() or (target and "add" in message.lower()):
             label = "Memory" if target == "memory" else "User profile" if target == "user" else target
             actions.append(f"{label} updated")
@@ -295,6 +369,55 @@ def summarize_background_review_actions(
             label = "Memory" if target == "memory" else "User profile" if target == "user" else target
             actions.append(f"{label} updated")
     return actions
+
+
+def _is_skill_action_loadable(message: str, data: Dict[str, Any]) -> bool:
+    """Return True if a ``Skill '<name>' created./updated.`` action should
+    be surfaced in the user-facing summary.
+
+    For non-skill actions (memory entries, user profile updates, cron
+    notifications, etc.) the message does not match the canonical
+    ``Skill '<name>'`` shape, and we short-circuit to True — the
+    loadability probe applies ONLY to skill actions, since the bug
+    described in #46897 is specifically "the user is told a skill was
+    created that their session cannot load."
+
+    For skill actions we verify the named skill resolves from the live
+    session's skill search roots.  When it does not, we emit a WARNING
+    log carrying the writer path the tool reported AND the live
+    session's ``SKILLS_DIR`` so an operator can correlate the
+    "user got a misleading 'created' line" complaint with the
+    actual root divergence.
+    """
+    match = _SKILL_ACTION_PATTERN.search(message or "")
+    if match is None:
+        # Not a skill action (e.g. "Cron job 'X' created.", "Memory
+        # entry created.").  Keep the action.
+        return True
+    skill_name = match.group(1)
+    if _is_skill_in_session_root(skill_name):
+        return True
+    # Writer-root != reader-root.  Log enough context for an operator
+    # to diagnose the divergence without us leaking the false-positive
+    # "created" line to the user.
+    writer_path = data.get("path", "<unspecified>")
+    try:
+        local, _external = _session_skill_search_roots()
+        reader_root = str(local) if local is not None else "<unset>"
+    except Exception:
+        reader_root = "<unresolved>"
+    logger.warning(
+        "Background review: dropping 'Skill %r' notification — the "
+        "skill-write tool reported success at path %s, but the live "
+        "session's skill search root (%s) does not contain a SKILL.md "
+        "for that name.  This usually means the spawned review agent "
+        "resolved a different HERMES_HOME / profile root than the live "
+        "session (issue #46897).",
+        skill_name,
+        writer_path,
+        reader_root,
+    )
+    return False
 
 
 def build_memory_write_metadata(
