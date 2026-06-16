@@ -25,6 +25,11 @@ _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_PROJECT_WORKFLOW_ALIASES = {
+    "gnew": "jnew",
+    "g6": "jnew",
+    "diagnose": "systematic-debugging",
+}
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -498,20 +503,39 @@ def reload_skills() -> Dict[str, Any]:
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical skill_cmds key.
 
-    Skills are always stored with hyphens — ``scan_skill_commands`` normalizes
-    spaces and underscores to hyphens when building the key. Hyphens and
-    underscores are treated interchangeably in user input: this matches
-    ``_check_unavailable_skill`` and accommodates Telegram bot-command names
-    (which disallow hyphens, so ``/claude-code`` is registered as
-    ``/claude_code`` and comes back in the underscored form).
+    Skills are always stored with hyphens. Hyphens and underscores are
+    treated interchangeably in user input; project workflow aliases resolve
+    to their canonical local skill commands when those skills are loaded.
 
-    Returns the matching ``/slug`` key from ``get_skill_commands()`` or
+    Returns the matching '/slug' key from get_skill_commands() or
     ``None`` if no match.
     """
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in get_skill_commands() else None
+    cmd_name = command.strip().lstrip("/").lower().replace("_", "-")
+    if not cmd_name:
+        return None
+
+    def _resolve_from(commands):
+        cmd_key = f"/{cmd_name}"
+        if cmd_key in commands:
+            return cmd_key
+        alias_target = _PROJECT_WORKFLOW_ALIASES.get(cmd_name)
+        if alias_target:
+            alias_key = f"/{alias_target}"
+            return alias_key if alias_key in commands else None
+        return None
+
+    commands = get_skill_commands()
+    resolved = _resolve_from(commands)
+    if resolved is not None:
+        return resolved
+
+    # Running gateways can retain a stale or failed skill-command cache. Rescan
+    # once before falling through to the generic unknown-command reply so newly
+    # added project workflow commands such as /jnew remain reachable.
+    commands = scan_skill_commands()
+    return _resolve_from(commands)
 
 
 def build_skill_invocation_message(

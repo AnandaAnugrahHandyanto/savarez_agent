@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+import agent.skill_commands as skill_commands_module
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
@@ -423,6 +424,25 @@ class TestResolveSkillCommandKey:
             assert resolve_skill_command_key("foo-bar") == "/foo-bar"
             # Underscore form also works (Telegram round-trip)
             assert resolve_skill_command_key("foo_bar") == "/foo-bar"
+
+    def test_resolve_rescans_when_cache_is_stale(self, tmp_path):
+        """Running gateways can have a non-empty cache from before a skill existed."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(
+                skill_commands_module,
+                "_skill_commands",
+                {"/old-skill": {"name": "old-skill"}},
+            ),
+            patch.object(
+                skill_commands_module,
+                "_skill_commands_platform",
+                skill_commands_module._resolve_skill_commands_platform(),
+            ),
+        ):
+            _make_skill(tmp_path, "jnew")
+
+            assert resolve_skill_command_key("jnew") == "/jnew"
 
 
 class TestBuildPreloadedSkillsPrompt:
