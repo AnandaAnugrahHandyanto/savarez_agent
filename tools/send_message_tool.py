@@ -1415,9 +1415,69 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return _error(f"Signal send failed: {e}")
 
 
+def _smtp_connect(host: str, port: int, timeout: float = 30) -> "smtplib.SMTP":
+    """Return a connected, ready-to-use SMTP client with IPv4 fallback.
+
+    Port 465 uses implicit TLS (SMTP_SSL); all other ports use STARTTLS.
+    A dual-stack connection is tried first.  On connection-level failure
+    (e.g. an unreachable IPv6 address returned by DNS) the call is retried
+    with DNS resolution constrained to ``AF_INET``, mirroring the gateway's
+    ``_IPv4SMTP`` / ``_IPv4SMTP_SSL`` approach.
+    """
+    import socket as _socket
+    import smtplib
+
+    ctx = ssl.create_default_context()
+
+    def _ipv4_sock(h: str, p: int, t: float, source_address=None) -> "_socket.socket":
+        last_err: Exception | None = None
+        for family, stype, proto, _, addr in _socket.getaddrinfo(
+            h, p, _socket.AF_INET, _socket.SOCK_STREAM
+        ):
+            sock = _socket.socket(family, stype, proto)
+            sock.settimeout(t)
+            try:
+                if source_address:
+                    sock.bind(source_address)
+                sock.connect(addr)
+                return sock
+            except OSError as exc:
+                last_err = exc
+                sock.close()
+        raise last_err or OSError(f"No IPv4 address found for {h}:{p}")
+
+    class _IPv4SMTP(smtplib.SMTP):
+        def _get_socket(self, h, p, t):  # type: ignore[override]
+            return _ipv4_sock(h, p, t, self.source_address)
+
+    class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
+        def _get_socket(self, h, p, t):  # type: ignore[override]
+            raw = _ipv4_sock(h, p, t, self.source_address)
+            return self.context.wrap_socket(raw, server_hostname=getattr(self, "_host", h))
+
+    def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
+        smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
+        ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
+        if port == 465:
+            return ssl_cls(host, port, timeout=timeout, context=ctx)
+        client = smtp_cls(host, port, timeout=timeout)
+        try:
+            client.starttls(context=ctx)
+        except Exception:
+            client.close()
+            raise
+        return client
+
+    try:
+        return _connect()
+    except (_socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+        if isinstance(exc, ssl.SSLError):
+            raise
+        return _connect(ipv4_only=True)
+
+
 async def _send_email(extra, chat_id, message):
     """Send via SMTP (one-shot, no persistent connection needed)."""
-    import smtplib
     from email.mime.text import MIMEText
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
@@ -1438,11 +1498,12 @@ async def _send_email(extra, chat_id, message):
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=ssl.create_default_context())
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+        client = _smtp_connect(smtp_host, smtp_port)
+        try:
+            client.login(address, password)
+            client.send_message(msg)
+        finally:
+            client.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return _error(f"Email send failed: {e}")
