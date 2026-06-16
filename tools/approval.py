@@ -256,12 +256,26 @@ _CMDPOS = (
     r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
     r'\s*'
 )
+_COMMAND_START = r'(?:^|[;&|\n`]|\$\()'
+_GROUP_COMMAND_START = r'(?:(?:^|[;&|\n])\s*[\({])'
+_ASSIGNMENT_WORD = r'(?:[a-z_][a-z0-9_]*=(?:"[^"\s;&|()]*"|\'[^\'\s;&|()]*\'|[^\s;&|()]*)?)'
+_COMMAND_DETECTION_POS = (
+    rf'(?:{_COMMAND_START}|{_GROUP_COMMAND_START})'
+    r'\s*'
+    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'
+    r'(?:env\s+(?:(?:-[^\s]+\s+)|(?:\w+=\S*\s+))*)?'
+    rf'(?:{_ASSIGNMENT_WORD}\s+)*'
+    r'(?:(?:exec|nohup|setsid|time|command)\s+)*'
+    rf'(?:{_ASSIGNMENT_WORD}\s+)*'
+    r'\s*'
+)
+_COMMAND_TARGET_END = r'(?:\s|[;&|)]|$)'
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots
-    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|\)|$)', "recursive delete of root filesystem"),
-    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|\)|$)', "recursive delete of system directory"),
-    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|\)|$)', "recursive delete of home directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)' + _COMMAND_TARGET_END, "recursive delete of root filesystem"),
+    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)' + _COMMAND_TARGET_END, "recursive delete of system directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?' + _COMMAND_TARGET_END, "recursive delete of home directory"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -590,30 +604,36 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
-_DYNAMIC_COMMAND_WORD = (
+_DYNAMIC_COMMAND_EXPANSION = (
     r'(?:\$\([^)\n]{1,200}\)|`[^`\n]{1,200}`|\$\{[^}\n]{1,200}\})'
+)
+_DYNAMIC_COMMAND_WORD = (
+    rf'(?:"{_DYNAMIC_COMMAND_EXPANSION}[^\s;&|()"]*"|{_DYNAMIC_COMMAND_EXPANSION})'
     r'[^\s;&|)]*'
 )
 _COMMAND_POSITION_WORD_RE = re.compile(
-    r'(?P<prefix>' + _CMDPOS + r')(?P<word>(?:\\[^\n]|\'\'|""|[^\s;&|`$()])+)',
+    r'(?P<prefix>' + _COMMAND_DETECTION_POS + r')(?P<word>(?:\\[^\n]|\'\'|""|[^\s;&|`$()])+)',
     _RE_FLAGS,
 )
-_DYNAMIC_COMMAND_NAME_RE = re.compile(_CMDPOS + _DYNAMIC_COMMAND_WORD, _RE_FLAGS)
+_DYNAMIC_COMMAND_NAME_RE = re.compile(_COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD, _RE_FLAGS)
 _DYNAMIC_HARDLINE_TARGET = (
     r'(?:/|/\*|/ \*|/home|/home/\*|/root|/root/\*|/etc|/etc/\*|'
     r'/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|'
     r'/boot|/boot/\*|/lib|/lib/\*|~|\$home)(?:/?|/\*)?'
 )
 _DYNAMIC_HARDLINE_COMMAND_RE = re.compile(
-    _CMDPOS + _DYNAMIC_COMMAND_WORD + r'\s+(-[^\s]*\s+)*'
-    + _DYNAMIC_HARDLINE_TARGET + r'(\s|$)',
+    _COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD + r'\s+(-[^\s]*\s+)*'
+    + _DYNAMIC_HARDLINE_TARGET + _COMMAND_TARGET_END,
     _RE_FLAGS,
 )
 _DYNAMIC_HARDLINE_NAME_RE = re.compile(
-    _CMDPOS
+    _COMMAND_DETECTION_POS
     + r'(?:\$\([^)\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^)\n]*\)|'
     + r'`[^`\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^`\n]*`|'
-    + r'\$\{[^}\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^}\n]*\})',
+    + r'\$\{[^}\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^}\n]*\}|'
+    + r'"(?:\$\([^)\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^)\n]*\)|'
+    + r'`[^`\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^`\n]*`|'
+    + r'\$\{[^}\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^}\n]*\})")',
     _RE_FLAGS,
 )
 
