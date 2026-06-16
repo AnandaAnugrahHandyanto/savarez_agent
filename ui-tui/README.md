@@ -74,10 +74,34 @@ npm run test:watch
 - `createSlashHandler.ts` — local slash command dispatch
 - `useComposerState.ts` — draft, multiline buffer, queue editing
 - `useInputHandlers.ts` — keypress routing
+- `useMainApp.ts` — top-level composition hook: wires all sub-hooks, manages transcript history, session polling, and exposes props consumed by `app.tsx`
+- `useSessionLifecycle.ts` — session create / resume / activate / close and visible-history reset
+- `useSubmission.ts` — message send, shell exec (`!cmd`), inline interpolation (`{!cmd}`), and busy-input-mode dispatch (queue / steer / interrupt)
 - `useTurnState.ts` — agent turn lifecycle
+- `turnController.ts` — stateful class that drives the turn lifecycle: buffers streaming deltas, manages tool/reasoning state, handles interrupt and message-complete transitions
+- `turnStore.ts` — nanostore for turn state (streaming text, tools, reasoning, subagents, todos, activity trail)
+- `useConfigSync.ts` — fetches `config.get full` on session start and polls config mtime every 5 s; applies display settings and triggers MCP reload on change
+- `useLongRunToolCharms.ts` — fires ambient activity messages for tools running longer than 8 s
 - `overlayStore.ts` / `uiStore.ts` — nanostores for overlay and UI state
+- `delegationStore.ts` — nanostore for subagent spawning caps and overlay accordion state
+- `spawnHistoryStore.ts` — in-memory ring (last 10) of finished subagent fan-out snapshots; populated at turn end for `/replay`
+- `inputSelectionStore.ts` — nanostore exposing the active text-input selection handle
 - `gatewayContext.tsx` — React context for the gateway client
+- `gatewayRecovery.ts` — pure function that decides whether to respawn and resume after a gateway crash, with a 3-attempt / 60 s budget
+- `setupHandoff.ts` — launches external `hermes setup`, suspends Ink while it runs, opens a new session on success
+- `scroll.ts` — scrolls the viewport while keeping the text selection anchor in sync
 - `constants.ts`, `helpers.ts`, `interfaces.ts`
+
+### Slash command subsystem (`src/app/slash/`)
+
+- `types.ts` — `SlashCommand` interface and `SlashRunCtx` execution context (gateway rpc, transcript helpers, session refs, stale-guard)
+- `registry.ts` — assembles `SLASH_COMMANDS` from all command files in registration order (core → credits → session → ops → setup → debug) and exposes `findSlashCommand(name)` for case-insensitive lookup
+- `commands/core.ts` — general TUI commands
+- `commands/credits.ts` — `/credits`
+- `commands/session.ts` — session and agent commands
+- `commands/ops.ts` — operations commands
+- `commands/setup.ts` — `/setup`
+- `commands/debug.ts` — `/heapdump`, `/mem`
 
 The top-level `app.tsx` composes these into the Ink tree with `Static` transcript output, a live streaming assistant row, prompt overlays, queue preview, status rule, input line, and completion list.
 
@@ -197,32 +221,38 @@ These are stateful UI branches in `app.tsx`, not separate screens.
 
 ## Commands
 
-The local slash handler covers the built-ins that need direct client behavior:
+The following commands are handled directly by the TUI client. Unrecognized commands fall through to the Python gateway via `slash.exec` and `command.dispatch`.
 
-- `/help`
-- `/quit`, `/exit`, `/q`
-- `/clear`
-- `/new`
-- `/compact`
-- `/resume`
-- `/copy`
-- `/paste`
-- `/details`
-- `/logs`
-- `/statusbar`, `/sb`
-- `/queue`
-- `/undo`
-- `/retry`
+### Core (`core.ts`)
+`/help`, `/quit` (alias `/exit`), `/update`, `/clear` (alias `/new`),
+`/compact`, `/copy`, `/paste`, `/details` (alias `/detail`),
+`/statusbar` (alias `/sb`), `/queue` (alias `/q`), `/logs`, `/history`,
+`/save`, `/undo`, `/retry`, `/steer`, `/mouse` (alias `/scroll`),
+`/status`, `/title`, `/fortune`, `/redraw`, `/terminal-setup`
 
-Notes:
+### Session (`session.ts`)
+`/model`, `/sessions` (aliases `/switch`, `/session`, `/resume`),
+`/background` (aliases `/bg`, `/btw`), `/image`, `/personality`,
+`/compress`, `/branch` (alias `/fork`), `/voice`, `/skin`,
+`/indicator`, `/yolo`, `/reasoning`, `/fast`, `/busy`, `/verbose`, `/usage`
 
-- `/copy` sends the selected assistant response through OSC 52.
-- `/paste` with no args asks the gateway to attach a clipboard image.
-- Text paste remains inline-only; `Cmd+V` / `Ctrl+V` handle layered text/OSC52/image fallback before `/paste` is needed.
-- `/details [hidden|collapsed|expanded|cycle]` controls thinking/tool-detail visibility.
-- `/statusbar` toggles the status rule on/off.
+### Ops (`ops.ts`)
+`/stop`, `/reload-mcp` (alias `/reload_mcp`), `/reload`, `/browser`,
+`/rollback`, `/agents` (alias `/tasks`), `/replay`, `/replay-diff`,
+`/skills`, `/reload-skills` (alias `/reload_skills`), `/plugins`, `/tools`
 
-Anything else falls through to:
+### Credits (`credits.ts`)
+`/credits` — Nous credit balance and browser top-up
+
+### Setup (`setup.ts`)
+`/setup` — launches external `hermes setup` wizard, suspends Ink while it runs
+
+### Debug (`debug.ts`)
+`/heapdump`, `/mem` — V8 memory diagnostics
+
+---
+
+Anything not matched above falls through to:
 
 1. `slash.exec`
 2. `command.dispatch`
@@ -233,28 +263,43 @@ That lets Python own aliases, plugins, skills, and registry-backed commands with
 
 Primary event types the client handles today:
 
-| Event                    | Payload                                         |
-| ------------------------ | ----------------------------------------------- |
-| `gateway.ready`          | `{ skin? }`                                     |
-| `session.info`           | session metadata for banner + tool/skill panels |
-| `message.start`          | start assistant streaming                       |
-| `message.delta`          | `{ text, rendered? }`                           |
-| `message.complete`       | `{ text, rendered?, usage, status }`            |
-| `thinking.delta`         | `{ text }`                                      |
-| `reasoning.delta`        | `{ text }`                                      |
-| `reasoning.available`    | `{ text }`                                      |
-| `status.update`          | `{ kind, text }`                                |
-| `tool.start`             | `{ tool_id, name, context? }`                   |
-| `tool.progress`          | `{ name, preview }`                             |
-| `tool.complete`          | `{ tool_id, name }`                             |
-| `clarify.request`        | `{ question, choices?, request_id }`            |
-| `approval.request`       | `{ command, description }`                      |
-| `sudo.request`           | `{ request_id }`                                |
-| `secret.request`         | `{ prompt, env_var, request_id }`               |
-| `background.complete`    | `{ task_id, text }`                             |
-| `error`                  | `{ message }`                                   |
-| `gateway.stderr`         | synthesized from child stderr                   |
-| `gateway.protocol_error` | synthesized from malformed stdout               |
+| Event                      | Payload                                                                     |
+| -------------------------- | --------------------------------------------------------------------------- |
+| `gateway.ready`            | `{ skin? }`                                                                 |
+| `skin.changed`             | `{ skin }`                                                                  |
+| `session.info`             | session metadata for banner + tool/skill panels                             |
+| `message.start`            | start assistant streaming                                                   |
+| `message.delta`            | `{ text, rendered? }`                                                       |
+| `message.complete`         | `{ text, rendered?, usage, status }`                                        |
+| `thinking.delta`           | `{ text }`                                                                  |
+| `reasoning.delta`          | `{ text, verbose? }`                                                        |
+| `reasoning.available`      | `{ text, verbose? }`                                                        |
+| `status.update`            | `{ kind, text }`                                                            |
+| `notification.show`        | `{ id, key, kind, level, text, ttl_ms? }`                                   |
+| `notification.clear`       | `{ key }`                                                                   |
+| `tool.start`               | `{ tool_id, name, context?, args_text? }`                                   |
+| `tool.generating`          | `{ name }`                                                                  |
+| `tool.progress`            | `{ name, preview }`                                                         |
+| `tool.complete`            | `{ tool_id, name, error?, summary?, duration_s?, inline_diff?, todos? }`    |
+| `clarify.request`          | `{ question, choices?, request_id }`                                        |
+| `approval.request`         | `{ command, description, allow_permanent? }`                                |
+| `sudo.request`             | `{ request_id }`                                                            |
+| `secret.request`           | `{ prompt, env_var, request_id }`                                           |
+| `background.complete`      | `{ task_id, text }`                                                         |
+| `review.summary`           | `{ text }`                                                                  |
+| `browser.progress`         | `{ message }`                                                               |
+| `voice.status`             | `{ state }`                                                                 |
+| `voice.transcript`         | `{ text, no_speech_limit? }`                                                |
+| `subagent.spawn_requested` | `{ subagent_id?, task_index, goal?, depth?, parent_id? }`                   |
+| `subagent.start`           | `{ subagent_id?, task_index, goal?, depth?, parent_id? }`                   |
+| `subagent.thinking`        | `{ text }`                                                                  |
+| `subagent.tool`            | `{ tool_name?, tool_preview?, text? }`                                      |
+| `subagent.progress`        | `{ text }`                                                                  |
+| `subagent.complete`        | `{ status, summary?, text?, duration_seconds? }`                            |
+| `error`                    | `{ message }`                                                               |
+| `gateway.stderr`           | synthesized from child stderr                                               |
+| `gateway.protocol_error`   | synthesized from malformed stdout                                           |
+| `gateway.start_timeout`    | `{ cwd?, python?, stderr_tail? }`                                           |
 
 ## Theme model
 
