@@ -36,6 +36,7 @@ logic stays in one place.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 import time
@@ -67,15 +68,26 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            worker_params = inspect.signature(_worker).parameters
+            if len(worker_params) == 3 and hasattr(self, "_create_worker_context"):
+                args = (
+                    weakref.ref(self, weakref_cb),
+                    self._create_worker_context(),
+                    self._work_queue,
+                )
+            else:
+                initializer = getattr(self, "_initializer", None)
+                initargs = getattr(self, "_initargs", ())
+                args = (
+                    weakref.ref(self, weakref_cb),
+                    self._work_queue,
+                    initializer,
+                    initargs,
+                )
             t = threading.Thread(
                 name=thread_name,
                 target=_worker,
-                args=(
-                    weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
-                ),
+                args=args,
                 daemon=True,
             )
             t.start()
@@ -372,6 +384,28 @@ def interrupt_all(reason: str = "shutdown") -> int:
     if count:
         logger.info("Interrupted %d async delegation(s) (%s)", count, reason)
     return count
+
+
+def interrupt_delegation(delegation_id: str, reason: str = "cancelled") -> bool:
+    """Signal one running async delegation to stop.
+
+    Returns True when an interrupt function was found and called. The worker
+    still owns final status and completion-event delivery.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if not record or record.get("status") != "running":
+            return False
+        fn = record.get("interrupt_fn")
+    if not callable(fn):
+        return False
+    try:
+        fn()
+        logger.info("Interrupted async delegation %s (%s)", delegation_id, reason)
+        return True
+    except Exception as exc:
+        logger.debug("interrupt_delegation: %s interrupt failed: %s", delegation_id, exc)
+        return False
 
 
 def _reset_for_tests() -> None:

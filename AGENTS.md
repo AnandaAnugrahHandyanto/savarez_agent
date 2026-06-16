@@ -954,9 +954,10 @@ Enable/disable per platform via `hermes tools` (the curses UI) or the
 ## Delegation (`delegate_task`)
 
 `tools/delegate_tool.py` spawns a subagent with an isolated
-context + terminal session. Synchronous: the parent waits for the
-child's summary before continuing its own loop — if the parent is
-interrupted, the child is cancelled.
+context + terminal session. By default the parent waits for the
+child's summary before continuing its own loop. With `background=true`,
+Hermes returns a delegation id immediately and the result re-enters the
+conversation later through the async-delegation completion queue.
 
 Two shapes:
 
@@ -978,9 +979,33 @@ Key config knobs (under `delegation:` in `config.yaml`):
 `orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
 `max_iterations`.
 
-Synchronicity rule: delegate_task is **not** durable. For long-running
-work that must outlive the current turn, use `cronjob` or
-`terminal(background=True, notify_on_complete=True)` instead.
+Durability rule: background `delegate_task` is detached from the current
+turn but still process-local. For work that must survive process restart, use
+`cronjob` or `terminal(background=True, notify_on_complete=True)` instead.
+
+### Dynamic Workflows (`dynamic_workflow`)
+
+Use `dynamic_workflow` when work has dependent phases and the next step
+should be authored only after prior worker outputs are available. It keeps a
+model-authored DAG in Hermes state, validates dependencies, dispatches ready
+nodes through `delegate_task(background=true)`, and exposes readiness after
+results are recorded.
+
+Typical loop:
+
+1. `dynamic_workflow(action="create", nodes=[...])` with only the currently
+   knowable DAG.
+2. `dynamic_workflow(action="dispatch_ready")` or `dispatch_ready=true` to run
+   ready leaf workers in the background.
+3. When async delegation results re-enter the conversation, call
+   `dynamic_workflow(action="record_result", ...)`.
+4. Reassess the bounded outputs. If needed, call
+   `dynamic_workflow(action="add_nodes", nodes=[...])` to extend the current
+   phase or create the next phase.
+
+Use plain `delegate_task` for independent one-off delegation. Use
+`dynamic_workflow` when phase barriers, joins, retries, or output-dependent
+follow-on nodes matter.
 
 ---
 
