@@ -907,7 +907,7 @@ class SessionDB:
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
-                if "locked" in err_msg or "busy" in err_msg:
+                if "locked" in err_msg or "busy" in err_msg or "readonly" in err_msg or "read-only" in err_msg:
                     last_err = exc
                     if attempt < self._WRITE_MAX_RETRIES - 1:
                         jitter = random.uniform(

@@ -2557,7 +2557,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # session search without this.  The underlying cause (usually
             # "locking protocol" from NFS) is now also captured by
             # hermes_state.get_last_init_error() for slash-command error strings.
-            logger.warning("SQLite session store not available: %s", e)
+            err_lower = str(e).lower()
+            if "locked" in err_lower or "busy" in err_lower:
+                logger.warning(
+                    "SQLite session store init failed — DB lock contention: %s", e,
+                )
+            else:
+                logger.warning("SQLite session store not available: %s", e)
 
         # Opportunistic state.db maintenance: prune ended sessions older
         # than sessions.retention_days + optional VACUUM. Tracks last-run
