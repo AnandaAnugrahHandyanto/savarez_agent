@@ -161,6 +161,74 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     return None
 
 
+def _has_explicit_owner_approval(conn, task_id: str) -> bool:
+    """Return True when the task has a durable owner-approval marker.
+
+    Blocked tasks are a human gate. A worker may still be alive after it
+    calls ``kanban_block`` (the current tool call returns to the model), so
+    ``kanban_create`` must not let that same process fan out child work just
+    because the model continued. The only escape hatch is an explicit
+    owner-approval record in comments or structured events.
+    """
+
+    approval_terms = (
+        "owner approved",
+        "owner-approved",
+        "owner approval granted",
+        "owner approval recorded",
+        "approved by owner",
+    )
+    rows = conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id DESC LIMIT 50",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        body = (row["body"] or "").lower()
+        if any(term in body for term in approval_terms):
+            return True
+
+    event_rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 50",
+        (task_id,),
+    ).fetchall()
+    for row in event_rows:
+        raw = row["payload"]
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        if payload.get("owner_approval") is True:
+            return True
+        marker = str(payload.get("approval") or payload.get("reason") or "").lower()
+        if any(term in marker for term in approval_terms):
+            return True
+    return False
+
+
+def _guard_blocked_worker_fanout(conn) -> Optional[str]:
+    """Reject ``kanban_create`` from a blocked worker without owner approval."""
+
+    self_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not self_tid:
+        return None
+    self_task = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (self_tid,),
+    ).fetchone()
+    if self_task is None or self_task["status"] != "blocked":
+        return None
+    if _has_explicit_owner_approval(conn, self_tid):
+        return None
+    return tool_error(
+        "kanban_create blocked: the current task is blocked and has no "
+        "explicit owner approval recorded. Blocked root/workflow tasks are "
+        "human gates; do not spawn or dispatch child tasks until the owner "
+        "approval is recorded and the task is unblocked."
+    )
+
+
 def _connect(board: Optional[str] = None):
     """Import + connect lazily so the module imports cleanly in non-kanban
     contexts (e.g. test rigs that import every tool module).
@@ -783,6 +851,10 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            blocked_fanout_err = _guard_blocked_worker_fanout(conn)
+            if blocked_fanout_err:
+                return blocked_fanout_err
+
             # Inherit the spawning worker's own task workspace when the
             # caller didn't specify one (see resolution note above).
             if _inherit_workspace:

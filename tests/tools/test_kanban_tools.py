@@ -768,6 +768,48 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_rejects_blocked_worker_without_owner_approval(worker_env):
+    """A worker that has blocked itself must not fan out child tasks.
+
+    ``kanban_block`` returns control to the model, so a leaked post-block
+    ``kanban_create`` call must be rejected unless a durable owner approval
+    marker exists on the task.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        assert kb.block_task(conn, worker_env, reason="pending owner approval")
+    finally:
+        conn.close()
+
+    d = json.loads(kt._handle_create({"title": "out of order", "assignee": "peer"}))
+    assert "current task is blocked" in d["error"]
+
+    conn = kb.connect()
+    try:
+        tasks = kb.list_tasks(conn, assignee="peer")
+        assert [t.title for t in tasks] == []
+    finally:
+        conn.close()
+
+
+def test_create_allows_blocked_worker_with_explicit_owner_approval(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        assert kb.block_task(conn, worker_env, reason="pending owner approval")
+        kb.add_comment(conn, worker_env, "owner", "owner approval granted: proceed")
+    finally:
+        conn.close()
+
+    d = json.loads(kt._handle_create({"title": "approved child", "assignee": "peer"}))
+    assert d["ok"] is True
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen
