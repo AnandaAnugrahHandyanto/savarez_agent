@@ -3816,6 +3816,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    # ------------------------------------------------------------------
+    # Dialogue reply-routing helpers
+    # ------------------------------------------------------------------
+
+    def _is_our_bot_message(self, message_id: Optional[str]) -> bool:
+        """Check if a message_id was sent by our own bot."""
+        if not message_id:
+            return False
+        return message_id in self._sent_message_ids
+
+    def _resolve_reply_context(self, event: MessageEvent) -> Optional[str]:
+        """If event is a reply to one of our messages, return the target session_key."""
+        if not event.reply_to_message_id:
+            return None
+        return self._message_context_map.get(event.reply_to_message_id)
+
+    def _build_context_key(self, event: MessageEvent, session_key: str) -> str:
+        """Build a predictable context key for mapping sent message to session."""
+        platform = event.source.platform.value if event.source.platform else "unknown"
+        chat_id = event.source.chat_id or "unknown"
+        return f"{platform}:{chat_id}"
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
