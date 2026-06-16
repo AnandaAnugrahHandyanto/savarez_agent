@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import yaml
 
+from agent.agent_init import _codex_gpt55_autoraise_notice_seen
 from agent.onboarding import (
     BUSY_INPUT_FLAG,
+    CODEX_GPT55_AUTORAISE_FLAG,
     OPENCLAW_RESIDUE_FLAG,
     TOOL_PROGRESS_FLAG,
     busy_input_hint_cli,
@@ -43,6 +45,11 @@ class TestIsSeen:
     def test_other_flags_isolated(self):
         cfg = {"onboarding": {"seen": {BUSY_INPUT_FLAG: True}}}
         assert is_seen(cfg, TOOL_PROGRESS_FLAG) is False
+
+    def test_codex_gpt55_autoraise_notice_seen_helper(self):
+        cfg = {"onboarding": {"seen": {CODEX_GPT55_AUTORAISE_FLAG: True}}}
+        assert _codex_gpt55_autoraise_notice_seen(cfg) is True
+        assert _codex_gpt55_autoraise_notice_seen({}) is False
 
 
 class TestMarkSeen:

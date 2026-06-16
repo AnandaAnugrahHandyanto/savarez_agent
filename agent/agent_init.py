@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -84,6 +84,27 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
         f"summarizing.\n"
         f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
     )
+
+
+def _codex_gpt55_autoraise_notice_seen(config: Dict[str, Any]) -> bool:
+    """Return True if the Codex gpt-5.5 auto-raise notice was already shown."""
+    try:
+        from agent.onboarding import CODEX_GPT55_AUTORAISE_FLAG, is_seen
+
+        return is_seen(config, CODEX_GPT55_AUTORAISE_FLAG)
+    except Exception:
+        return False
+
+
+def _mark_codex_gpt55_autoraise_notice_seen() -> bool:
+    """Best-effort persistence for the Codex gpt-5.5 auto-raise notice."""
+    try:
+        from agent.onboarding import CODEX_GPT55_AUTORAISE_FLAG, mark_seen
+        from hermes_cli.config import get_config_path
+
+        return mark_seen(get_config_path(), CODEX_GPT55_AUTORAISE_FLAG)
+    except Exception:
+        return False
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -1650,29 +1671,48 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
+    # Check immediately so CLI users see the warning at startup.
+    # Gateway status_callback is not yet wired, so any warning is stored
+    # in _compression_warning and replayed in the first run_conversation().
+    agent._compression_warning = None
+    agent._compression_warning_seen_flag = None
+    agent._compression_warning_config_path = None
+
+    # First-touch notice when the Codex gpt-5.5 autoraise kicked in. Persist it
+    # under onboarding.seen so the useful default stays enabled without
+    # announcing itself on every new session.
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    _autoraise_notice = (
+        cast(Dict[str, float], _autoraise) if isinstance(_autoraise, dict) else None
+    )
+    _show_autoraise_notice = bool(
+        _autoraise_notice is not None
+        and compression_enabled
+        and not _codex_gpt55_autoraise_notice_seen(_agent_cfg)
+    )
+
     if not agent.quiet_mode:
         if compression_enabled:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
-        # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
-        # exact opt-back-out command. Printed inline at startup for CLI users;
-        # gateway users get the same text replayed via _compression_warning on
-        # turn 1 (set below, after the warning slot is initialized).
-        _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
-            print(_build_codex_gpt55_autoraise_notice(_autoraise))
+        if _show_autoraise_notice and _autoraise_notice is not None:
+            print(_build_codex_gpt55_autoraise_notice(_autoraise_notice))
+            _mark_codex_gpt55_autoraise_notice_seen()
 
-    # Check immediately so CLI users see the warning at startup.
-    # Gateway status_callback is not yet wired, so any warning is stored
-    # in _compression_warning and replayed in the first run_conversation().
-    agent._compression_warning = None
     # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
-        agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
+    if _show_autoraise_notice and _autoraise_notice is not None:
+        agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise_notice)
+        try:
+            from agent.onboarding import CODEX_GPT55_AUTORAISE_FLAG
+            from hermes_cli.config import get_config_path
+
+            agent._compression_warning_seen_flag = CODEX_GPT55_AUTORAISE_FLAG
+            agent._compression_warning_config_path = get_config_path()
+        except Exception:
+            pass
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent

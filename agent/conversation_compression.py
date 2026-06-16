@@ -271,11 +271,32 @@ def replay_compression_warning(agent: Any) -> None:
     warning.
     """
     msg = getattr(agent, "_compression_warning", None)
-    if msg and agent.status_callback:
+    if not msg:
+        return
+
+    delivered = False
+    if agent.status_callback:
         try:
             agent.status_callback("lifecycle", msg)
+            delivered = True
         except Exception:
             pass
+
+    # Some compression notices are first-touch onboarding, not recurring
+    # health warnings. Mark those only after an actual delivery so quiet CLI
+    # one-shots do not consume the notice unseen.
+    flag = getattr(agent, "_compression_warning_seen_flag", None)
+    config_path = getattr(agent, "_compression_warning_config_path", None)
+    if delivered and flag and config_path:
+        try:
+            from agent.onboarding import mark_seen
+
+            mark_seen(Path(config_path), str(flag))
+        except Exception:
+            pass
+    if flag:
+        agent._compression_warning_seen_flag = None
+        agent._compression_warning_config_path = None
 
 
 def compress_context(

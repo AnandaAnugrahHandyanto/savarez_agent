@@ -11,9 +11,11 @@ Two-phase design:
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
+from agent.onboarding import CODEX_GPT55_AUTORAISE_FLAG
 
 
 @pytest.fixture(autouse=True)
@@ -437,6 +439,44 @@ def test_replay_without_callback_is_noop():
 
     # Should not raise
     agent._replay_compression_warning()
+
+
+def test_replay_marks_first_touch_compression_notice_seen(tmp_path):
+    """Gateway replay persists first-touch notices after actual delivery."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("compression:\n  threshold: 0.5\n", encoding="utf-8")
+    agent = _make_agent()
+    setattr(agent, "_compression_warning", "Codex gpt-5.5 auto-raise notice")
+    setattr(agent, "_compression_warning_seen_flag", CODEX_GPT55_AUTORAISE_FLAG)
+    setattr(agent, "_compression_warning_config_path", cfg_path)
+    callback_events = []
+    setattr(agent, "status_callback", lambda ev, msg: callback_events.append((ev, msg)))
+
+    agent._replay_compression_warning()
+
+    assert callback_events == [("lifecycle", "Codex gpt-5.5 auto-raise notice")]
+    loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert loaded["onboarding"]["seen"][CODEX_GPT55_AUTORAISE_FLAG] is True
+    assert getattr(agent, "_compression_warning_seen_flag") is None
+    assert getattr(agent, "_compression_warning_config_path") is None
+
+
+def test_replay_does_not_mark_first_touch_notice_without_delivery(tmp_path):
+    """Quiet/no-callback runs must not consume a notice the user never saw."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("compression:\n  threshold: 0.5\n", encoding="utf-8")
+    agent = _make_agent()
+    setattr(agent, "_compression_warning", "Codex gpt-5.5 auto-raise notice")
+    setattr(agent, "_compression_warning_seen_flag", CODEX_GPT55_AUTORAISE_FLAG)
+    setattr(agent, "_compression_warning_config_path", cfg_path)
+    setattr(agent, "status_callback", None)
+
+    agent._replay_compression_warning()
+
+    loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert loaded == {"compression": {"threshold": 0.5}}
+    assert getattr(agent, "_compression_warning_seen_flag") is None
+    assert getattr(agent, "_compression_warning_config_path") is None
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=80_000)
