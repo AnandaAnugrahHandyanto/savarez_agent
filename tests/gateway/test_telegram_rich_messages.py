@@ -18,7 +18,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.telegram import TelegramAdapter
-from telegram.error import BadRequest, NetworkError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 
 
 # Content exercising rich-only constructs: a heading, a real Markdown table,
@@ -392,6 +392,35 @@ async def test_per_message_bad_request_does_not_latch_off():
     result2 = await adapter.send("12345", RICH_CONTENT)
     assert result2.success is True
     adapter._bot.do_api_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flood_control_rich_error_falls_back_to_legacy():
+    """Flood control means Telegram rejected the request before processing
+    -> safe to fall back to legacy MarkdownV2 (no duplicate risk).
+
+    Regression: a single 429 RetryAfter used to leave the user staring at a
+    raw-markdown streaming preview because the rich path's "no legacy resend"
+    contract covered all transient errors uniformly.
+    """
+    adapter = _make_adapter()
+    # conftest mocks RetryAfter with retry_after as a class attribute; set
+    # the value on the instance to mimic a real 429.
+    flood = RetryAfter()
+    flood.retry_after = 12
+    flood.error_code = 429
+    adapter._bot.do_api_request = AsyncMock(side_effect=flood)
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    # Legacy path took over: send_message was called.  do_api_request was
+    # only invoked for the rich attempt.
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+    adapter._bot.send_message.assert_awaited_once()
+    # Rich must not be latched off — a single flood strike is not a
+    # capability issue.
+    assert adapter._rich_send_disabled is False
 
 
 @pytest.mark.asyncio

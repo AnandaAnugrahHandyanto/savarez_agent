@@ -1167,9 +1167,15 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> Optional[SendResult]:
         """Attempt a single ``sendRichMessage`` send.
 
-        Returns a :class:`SendResult` (success, or a transient failure that the
-        caller must NOT legacy-resend), or ``None`` to signal "fall back to the
-        legacy MarkdownV2 path" (permanent/capability error or DM-topic skip).
+        Returns one of:
+        - :class:`SendResult(success=True)` — message delivered as rich
+        - ``None`` — caller must fall back to the legacy MarkdownV2 path
+          (permanent/capability error, DM-topic skip, or transient error
+          where the request is KNOWN not to have reached Telegram — flood
+          control / connect timeout, no duplicate risk)
+        - :class:`SendResult(success=False)` — transient error where the
+          request MAY have reached Telegram (read timeout, network error
+          mid-response). Caller must NOT legacy-resend.
         """
         thread_id = self._metadata_thread_id(metadata)
         routing = self._compute_single_send_routing(chat_id, reply_to, metadata, thread_id)
@@ -1214,9 +1220,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, exc,
                 )
                 return None
-            # Transient / network / unknown: the request may have reached
-            # Telegram. Do NOT legacy-resend (duplicate risk); surface a
-            # failure with retry semantics mirroring the legacy send() except.
+            # Flood control / connect-timeout: Telegram rejected the request
+            # before processing it. No duplicate risk -> safe to fall back to
+            # the legacy MarkdownV2 path so the user gets a rendered message
+            # instead of a stuck raw-markdown streaming preview.
             err_str = str(exc).lower()
             try:
                 from telegram.error import TimedOut as _TimedOut
@@ -1224,6 +1231,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
+            is_flood = (
+                getattr(exc, "retry_after", None) is not None
+                or "retry after" in err_str
+                or "flood" in err_str
+            )
+            if is_connect_timeout or (not is_timeout and is_flood):
+                logger.warning(
+                    "[%s] sendRichMessage rejected before delivery "
+                    "(flood/connect) -- falling back to MarkdownV2: %s",
+                    self.name, exc,
+                )
+                return None
+            # Read timeout / network error: request may have reached Telegram.
+            # Legacy-resend would risk a duplicate; surface a non-retryable
+            # failure so the caller can decide what to do.
             logger.warning(
                 "[%s] sendRichMessage transient failure (no legacy resend): %s",
                 self.name, exc,
@@ -1231,7 +1253,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False,
                 error=str(exc),
-                retryable=(is_connect_timeout or not is_timeout),
+                retryable=False,
             )
 
         message_id = None
@@ -1256,14 +1278,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Uses ``editMessageText`` with the ``rich_message`` parameter so a
         streamed preview can finalize as rich (tables/task lists/details/math)
-        WITHOUT a fresh send + delete — no duplicate preview.  Mirrors
-        :meth:`_try_send_rich`'s error contract:
+        WITHOUT a fresh send + delete -- no duplicate preview.  Mirrors
+        :meth:`_try_send_rich`'s error contract (see there for full doc):
 
-        - success → ``SendResult(success=True, message_id=...)``
-        - permanent / capability error → ``None`` (caller falls back to the
-          legacy MarkdownV2 edit; capability errors latch rich off)
-        - transient / unknown → ``SendResult(success=False)`` with retry
-          semantics (the message may already be edited; do NOT legacy-resend)
+        - success -> ``SendResult(success=True, message_id=...)``
+        - permanent / capability / pre-delivery transient (flood, connect) ->
+          ``None`` (caller falls back to legacy MarkdownV2 edit; capability
+          errors latch rich off)
+        - unknown transient (timeout / mid-response network error) ->
+          ``SendResult(success=False)`` -- the message may already be edited;
+          do NOT legacy-resend.
         """
         payload: Dict[str, Any] = {
             "chat_id": int(chat_id),
@@ -1300,6 +1324,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
+            is_flood = (
+                getattr(exc, "retry_after", None) is not None
+                or "retry after" in err_str
+                or "flood" in err_str
+            )
+            if is_connect_timeout or (not is_timeout and is_flood):
+                logger.warning(
+                    "[%s] rich editMessageText rejected before delivery "
+                    "(flood/connect) -- falling back to MarkdownV2: %s",
+                    self.name, exc,
+                )
+                return None
             logger.warning(
                 "[%s] rich editMessageText transient failure (no legacy resend): %s",
                 self.name, exc,
@@ -1307,7 +1343,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False,
                 error=str(exc),
-                retryable=(is_connect_timeout or not is_timeout),
+                retryable=False,
             )
         return SendResult(success=True, message_id=message_id)
 
