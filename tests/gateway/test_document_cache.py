@@ -162,6 +162,7 @@ class TestSupportedDocumentTypes:
             ".xlsx",
             ".ppt",
             ".pptx",
+            ".amr",
         ],
     )
     def test_expected_extensions_present(self, ext):
@@ -210,6 +211,14 @@ class TestCacheMediaBytes:
         assert result is not None
         assert result.kind == "video"
         assert result.media_type == "video/mp4"
+
+    def test_amr_routes_to_audio_by_extension(self):
+        from gateway.platforms.base import cache_media_bytes
+        result = cache_media_bytes(b"#!AMR\n", filename="call.amr", mime_type="application/octet-stream")
+        assert result is not None
+        assert result.kind == "audio"
+        assert result.media_type == "audio/amr"
+        assert result.path.endswith(".amr")
 
     def test_mime_only_resolves_extension(self):
         from gateway.platforms.base import cache_media_bytes

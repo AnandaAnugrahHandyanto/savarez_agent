@@ -106,6 +106,12 @@ class TestValidateAudioFile:
         from tools.transcription_tools import _validate_audio_file
         assert _validate_audio_file(str(f)) is None
 
+    def test_amr_file_is_supported(self, tmp_path):
+        f = tmp_path / "test.amr"
+        f.write_bytes(b"#!AMR\n")
+        from tools.transcription_tools import _validate_audio_file
+        assert _validate_audio_file(str(f)) is None
+
     def test_too_large(self, tmp_path):
         f = tmp_path / "big.ogg"
         f.write_bytes(b"x")
