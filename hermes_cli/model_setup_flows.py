@@ -2284,6 +2284,87 @@ def _model_flow_bedrock(config, current_model=""):
     else:
         print("  No change.")
 
+
+def _model_flow_ark_provider(config, provider_id, current_model=""):
+    """Volcengine and BytePlus Ark setup without live model discovery."""
+    from hermes_cli.main import _prompt_api_key
+    from hermes_cli.ark_providers import (
+        ARK_CODING_PLAN_PROVIDER_IDS,
+        ark_provider_default_model,
+        ark_provider_models,
+    )
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, load_config, save_config
+
+    del config
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    existing_key = ""
+    for env_var in pconfig.api_key_env_vars:
+        existing_key = get_env_value(env_var) or os.getenv(env_var, "")
+        if existing_key:
+            break
+
+    existing_key, abort = _prompt_api_key(
+        pconfig, existing_key, provider_id=provider_id
+    )
+    if abort:
+        return
+
+    effective_base = pconfig.inference_base_url
+    if pconfig.base_url_env_var:
+        effective_base = (
+            get_env_value(pconfig.base_url_env_var)
+            or os.getenv(pconfig.base_url_env_var, "")
+            or effective_base
+        )
+
+    model_list = ark_provider_models(provider_id)
+    default_model = ark_provider_default_model(provider_id)
+
+    if provider_id in ARK_CODING_PLAN_PROVIDER_IDS:
+        current_or_default = (
+            current_model if current_model in model_list else default_model
+        )
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_or_default,
+            confirm_provider=provider_id,
+            confirm_base_url=effective_base,
+            confirm_api_key=existing_key,
+        )
+    else:
+        try:
+            selected = input(f"Model ID [{default_model}]: ").strip() or default_model
+        except (KeyboardInterrupt, EOFError):
+            print()
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = provider_id
+        model["base_url"] = effective_base
+        model.pop("api_mode", None)
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via {pconfig.name})")
+    else:
+        print("No change.")
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.main import _prompt_api_key

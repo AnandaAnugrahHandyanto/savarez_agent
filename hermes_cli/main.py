@@ -595,6 +595,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_google_gemini_cli,
     _model_flow_custom,
     _model_flow_azure_foundry,
+    _model_flow_ark_provider,
     _model_flow_named_custom,
     _model_flow_copilot,
     _model_flow_copilot_acp,
@@ -2666,6 +2667,7 @@ def select_provider_and_model(args=None):
         load_config,
         get_env_value,
     )
+    from hermes_cli.ark_providers import ARK_PROVIDER_IDS
     from hermes_cli.providers import resolve_provider_full
 
     config = load_config()
@@ -3024,6 +3026,8 @@ def select_provider_and_model(args=None):
         _model_flow_bedrock(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
+    elif selected_provider in ARK_PROVIDER_IDS:
+        _model_flow_ark_provider(config, selected_provider, current_model)
     elif selected_provider in {
         "openai-api",
         "gemini",
@@ -3912,7 +3916,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         if provider_id == "lmstudio" and allow_lmstudio_default:
             prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
         else:
-            prompt = f"{key_env} (or Enter to cancel): "
+            prompt = f"{key_env}: "
         try:
             entered = masked_secret_prompt(prompt).strip()
         except (KeyboardInterrupt, EOFError):
@@ -3929,7 +3933,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
             return "", True
         new_key = _prompt_new_key(allow_lmstudio_default=True)
         if not new_key:
-            print("Cancelled.")
+            print("No API key entered.")
             return "", True
         save_env_value(key_env, new_key)
         print("API key saved.")
