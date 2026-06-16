@@ -22,6 +22,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,24 @@ _COMBINED_REVIEW_PROMPT = (
 
 
 
+def _skill_is_loadable(name: str) -> bool:
+    """Return True when *name* is a discoverable skill in the session's search root.
+
+    Uses ``_find_all_skills()`` from the skills tool module so the check
+    uses the same lookup path as ``skills_list`` — not a raw filesystem probe
+    that might diverge from the tool's search roots.
+    """
+    try:
+        from tools.skills_tool import _find_all_skills as _find_skills
+        all_skills = _find_skills()
+        return any(s.get("name") == name for s in all_skills)
+    except Exception:
+        # Defensive: if the check itself fails (import error, etc.),
+        # err on the side of reporting — don't suppress a legitimate
+        # skill-created notification because the verification broke.
+        return True
+
+
 def summarize_background_review_actions(
     review_messages: List[Dict],
     prior_snapshot: List[Dict],
@@ -282,7 +301,20 @@ def summarize_background_review_actions(
         message = data.get("message", "")
         target = data.get("target", "")
         if "created" in message.lower():
-            actions.append(message)
+            # Verify the skill is actually loadable from the current session's
+            # skill search root — not just written to some filesystem path.
+            # Extract skill name from the message (e.g. "Skill 'my-skill' created.")
+            # and check it's discoverable via _find_all_skills().
+            skill_name = None
+            name_match = re.search(r"'([^']+)'", message)
+            if name_match:
+                skill_name = name_match.group(1)
+            if skill_name and not _skill_is_loadable(skill_name):
+                # Skill was written to a path the current session can't reach.
+                # Surface a degraded notification instead of a confident "created".
+                actions.append(f"Skill '{skill_name}' written but not loadable (different search root)")
+            else:
+                actions.append(message)
         elif "updated" in message.lower():
             actions.append(message)
         elif "added" in message.lower() or (target and "add" in message.lower()):
