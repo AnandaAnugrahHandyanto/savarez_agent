@@ -6495,11 +6495,12 @@ async def mobile_dashboard_chat_endpoint(
         raise HTTPException(status_code=400, detail="message is required")
 
     gateway_session_key = _mobile_gateway_session_key(request, session_id)
+    # B-Prime mobile continuity is server-owned. Keep legacy request fields
+    # parse-compatible, but never trust client-supplied conversation_history or
+    # system_message; the bridge loads SessionDB history immediately before run.
     return await _run_mobile_dashboard_chat_turn(
         session_id=session_id,
         user_message=message,
-        conversation_history=body.conversation_history or [],
-        system_message=body.system_message,
         gateway_session_key=gateway_session_key,
     )
 

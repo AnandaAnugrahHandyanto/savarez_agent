@@ -104,10 +104,15 @@ async def run_mobile_dashboard_chat_turn(
     agent_ref: list[Any] = [None]
 
     try:
+        server_history: List[Dict[str, Any]] = []
+        load_history = getattr(adapter, "_conversation_history_for_session", None)
+        if callable(load_history):
+            server_history = load_history(session_id) or []
+
         result, usage = await adapter._run_agent(
             user_message=user_message,
-            conversation_history=conversation_history or [],
-            ephemeral_system_prompt=system_message,
+            conversation_history=server_history,
+            ephemeral_system_prompt=None,
             session_id=session_id,
             gateway_session_key=gateway_session_key or session_id,
             agent_ref=agent_ref,
