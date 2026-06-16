@@ -2416,31 +2416,44 @@ class SessionDB:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
-            cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                       tool_calls, tool_name, timestamp, token_count, finish_reason,
+                       reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                       codex_message_items, platform_message_id, observed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        role,
+                        stored_content,
+                        tool_call_id,
+                        tool_calls_json,
+                        tool_name,
+                        time.time(),
+                        token_count,
+                        finish_reason,
+                        reasoning,
+                        reasoning_content,
+                        reasoning_details_json,
+                        codex_items_json,
+                        codex_message_items_json,
+                        platform_message_id,
+                        1 if observed else 0,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                # FK violation: the session was deleted between the caller's
+                # read and this write (dashboard bulk-delete, prune, or
+                # manual remove racing with an in-flight inbound event).
+                # Silently drop the message — there is no valid session to
+                # attach it to.
+                logger.debug(
+                    "append_message: session %s gone, dropping %s message",
                     session_id,
                     role,
-                    stored_content,
-                    tool_call_id,
-                    tool_calls_json,
-                    tool_name,
-                    time.time(),
-                    token_count,
-                    finish_reason,
-                    reasoning,
-                    reasoning_content,
-                    reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
-                    platform_message_id,
-                    1 if observed else 0,
-                ),
-            )
+                )
+                return None
             msg_id = cursor.lastrowid
 
             # Update counters

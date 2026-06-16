@@ -604,3 +604,54 @@ class TestFinalizeOrphanedCompressionSessions:
 
         session = db.get_session("titled-ghost")
         assert session["end_reason"] == "orphaned_compression"
+
+
+class TestAppendMessageAfterSessionDelete:
+    def test_returns_none_and_leaves_no_rows_after_session_delete(self, tmp_path):
+        db = _make_session_db(tmp_path)
+
+        db.create_session(session_id="victim", source="tui", model="test")
+        db.delete_session("victim")
+
+        result = db.append_message("victim", role="user", content="late message")
+
+        assert result is None
+        assert db.get_messages("victim") == []
+
+    def test_parallel_delete_while_append_both_complete_cleanly(self, tmp_path):
+        db = _make_session_db(tmp_path)
+        db.create_session(session_id="race-session", source="tui", model="test")
+
+        errors = []
+
+        def deleter():
+            try:
+                for _ in range(50):
+                    db.create_session(
+                        session_id="race-session",
+                        source="tui",
+                        model="test",
+                    )
+                    db.delete_session("race-session")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        def appender():
+            try:
+                for _ in range(50):
+                    db.append_message(
+                        "race-session",
+                        role="user",
+                        content="ping",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t1 = threading.Thread(target=deleter)
+        t2 = threading.Thread(target=appender)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert errors == [], f"Unexpected errors: {errors}"
