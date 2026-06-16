@@ -331,3 +331,39 @@ def test_hosted_policy_locks_to_opt_data(monkeypatch):
 
     assert str(policy.locked_root) == "/opt/data"
     assert policy.can_change_path is False
+
+
+def test_directory_listing_skips_dangling_symlinks(forced_files_client):
+    """Dangling symlinks should be silently skipped in directory listings."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    # Create a valid file
+    valid = root / "valid.txt"
+    valid.write_text("hello")
+
+    # Create a dangling symlink
+    broken = root / "broken_link"
+    broken.symlink_to("/nonexistent/target/path")
+
+    resp = client.get("/api/files", params={"path": str(root)})
+    assert resp.status_code == 200
+    names = [e["name"] for e in resp.json()["entries"]]
+    assert "valid.txt" in names
+    assert "broken_link" not in names
+
+
+def test_direct_access_to_dangling_symlink_returns_404(forced_files_client):
+    """Accessing a dangling symlink directly should return 404, not 500."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    broken = root / "broken_link"
+    broken.symlink_to("/nonexistent/target/path")
+
+    resp = client.get(
+        "/api/files/read",
+        params={"path": str(broken)},
+    )
+    assert resp.status_code == 404
+    assert resp.status_code == 404  # exists() returns False for dangling symlinks

@@ -1330,6 +1330,8 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
     try:
         st = resolved.stat()
     except OSError as exc:
+        if target.is_symlink():
+            raise HTTPException(status_code=404, detail=f"Dangling symlink: {target.name}")
         raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
 
     is_dir = resolved.is_dir()
@@ -1370,7 +1372,13 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
     try:
-        entries = [_managed_file_entry(policy, child) for child in target.iterdir()]
+        entries = []
+        for child in target.iterdir():
+            try:
+                entries.append(_managed_file_entry(policy, child))
+            except HTTPException:
+                # Skip entries that can't be stat'd (e.g. dangling symlinks)
+                continue
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
     except OSError as exc:
