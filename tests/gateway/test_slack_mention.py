@@ -7,6 +7,8 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig
 
 
@@ -55,7 +57,26 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None, allowed_channels=None):
+@pytest.fixture(autouse=True)
+def _clear_slack_gating_env(monkeypatch):
+    """Keep host Slack config from leaking into these unit tests."""
+    for name in (
+        "SLACK_REQUIRE_MENTION",
+        "SLACK_STRICT_MENTION",
+        "SLACK_FREE_RESPONSE_CHANNELS",
+        "SLACK_ALLOWED_CHANNELS",
+        "SLACK_IGNORED_CHANNELS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _make_adapter(
+    require_mention=None,
+    strict_mention=None,
+    free_response_channels=None,
+    allowed_channels=None,
+    ignored_channels=None,
+):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -65,6 +86,8 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["free_response_channels"] = free_response_channels
     if allowed_channels is not None:
         extra["allowed_channels"] = allowed_channels
+    if ignored_channels is not None:
+        extra["ignored_channels"] = ignored_channels
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -252,6 +275,11 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
     is_mentioned = bot_uid and f"<@{bot_uid}>" in text
 
     if not is_dm and bot_uid:
+        # ignored_channels check (blacklist — takes precedence over all other gating)
+        ignored = adapter._slack_ignored_channels()
+        if channel_id in ignored:
+            return False
+
         # allowed_channels check (whitelist — must pass before other gating)
         allowed = adapter._slack_allowed_channels()
         if allowed and channel_id not in allowed:
@@ -599,6 +627,49 @@ def test_allowed_channels_env_var_fallback(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Tests: _slack_ignored_channels
+# ---------------------------------------------------------------------------
+
+def test_ignored_channels_default_empty(monkeypatch):
+    monkeypatch.delenv("SLACK_IGNORED_CHANNELS", raising=False)
+    adapter = _make_adapter()
+    assert adapter._slack_ignored_channels() == set()
+
+
+def test_ignored_channels_list():
+    adapter = _make_adapter(ignored_channels=[CHANNEL_ID, OTHER_CHANNEL_ID])
+    result = adapter._slack_ignored_channels()
+    assert CHANNEL_ID in result
+    assert OTHER_CHANNEL_ID in result
+
+
+def test_ignored_channels_csv_string():
+    adapter = _make_adapter(ignored_channels=f"{CHANNEL_ID}, {OTHER_CHANNEL_ID}")
+    result = adapter._slack_ignored_channels()
+    assert CHANNEL_ID in result
+    assert OTHER_CHANNEL_ID in result
+
+
+def test_ignored_channels_empty_string():
+    adapter = _make_adapter(ignored_channels="")
+    assert adapter._slack_ignored_channels() == set()
+
+
+def test_ignored_channels_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_IGNORED_CHANNELS", f"{CHANNEL_ID},{OTHER_CHANNEL_ID}")
+    adapter = _make_adapter()  # no config value → falls back to env
+    result = adapter._slack_ignored_channels()
+    assert CHANNEL_ID in result
+    assert OTHER_CHANNEL_ID in result
+
+
+def test_ignored_channels_bare_int():
+    adapter = _make_adapter(ignored_channels=1491973769726791812)
+    result = adapter._slack_ignored_channels()
+    assert result == {"1491973769726791812"}
+
+
+# ---------------------------------------------------------------------------
 # Tests: allowed_channels gating integration
 # ---------------------------------------------------------------------------
 
@@ -639,6 +710,41 @@ def test_allowed_channels_env_var_blocks_channel(monkeypatch):
     adapter = _make_adapter()  # no config value → falls back to env
     assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, text="hello") is False
     assert _would_process(adapter, channel_id=CHANNEL_ID, mentioned=True) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: ignored_channels gating integration
+# ---------------------------------------------------------------------------
+
+def test_ignored_channels_blocks_even_when_allowed_and_mentioned():
+    """Blacklist takes precedence over allowed_channels and @mentions."""
+    adapter = _make_adapter(
+        allowed_channels=[CHANNEL_ID],
+        ignored_channels=[CHANNEL_ID],
+    )
+    assert _would_process(adapter, channel_id=CHANNEL_ID, mentioned=True) is False
+
+
+def test_ignored_channels_blocks_free_response_channel():
+    """Blacklist takes precedence over free_response_channels."""
+    adapter = _make_adapter(
+        free_response_channels=[CHANNEL_ID],
+        ignored_channels=[CHANNEL_ID],
+    )
+    assert _would_process(adapter, channel_id=CHANNEL_ID, text="hello") is False
+
+
+def test_ignored_channels_dm_unaffected():
+    """DMs bypass the ignored_channels check entirely."""
+    adapter = _make_adapter(ignored_channels=["DDMCHANNEL"])
+    assert _would_process(adapter, is_dm=True, channel_id="DDMCHANNEL") is True
+
+
+def test_ignored_channels_env_var_blocks_channel(monkeypatch):
+    """SLACK_IGNORED_CHANNELS env var (no config) also gates messages."""
+    monkeypatch.setenv("SLACK_IGNORED_CHANNELS", CHANNEL_ID)
+    adapter = _make_adapter()
+    assert _would_process(adapter, channel_id=CHANNEL_ID, mentioned=True) is False
 
 
 # ---------------------------------------------------------------------------
@@ -687,3 +793,52 @@ def test_config_bridges_slack_allowed_channels_env_takes_precedence(monkeypatch,
     import os as _os
     # env var must not be overwritten by config.yaml
     assert _os.environ["SLACK_ALLOWED_CHANNELS"] == OTHER_CHANNEL_ID
+
+
+# ---------------------------------------------------------------------------
+# Tests: config bridging for ignored_channels
+# ---------------------------------------------------------------------------
+
+def test_config_bridges_slack_ignored_channels(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  ignored_channels:\n"
+        f"    - {CHANNEL_ID}\n"
+        f"    - {OTHER_CHANNEL_ID}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SLACK_IGNORED_CHANNELS", raising=False)
+
+    config = load_gateway_config()
+
+    import os as _os
+    assert _os.environ["SLACK_IGNORED_CHANNELS"] == f"{CHANNEL_ID},{OTHER_CHANNEL_ID}"
+    slack_extra = config.platforms[Platform.SLACK].extra
+    assert slack_extra.get("ignored_channels") == [CHANNEL_ID, OTHER_CHANNEL_ID]
+
+
+def test_config_bridges_slack_ignored_channels_env_takes_precedence(monkeypatch, tmp_path):
+    """Env var set before load_gateway_config() should not be overwritten."""
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        f"  ignored_channels: {CHANNEL_ID}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_IGNORED_CHANNELS", OTHER_CHANNEL_ID)  # already set
+
+    load_gateway_config()
+
+    import os as _os
+    assert _os.environ["SLACK_IGNORED_CHANNELS"] == OTHER_CHANNEL_ID

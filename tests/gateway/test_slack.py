@@ -117,13 +117,21 @@ def adapter():
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    """Point document cache to tmp_path and isolate host Slack config."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
+    for name in (
+        "SLACK_REQUIRE_MENTION",
+        "SLACK_STRICT_MENTION",
+        "SLACK_FREE_RESPONSE_CHANNELS",
+        "SLACK_ALLOWED_CHANNELS",
+        "SLACK_IGNORED_CHANNELS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 # ---------------------------------------------------------------------------
