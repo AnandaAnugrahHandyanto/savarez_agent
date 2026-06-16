@@ -402,20 +402,57 @@ def _discover(
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
 
+    current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+
+    # Dedupe by lineage. Keep the raw owning session_id on the surviving
+    # row — only that pairs validly with the FTS5 match id for the anchored
+    # window. parent_session_id is exposed separately when different.
+    #
+    # Important: the newest/current session can dominate the first FTS page
+    # for broad OR queries. If we fetched only one page, filtering the current
+    # lineage could incorrectly return zero even when older sessions match.
+    # Page through a bounded number of FTS hits until we have enough distinct
+    # non-current lineages or no more results.
+    seen_sessions = {}
+    any_raw_results = False
+    page_size = 50
+    max_scan = 500
     try:
-        raw_results = db.search_messages(
-            query=query,
-            role_filter=role_list,
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=50,  # widen so dedup-by-lineage can find distinct sessions
-            offset=0,
-            sort=sort,
-        )
+        for offset in range(0, max_scan, page_size):
+            raw_results = db.search_messages(
+                query=query,
+                role_filter=role_list,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                limit=page_size,
+                offset=offset,
+                sort=sort,
+            )
+            if raw_results:
+                any_raw_results = True
+            else:
+                break
+
+            for r in raw_results:
+                raw_sid = r["session_id"]
+                resolved_sid = _resolve_to_parent(db, raw_sid)
+                # Skip the current session lineage
+                if current_lineage_root and resolved_sid == current_lineage_root:
+                    continue
+                if current_session_id and raw_sid == current_session_id:
+                    continue
+                if resolved_sid not in seen_sessions:
+                    row = dict(r)
+                    row["_lineage_root"] = resolved_sid
+                    seen_sessions[resolved_sid] = row
+                if len(seen_sessions) >= limit:
+                    break
+            if len(seen_sessions) >= limit:
+                break
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
         return tool_error(f"Search failed: {e}", success=False)
 
-    if not raw_results:
+    if not any_raw_results:
         return json.dumps({
             "success": True,
             "mode": "discover",
@@ -424,27 +461,6 @@ def _discover(
             "count": 0,
             "message": "No matching sessions found.",
         }, ensure_ascii=False)
-
-    current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
-
-    # Dedupe by lineage. Keep the raw owning session_id on the surviving
-    # row — only that pairs validly with the FTS5 match id for the anchored
-    # window. parent_session_id is exposed separately when different.
-    seen_sessions = {}
-    for r in raw_results:
-        raw_sid = r["session_id"]
-        resolved_sid = _resolve_to_parent(db, raw_sid)
-        # Skip the current session lineage
-        if current_lineage_root and resolved_sid == current_lineage_root:
-            continue
-        if current_session_id and raw_sid == current_session_id:
-            continue
-        if resolved_sid not in seen_sessions:
-            row = dict(r)
-            row["_lineage_root"] = resolved_sid
-            seen_sessions[resolved_sid] = row
-        if len(seen_sessions) >= limit:
-            break
 
     results = []
     for lineage_root, match_info in seen_sessions.items():

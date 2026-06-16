@@ -437,12 +437,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
-        "kimi-k2.5",
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
+        "qwen3-max-2026-01-23",
         # Third-party models available on coding-intl
         "glm-5",
         "glm-4.7",
@@ -451,11 +451,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
     # separate provider ID with its own base_url_env_var.
     "alibaba-coding-plan": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
+        "qwen3-max-2026-01-23",
         "kimi-k2.5",
         "glm-5",
         "glm-4.7",
@@ -1002,7 +1003,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
-    ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
+    ProviderEntry("alibaba-coding-plan", "Alibaba Cloud (Coding Plan)", "Alibaba Cloud Coding Plan (coding-intl DashScope endpoint)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview via tokenhub.tencentmaas.com)"),
@@ -1036,10 +1037,14 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
 # that is not already in the list above.  Adding plugins/model-providers/<name>/
 # is sufficient to expose a new provider in the model picker, /model, and all
 # downstream consumers — no edits to this file needed.
+HIDDEN_MODEL_PICKER_PROVIDERS: set[str] = {"alibaba"}
+
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
 try:
     from providers import list_providers as _list_providers_for_canonical
     for _pp in _list_providers_for_canonical():
+        if _pp.name in HIDDEN_MODEL_PICKER_PROVIDERS:
+            continue
         if _pp.name in _canonical_slugs:
             continue
         if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot"}:
@@ -1198,10 +1203,13 @@ _PROVIDER_ALIASES = {
     "kilo": "kilocode",
     "kilo-code": "kilocode",
     "kilo-gateway": "kilocode",
-    "dashscope": "alibaba",
-    "aliyun": "alibaba",
-    "qwen": "alibaba",
-    "alibaba-cloud": "alibaba",
+    "dashscope": "alibaba-coding-plan",
+    "aliyun": "alibaba-coding-plan",
+    "qwen": "alibaba-coding-plan",
+    "alibaba-cloud": "alibaba-coding-plan",
+    "alibaba_coding": "alibaba-coding-plan",
+    "alibaba-coding": "alibaba-coding-plan",
+    "alibaba_coding_plan": "alibaba-coding-plan",
     "qwen-portal": "qwen-oauth",
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
