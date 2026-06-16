@@ -931,6 +931,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Matrix reaction-based dangerous command approvals.
         self._approval_reaction_map = {
             "✅": "once",
+            "🔁": "session",
             "♾️": "always",
             "♾": "always",
             "\u267e\ufe0f": "always",
@@ -1922,8 +1923,10 @@ class MatrixAdapter(BasePlatformAdapter):
             "Reply `!approve` to execute, `!approve session` to approve this pattern for the session, "
             "`!approve always` to approve permanently, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
-            "✅ = approve\n"
-            "❎ = deny"
+            "✅ = approve once\n"
+            "🔁 = approve for this session\n"
+            "♾️ = approve always\n"
+            "❌ = deny"
         )
 
         result = await self.send(chat_id, text, metadata=metadata)
@@ -1943,7 +1946,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_prompts_by_event[result.message_id] = prompt
         self._approval_prompt_by_session[session_key] = result.message_id
 
-        for emoji in ("✅", "♾️", "❌"):
+        for emoji in ("✅", "🔁", "♾️", "❌"):
             try:
                 reaction_result = await self._send_reaction(chat_id, result.message_id, emoji)
                 # Save the bot's reaction event_id for later cleanup
