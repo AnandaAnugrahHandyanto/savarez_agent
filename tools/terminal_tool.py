@@ -826,7 +826,6 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-from tools.environments.ssh_pwsh import SSHPwshEnvironment as _SSHPwshEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
@@ -1369,6 +1368,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     elif env_type == "ssh_pwsh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("ssh_pwsh requires ssh_host and ssh_user to be configured")
+        # Lazy import to avoid breaking tests with mock package structures
+        from tools.environments.ssh_pwsh import SSHPwshEnvironment as _SSHPwshEnvironment
         return _SSHPwshEnvironment(
             host=ssh_config["host"],
             user=ssh_config["user"],
