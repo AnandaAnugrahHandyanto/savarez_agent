@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.transports.codex import CODEX_HTTP_REQUEST_HEADERS_KEY
+
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -688,6 +690,53 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.status == "completed"
     assert response.output == [output_item]
     assert response.usage.total_tokens == 11
+
+
+def test_run_codex_stream_promotes_affinity_headers_to_client_options(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    captured = {}
+
+    class _WrappedClient:
+        def __init__(self, headers):
+            self.responses = SimpleNamespace(create=self._create)
+            self._headers = headers
+
+        def _create(self, **kwargs):
+            captured["headers"] = dict(self._headers)
+            captured["kwargs"] = dict(kwargs)
+            return _FakeCreateStream(
+                [
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(
+                        type="response.completed",
+                        response=_codex_message_response("ok"),
+                    ),
+                ]
+            )
+
+    class _BaseClient:
+        def with_options(self, **kwargs):
+            captured["with_options"] = dict(kwargs)
+            return _WrappedClient(kwargs.get("default_headers") or {})
+
+    agent.client = _BaseClient()
+    response = agent._run_codex_stream(
+        {
+            **_codex_request_kwargs(),
+            CODEX_HTTP_REQUEST_HEADERS_KEY: {
+                "session_id": "sess-123",
+                "x-client-request-id": "sess-123",
+            },
+        }
+    )
+
+    assert captured["with_options"]["default_headers"] == {
+        "session_id": "sess-123",
+        "x-client-request-id": "sess-123",
+    }
+    assert CODEX_HTTP_REQUEST_HEADERS_KEY not in captured["kwargs"]
+    assert captured["kwargs"]["stream"] is True
+    assert response.status == "completed"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

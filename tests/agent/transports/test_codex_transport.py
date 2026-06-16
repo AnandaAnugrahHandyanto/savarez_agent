@@ -4,6 +4,7 @@ import json
 import pytest
 from types import SimpleNamespace
 
+from agent.transports.codex import CODEX_HTTP_REQUEST_HEADERS_KEY
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
 
@@ -155,7 +156,7 @@ class TestCodexBuildKwargs:
         )
         assert "max_output_tokens" not in kw
 
-    def test_codex_backend_does_not_set_extra_headers(self, transport):
+    def test_codex_backend_stashes_affinity_headers_out_of_band(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
 
         kw = transport.build_kwargs(
@@ -167,6 +168,10 @@ class TestCodexBuildKwargs:
         )
 
         assert "extra_headers" not in kw
+        assert kw[CODEX_HTTP_REQUEST_HEADERS_KEY] == {
+            "session_id": "conv-codex-1",
+            "x-client-request-id": "conv-codex-1",
+        }
 
     def test_codex_backend_strips_caller_extra_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
@@ -181,6 +186,10 @@ class TestCodexBuildKwargs:
         )
 
         assert "extra_headers" not in kw
+        assert kw[CODEX_HTTP_REQUEST_HEADERS_KEY] == {
+            "session_id": "conv-codex-1",
+            "x-client-request-id": "conv-codex-1",
+        }
 
     def test_non_codex_responses_preserves_caller_extra_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]

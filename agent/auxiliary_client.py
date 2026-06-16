@@ -701,6 +701,13 @@ class _CodexCompletionsAdapter:
         # same behavior as the main agent's Codex transport.
         extra_body = kwargs.get("extra_body") or {}
         if isinstance(extra_body, dict):
+            request_headers = extra_body.get("_hermes_http_request_headers")
+            if isinstance(request_headers, dict) and request_headers:
+                resp_kwargs["_hermes_http_request_headers"] = {
+                    str(key): str(value)
+                    for key, value in request_headers.items()
+                    if key and value is not None
+                }
             reasoning_cfg = extra_body.get("reasoning")
             if isinstance(reasoning_cfg, dict):
                 if reasoning_cfg.get("enabled") is False:
@@ -835,13 +842,17 @@ class _CodexCompletionsAdapter:
 
             stream_kwargs = dict(resp_kwargs)
             stream_kwargs["stream"] = True
+            request_client = self._client
+            request_headers = stream_kwargs.pop("_hermes_http_request_headers", None)
+            if isinstance(request_headers, dict) and request_headers:
+                request_client = self._client.with_options(default_headers=request_headers)
 
             def _on_each_event(_event: Any) -> None:
                 # Re-check timeout/cancellation per event, matching the
                 # cadence the old in-line ``_check_cancelled()`` used.
                 _check_cancelled()
 
-            event_stream = self._client.responses.create(**stream_kwargs)
+            event_stream = request_client.responses.create(**stream_kwargs)
             try:
                 final = _consume_codex_event_stream(
                     event_stream,

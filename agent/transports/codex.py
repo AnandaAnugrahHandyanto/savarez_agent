@@ -11,6 +11,9 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+CODEX_HTTP_REQUEST_HEADERS_KEY = "_hermes_http_request_headers"
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -218,9 +221,19 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.pop("timeout", None)
 
         if is_codex_backend:
-            # chatgpt.com/backend-api/codex rejects body-level
-            # ``extra_headers`` with HTTP 400. Correlation/cache routing for
-            # this backend must not be sent through the Responses payload.
+            # chatgpt.com/backend-api/codex regressed badly on prompt-cache
+            # affinity once Hermes stopped sending the session correlation
+            # headers altogether. The backend still rejects caller-visible
+            # ``extra_headers`` here, so stash Hermes' own affinity headers on
+            # a private kwarg for the runtime to apply as real HTTP headers via
+            # ``client.with_options(default_headers=...)`` before the SDK call.
+            prompt_cache_key = kwargs.get("prompt_cache_key")
+            cache_scope_id = str(prompt_cache_key or session_id or "").strip()
+            if cache_scope_id:
+                kwargs[CODEX_HTTP_REQUEST_HEADERS_KEY] = {
+                    "session_id": cache_scope_id,
+                    "x-client-request-id": cache_scope_id,
+                }
             kwargs.pop("extra_headers", None)
 
         max_tokens = params.get("max_tokens")

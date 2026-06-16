@@ -30,6 +30,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
 )
+from agent.transports.codex import CODEX_HTTP_REQUEST_HEADERS_KEY
 
 
 def _jwt_with_claims(claims: dict) -> str:
@@ -3391,6 +3392,69 @@ class TestAuxiliaryClientPoisonedCacheEviction:
         finally:
             with _client_cache_lock:
                 _client_cache.clear()
+
+    def test_codex_adapter_promotes_affinity_headers_to_client_options(self):
+        captured = {}
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                message_item = SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="hi")],
+                )
+                return iter(
+                    [
+                        SimpleNamespace(type="response.created"),
+                        SimpleNamespace(type="response.output_item.done", item=message_item),
+                        SimpleNamespace(
+                            type="response.completed",
+                            response=SimpleNamespace(
+                                status="completed",
+                                id="resp_test",
+                                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                            ),
+                        ),
+                    ]
+                )
+
+            def close(self):
+                pass
+
+        class _WrappedClient:
+            def __init__(self, headers):
+                self.responses = SimpleNamespace(create=self._create)
+                self._headers = headers
+
+            def _create(self, **kwargs):
+                captured["headers"] = dict(self._headers)
+                captured["kwargs"] = dict(kwargs)
+                return _FakeCreateStream()
+
+        class _BaseClient:
+            def with_options(self, **kwargs):
+                captured["with_options"] = dict(kwargs)
+                return _WrappedClient(kwargs.get("default_headers") or {})
+
+        adapter = _CodexCompletionsAdapter(_BaseClient(), "gpt-5.5")
+        response = adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={
+                CODEX_HTTP_REQUEST_HEADERS_KEY: {
+                    "session_id": "sess-aux-1",
+                    "x-client-request-id": "sess-aux-1",
+                }
+            },
+        )
+
+        assert captured["with_options"]["default_headers"] == {
+            "session_id": "sess-aux-1",
+            "x-client-request-id": "sess-aux-1",
+        }
+        assert CODEX_HTTP_REQUEST_HEADERS_KEY not in captured["kwargs"]
+        assert captured["kwargs"]["stream"] is True
+        assert response.choices[0].message.content == "hi"
 
     def test_call_llm_evicts_on_connection_error_with_explicit_provider(self):
         """Connection error on an explicit provider must drop the cached client.

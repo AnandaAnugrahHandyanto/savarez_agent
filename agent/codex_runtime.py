@@ -607,9 +607,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
         stream_kwargs = dict(api_kwargs)
         stream_kwargs["stream"] = True
+        request_client = active_client
+        request_headers = stream_kwargs.pop("_hermes_http_request_headers", None)
+        if isinstance(request_headers, dict) and request_headers:
+            request_client = active_client.with_options(default_headers=request_headers)
 
         try:
-            event_stream = active_client.responses.create(**stream_kwargs)
+            event_stream = request_client.responses.create(**stream_kwargs)
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
