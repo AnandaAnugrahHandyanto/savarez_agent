@@ -2220,6 +2220,18 @@ class AIAgent:
             return redacted
         return content
 
+    @staticmethod
+    def _session_log_tail_state(msg: Dict[str, Any]) -> tuple:
+        """Cheap fingerprint of the last message for JSON snapshot debounce."""
+        content = msg.get("content")
+        if isinstance(content, str):
+            tail = content[:512]
+        elif isinstance(content, list):
+            tail = str(content)[:512]
+        else:
+            tail = str(content)
+        return (msg.get("role"), tail)
+
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """Optional per-session JSON snapshot writer.
 
@@ -2244,7 +2256,7 @@ class AIAgent:
         _log_state = (
             getattr(self, "session_id", None),
             len(messages),
-            id(messages[-1]) if messages else None,
+            self._session_log_tail_state(messages[-1]),
         )
         if _log_state == getattr(self, "_last_session_log_state", None):
             return

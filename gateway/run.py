@@ -2199,6 +2199,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
         )
+        self.session_store._transcript_mutation_cb = (
+            self._invalidate_transcript_cache_for_session_id
+        )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -13002,6 +13005,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             cache.clear()
 
+    def _invalidate_transcript_cache_for_session_id(self, session_id: str) -> None:
+        """Drop cached transcripts for every session key sharing *session_id*."""
+        if not session_id:
+            return
+        cache = getattr(self, "_transcript_cache", None)
+        if not cache:
+            return
+        for key in [k for k, v in list(cache.items()) if v[0] == session_id]:
+            cache.pop(key, None)
+
+    def _get_transcript_cache_token(self, session_id: Optional[str]) -> Optional[tuple]:
+        if self._session_db is None or not session_id:
+            return None
+        try:
+            return self._session_db.get_transcript_cache_token(session_id)
+        except Exception:
+            pass
+        return None
+
     def _get_session_message_count(self, session_id: Optional[str]) -> Optional[int]:
         if self._session_db is None or not session_id:
             return None
@@ -13019,14 +13041,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Load transcript from SessionDB, reusing a per-session cache when valid."""
-        msg_count = self._get_session_message_count(session_id)
+        cache_token = self._get_transcript_cache_token(session_id)
         cache = getattr(self, "_transcript_cache", None)
-        if cache is not None and session_key and msg_count is not None:
+        if cache is not None and session_key and cache_token is not None:
             cached = cache.get(session_key)
             if (
                 cached is not None
                 and cached[0] == session_id
-                and cached[1] == msg_count
+                and cached[1] == cache_token
             ):
                 try:
                     cache.move_to_end(session_key)
@@ -13035,8 +13057,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return cached[2]
 
         history = self.session_store.load_transcript(session_id)
-        if cache is not None and session_key and msg_count is not None:
-            cache[session_key] = (session_id, msg_count, history)
+        if cache is not None and session_key and cache_token is not None:
+            cache[session_key] = (session_id, cache_token, history)
             try:
                 cache.move_to_end(session_key)
                 while len(cache) > getattr(self, "_transcript_cache_max", 512):

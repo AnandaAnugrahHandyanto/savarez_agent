@@ -1704,6 +1704,27 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_transcript_cache_token(self, session_id: str) -> Optional[Tuple[int, int]]:
+        """Return ``(active_message_count, max_active_message_id)`` for cache keys.
+
+        Counts only ``active=1`` rows — matches what ``load_transcript`` returns
+        and changes on append, rewrite, and rewind even when ``message_count``
+        on the session row is stale.
+        """
+        if not session_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*), MAX(id) FROM messages "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        count = int(row[0] or 0)
+        max_id = int(row[1]) if row[1] is not None else 0
+        return (count, max_id)
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 
