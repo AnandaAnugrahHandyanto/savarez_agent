@@ -1445,9 +1445,11 @@ async def _send_email(extra, chat_id, message):
         else:
             server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
             server.starttls(context=ctx)
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+        try:
+            server.login(address, password)
+            server.send_message(msg)
+        finally:
+            server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return _error(f"Email send failed: {e}")

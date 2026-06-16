@@ -843,7 +843,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     continue
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
-                logger.error("Job '%s': %s", job["id"], msg)
+                logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                 delivery_errors.append(msg)
                 continue
 
