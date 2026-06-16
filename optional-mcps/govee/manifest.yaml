@@ -18,7 +18,7 @@ transport:
 install:
   type: git
   url: https://github.com/evefromwayback/govee-mcp.git
-  ref: v0.2.0            # pinned release tag
+  ref: v0.2.1            # pinned release tag
   bootstrap:
     - "python3 -m venv .venv"
     - ".venv/bin/pip install ."
