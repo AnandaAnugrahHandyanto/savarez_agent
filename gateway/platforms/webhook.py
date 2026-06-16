@@ -155,17 +155,41 @@ class WebhookAdapter(BasePlatformAdapter):
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
             secret = route.get("secret", self._global_secret)
+            allow_insecure = bool(route.get("allow_insecure", False))
+
+            # allow_insecure: true in config.yaml is the supported opt-in for
+            # skipping HMAC validation (local testing only). This replaces the
+            # old INSECURE_NO_AUTH magic string so the opt-in lives in
+            # config.yaml (Hermes convention for behavioral settings) rather
+            # than as a magic credential value (#6440, #6445 review feedback).
+            if allow_insecure:
+                if not _is_loopback_host(self._host):
+                    raise ValueError(
+                        f"[webhook] Route '{name}' has allow_insecure: true "
+                        f"but is bound to non-loopback host '{self._host}'. "
+                        f"allow_insecure is for local testing only. "
+                        f"Refusing to start to prevent accidental RCE exposure."
+                    )
+                logger.warning(
+                    "[webhook] Route '%s' has allow_insecure: true — "
+                    "HMAC validation is DISABLED. For local testing only. "
+                    "Never expose this route to the public internet.",
+                    name,
+                )
+                route = dict(route)
+                route["secret"] = _INSECURE_NO_AUTH
+                self._routes[name] = route
+                continue
+
             if not secret:
                 raise ValueError(
                     f"[webhook] Route '{name}' has no HMAC secret. "
-                    f"Set 'secret' on the route or globally. "
-                    f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
+                    f"Set 'secret' on the route or set 'allow_insecure: true' "
+                    f"for local testing only."
                 )
 
-            # Safety rail: refuse to start if INSECURE_NO_AUTH is combined with a
-            # non-loopback bind. The escape hatch is for local testing only;
-            # serving an unauthenticated route on a public interface is a
-            # deployment-grade footgun we'd rather crash early than ship.
+            # Legacy: keep supporting secret: INSECURE_NO_AUTH for backwards
+            # compatibility, but still require loopback host.
             if secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
                 raise ValueError(
                     f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret "
