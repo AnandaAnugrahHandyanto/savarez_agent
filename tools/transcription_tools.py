@@ -120,8 +120,8 @@ _local_model_name: Optional[str] = None
 def _load_stt_config() -> dict:
     """Load the ``stt`` section from user config, falling back to defaults."""
     try:
-        from hermes_cli.config import load_config
-        return load_config().get("stt", {})
+        from hermes_cli.config import load_config_readonly
+        return load_config_readonly().get("stt", {})
     except Exception:
         return {}
 

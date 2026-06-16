@@ -1,0 +1,52 @@
+"""Tests for read-only config fast paths (load_config_readonly, read_raw_config_readonly)."""
+
+from __future__ import annotations
+
+import textwrap
+
+
+def _write_config(tmp_path, body: str) -> None:
+    (tmp_path / "config.yaml").write_text(textwrap.dedent(body), encoding="utf-8")
+
+
+def test_read_raw_config_readonly_returns_cached_object(monkeypatch, tmp_path):
+    """Cache hits return the same dict object — callers must not mutate."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, "model:\n  default: alpha\n")
+
+    from hermes_cli.config import read_raw_config_readonly
+
+    first = read_raw_config_readonly()
+    second = read_raw_config_readonly()
+    assert first is second
+    assert first["model"]["default"] == "alpha"
+
+
+def test_read_raw_config_returns_defensive_copy(monkeypatch, tmp_path):
+    """Mutating read_raw_config() must not affect read_raw_config_readonly() cache."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, "model:\n  default: alpha\n")
+
+    from hermes_cli.config import read_raw_config, read_raw_config_readonly
+
+    cached = read_raw_config_readonly()
+    mutable = read_raw_config()
+    mutable["model"]["default"] = "mutated"
+
+    assert read_raw_config_readonly()["model"]["default"] == "alpha"
+    assert cached["model"]["default"] == "alpha"
+
+
+def test_load_config_readonly_matches_load_config_values(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        agent:
+          max_turns: 42
+        """,
+    )
+
+    from hermes_cli.config import load_config, load_config_readonly
+
+    assert load_config_readonly()["agent"]["max_turns"] == load_config()["agent"]["max_turns"]

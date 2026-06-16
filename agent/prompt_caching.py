@@ -8,7 +8,6 @@ single session.
 Pure functions -- no class state, no AIAgent dependency.
 """
 
-import copy
 from typing import Any, Dict, List
 
 
@@ -56,24 +55,33 @@ def apply_anthropic_cache_control(
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system
     messages, all at the same TTL.
 
-    Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+    Mutates shallow copies of only the messages that receive breakpoints.
+    ``api_messages`` must already be an API-only copy (as built by
+    ``conversation_loop``) — callers must not pass the persisted session list.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return api_messages
 
     marker = _build_marker(cache_ttl)
 
+    indices_to_mark: List[int] = []
     breakpoints_used = 0
 
-    if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
+    if api_messages[0].get("role") == "system":
+        indices_to_mark.append(0)
         breakpoints_used += 1
 
     remaining = 4 - breakpoints_used
-    non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
-    for idx in non_sys[-remaining:]:
+    non_sys = [i for i in range(len(api_messages)) if api_messages[i].get("role") != "system"]
+    indices_to_mark.extend(non_sys[-remaining:])
+
+    if not indices_to_mark:
+        return api_messages
+
+    messages = list(api_messages)
+    for idx in indices_to_mark:
+        if messages[idx] is api_messages[idx]:
+            messages[idx] = api_messages[idx].copy()
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
 
     return messages

@@ -3473,72 +3473,95 @@ class SessionDB:
                     matches = [dict(row) for row in cursor.fetchall()]
 
         # Add surrounding context (1 message before + after each match).
-        # Done outside the lock so we don't hold it across N sequential queries.
-        for match in matches:
-            try:
-                with self._lock:
-                    ctx_cursor = self._conn.execute(
-                        """WITH target AS (
-                               SELECT session_id, timestamp, id
-                               FROM messages
-                               WHERE id = ?
-                           )
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp < t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
-                               ORDER BY m.timestamp DESC, m.id DESC
-                               LIMIT 1
-                           )
-                           UNION ALL
-                           SELECT role, content
-                           FROM messages
-                           WHERE id = ?
-                           UNION ALL
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp > t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
-                               ORDER BY m.timestamp ASC, m.id ASC
-                               LIMIT 1
-                           )""",
-                        (match["id"], match["id"]),
-                    )
-                    context_msgs = []
-                    for r in ctx_cursor.fetchall():
-                        raw = r["content"]
-                        decoded = self._decode_content(raw)
-                        # Multimodal context: render a compact text-only
-                        # summary for search previews.
-                        if isinstance(decoded, list):
-                            text_parts = [
-                                p.get("text", "") for p in decoded
-                                if isinstance(p, dict) and p.get("type") == "text"
-                            ]
-                            text = " ".join(t for t in text_parts if t).strip()
-                            preview = text or "[multimodal content]"
-                        elif isinstance(decoded, str):
-                            preview = decoded
-                        else:
-                            preview = ""
-                        context_msgs.append(
-                            {"role": r["role"], "content": preview[:200]}
-                        )
-                match["context"] = context_msgs
-            except Exception:
-                match["context"] = []
+        if matches:
+            contexts = self._fetch_search_match_contexts([m["id"] for m in matches])
+            for match in matches:
+                match["context"] = contexts.get(match["id"], [])
 
         # Remove full content from result (snippet is enough, saves tokens)
         for match in matches:
             match.pop("content", None)
 
         return matches
+
+    def _fetch_search_match_contexts(
+        self,
+        match_ids: List[int],
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """Fetch before/anchor/after context for many search hits in one query."""
+        if not match_ids:
+            return {}
+
+        placeholders = ",".join("?" for _ in match_ids)
+        sql = f"""
+            WITH targets AS (
+                SELECT id, session_id, timestamp
+                FROM messages
+                WHERE id IN ({placeholders})
+            ),
+            before_msgs AS (
+                SELECT t.id AS match_id, m.role, m.content,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY t.id
+                           ORDER BY m.timestamp DESC, m.id DESC
+                       ) AS rn
+                FROM targets t
+                JOIN messages m ON m.session_id = t.session_id
+                WHERE (m.timestamp < t.timestamp)
+                   OR (m.timestamp = t.timestamp AND m.id < t.id)
+            ),
+            after_msgs AS (
+                SELECT t.id AS match_id, m.role, m.content,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY t.id
+                           ORDER BY m.timestamp ASC, m.id ASC
+                       ) AS rn
+                FROM targets t
+                JOIN messages m ON m.session_id = t.session_id
+                WHERE (m.timestamp > t.timestamp)
+                   OR (m.timestamp = t.timestamp AND m.id > t.id)
+            ),
+            anchor AS (
+                SELECT t.id AS match_id, m.role, m.content
+                FROM targets t
+                JOIN messages m ON m.id = t.id
+            )
+            SELECT match_id, role, content, 0 AS sort_order
+            FROM before_msgs WHERE rn = 1
+            UNION ALL
+            SELECT match_id, role, content, 1 FROM anchor
+            UNION ALL
+            SELECT match_id, role, content, 2
+            FROM after_msgs WHERE rn = 1
+            ORDER BY match_id, sort_order
+        """
+
+        contexts: Dict[int, List[Dict[str, Any]]] = {mid: [] for mid in match_ids}
+        try:
+            with self._lock:
+                rows = self._conn.execute(sql, tuple(match_ids)).fetchall()
+        except Exception:
+            return contexts
+
+        for row in rows:
+            match_id = row["match_id"]
+            raw = row["content"]
+            decoded = self._decode_content(raw)
+            if isinstance(decoded, list):
+                text_parts = [
+                    p.get("text", "") for p in decoded
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                text = " ".join(t for t in text_parts if t).strip()
+                preview = text or "[multimodal content]"
+            elif isinstance(decoded, str):
+                preview = decoded
+            else:
+                preview = ""
+            contexts.setdefault(match_id, []).append(
+                {"role": row["role"], "content": preview[:200]}
+            )
+        return contexts
 
     def search_sessions_by_id(
         self,

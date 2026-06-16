@@ -194,10 +194,35 @@ class ChatCompletionsTransport(ProviderTransport):
         if not needs_sanitize:
             return messages
 
-        sanitized = copy.deepcopy(messages)
-        for msg in sanitized:
+        def _msg_needs_sanitize(msg: dict) -> bool:
+            if (
+                "codex_reasoning_items" in msg
+                or "codex_message_items" in msg
+                or "tool_name" in msg
+            ):
+                return True
+            if any(isinstance(k, str) and k.startswith("_") for k in msg):
+                return True
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if isinstance(tc, dict) and (
+                        "call_id" in tc
+                        or "response_item_id" in tc
+                        or (strip_extra_content and "extra_content" in tc)
+                    ):
+                        return True
+            return False
+
+        sanitized: list = []
+        for msg in messages:
             if not isinstance(msg, dict):
+                sanitized.append(msg)
                 continue
+            if not _msg_needs_sanitize(msg):
+                sanitized.append(msg)
+                continue
+            msg = copy.deepcopy(msg)
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
@@ -214,6 +239,7 @@ class ChatCompletionsTransport(ProviderTransport):
                         tc.pop("response_item_id", None)
                         if strip_extra_content:
                             tc.pop("extra_content", None)
+            sanitized.append(msg)
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

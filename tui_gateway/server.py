@@ -1268,7 +1268,7 @@ def _load_cfg() -> dict:
         mtime = p.stat().st_mtime if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
-                return copy.deepcopy(_cfg_cache)
+                return _cfg_cache
         if p.exists():
             with open(p, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
@@ -1638,7 +1638,7 @@ def _persist_live_session_runtime(session: dict | None) -> None:
 
 
 def _write_config_key(key_path: str, value):
-    cfg = _load_cfg()
+    cfg = copy.deepcopy(_load_cfg())
     current = cfg
     keys = key_path.split(".")
     for key in keys[:-1]:

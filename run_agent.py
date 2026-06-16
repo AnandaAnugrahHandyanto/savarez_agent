@@ -1487,6 +1487,10 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
+    def _reset_flush_scan_cursor(self) -> None:
+        """Reset DB flush scan cursor (call on session id change)."""
+        self._flush_scan_cursor = 0
+
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
 
@@ -1560,23 +1564,12 @@ class AIAgent:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
                 self._ensure_db_session()
-            # Positional flushing used to slice at
-            # max(len(conversation_history), _last_flushed_db_idx). That
-            # assumes the live `messages` list is the original history plus a
-            # new tail. repair_message_sequence can shrink/merge the history
-            # copy before the final flush, making len(conversation_history)
-            # larger than len(messages); the slice is then empty and delivered
-            # assistant responses never reach state.db (#46053).
-            #
-            # Track object identities instead. `messages` is a shallow copy of
-            # `conversation_history`, so history dicts are skipped by identity,
-            # and new dicts appended during this turn are written once even if
-            # repair compacts the list around them.
             current_session_id = getattr(self, "session_id", None)
             flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
             if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
                 self._flushed_db_message_ids = set()
                 self._flushed_db_message_session_id = current_session_id
+                self._flush_scan_cursor = 0
             flushed_ids = getattr(self, "_flushed_db_message_ids", None)
             if not isinstance(flushed_ids, set):
                 flushed_ids = set()
@@ -1586,7 +1579,10 @@ class AIAgent:
                 if isinstance(item, dict)
             }
 
-            for msg in messages:
+            scan_from = getattr(self, "_flush_scan_cursor", 0)
+            if scan_from > len(messages):
+                scan_from = 0
+            for msg in messages[scan_from:]:
                 if not isinstance(msg, dict):
                     continue
                 msg_id = id(msg)
@@ -1635,6 +1631,7 @@ class AIAgent:
                 )
                 flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)
+            self._flush_scan_cursor = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
 
@@ -2244,6 +2241,14 @@ class AIAgent:
         if not messages:
             return
 
+        _log_state = (
+            getattr(self, "session_id", None),
+            len(messages),
+            id(messages[-1]) if messages else None,
+        )
+        if _log_state == getattr(self, "_last_session_log_state", None):
+            return
+
         # Re-derive the target path each call so /branch and /compress
         # session-id changes land in the right file without any re-point
         # bookkeeping at the call sites.
@@ -2303,6 +2308,7 @@ class AIAgent:
                 indent=2,
                 default=str,
             )
+            self._last_session_log_state = _log_state
 
         except Exception as e:
             if self.verbose_logging:
@@ -4370,13 +4376,19 @@ class AIAgent:
         Custom/local models absent from models.dev would otherwise be
         misclassified as non-vision and have their images stripped.
         """
+        provider = (getattr(self, "provider", "") or "").strip()
+        model = (getattr(self, "model", "") or "").strip()
+        cache_key = (provider, model)
+        cached = getattr(self, "_supports_vision_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
             from agent.image_routing import _lookup_supports_vision
-            cfg = load_config()
-            provider = (getattr(self, "provider", "") or "").strip()
-            model = (getattr(self, "model", "") or "").strip()
-            return _lookup_supports_vision(provider, model, cfg) is True
+            cfg = load_config_readonly()
+            result = _lookup_supports_vision(provider, model, cfg) is True
+            self._supports_vision_cache = (cache_key, result)
+            return result
         except Exception:
             return False
 
@@ -4475,17 +4487,26 @@ class AIAgent:
         if self._model_supports_vision():
             return api_messages
 
-        # Non-vision Anthropic model (rare today, but keep the fallback for
-        # compat): replace each image part with a vision_analyze text note.
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        # Non-vision model: shallow-copy only messages that carry images.
+        return self._strip_image_parts_shallow_copy(api_messages)
+
+    def _strip_image_parts_shallow_copy(self, api_messages: list) -> list:
+        """Replace image parts with text notes, copying only affected messages."""
+        transformed = list(api_messages)
+        changed = False
+        for idx, msg in enumerate(transformed):
             if not isinstance(msg, dict):
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
+            if not self._content_has_image_parts(msg.get("content")):
+                continue
+            if transformed[idx] is api_messages[idx]:
+                transformed[idx] = msg.copy()
+            transformed[idx]["content"] = self._preprocess_anthropic_content(
+                transformed[idx].get("content"),
+                str(transformed[idx].get("role", "user") or "user"),
             )
-        return transformed
+            changed = True
+        return transformed if changed else api_messages
 
     def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
         """Strip native image parts when the active model lacks vision.
@@ -4505,19 +4526,7 @@ class AIAgent:
         if self._model_supports_vision():
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
-            if not isinstance(msg, dict):
-                continue
-            # Reuse the Anthropic text-fallback preprocessor — the behaviour is
-            # identical (walk content parts, replace images with cached
-            # descriptions, merge back into a single text or structured
-            # content). Naming is historical.
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
-            )
-        return transformed
+        return self._strip_image_parts_shallow_copy(api_messages)
 
     def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
         """Return the tool message content that is safe for the active model.

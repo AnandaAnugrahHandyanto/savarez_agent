@@ -99,6 +99,30 @@ class TestFlushDeduplication:
                 agent._flush_messages_to_session_db(messages, conversation_history)
                 rows = db.get_messages(agent.session_id)
                 assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
+                assert agent._flush_scan_cursor == len(messages)
+            finally:
+                db.close()
+
+    def test_flush_scan_cursor_resets_on_session_change(self):
+        """Cursor resets when session_id changes so a new session is fully scanned."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+            try:
+                agent = self._make_agent(db)
+                messages = [{"role": "user", "content": "hello"}]
+                agent._flush_messages_to_session_db(messages, [])
+                assert agent._flush_scan_cursor == 1
+
+                agent.session_id = "other-session-860"
+                agent._session_db_created = False
+                agent._ensure_db_session()
+                agent._flush_messages_to_session_db(messages, [])
+                assert agent._flush_scan_cursor == 1
+                rows = db.get_messages("other-session-860")
+                assert len(rows) == 1
             finally:
                 db.close()
 
