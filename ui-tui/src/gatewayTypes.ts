@@ -99,7 +99,12 @@ export interface ConfigVoiceConfig {
 }
 
 export interface ConfigFullResponse {
-  config?: { display?: ConfigDisplayConfig; voice?: ConfigVoiceConfig; paste_collapse_threshold?: number; paste_collapse_char_threshold?: number }
+  config?: {
+    display?: ConfigDisplayConfig
+    voice?: ConfigVoiceConfig
+    paste_collapse_threshold?: number
+    paste_collapse_char_threshold?: number
+  }
 }
 
 export interface ConfigMtimeResponse {
@@ -466,6 +471,15 @@ export interface SubagentEventPayload {
   tool_name?: string
   tool_preview?: string
   toolsets?: string[]
+  workflow_id?: string
+  workflow_node_id?: string
+  workflow_objective?: string
+  workflow_phase_id?: string
+  workflow_phase_title?: string
+  workflow_task_title?: string
+  task_prompt?: string
+  task_context?: string
+  delegation_id?: string
 }
 
 // ── Delegation control RPCs ──────────────────────────────────────────
@@ -552,7 +566,11 @@ export type GatewayEvent =
       type: 'gateway.start_timeout'
     }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
-  | { payload?: { text?: string; verbose?: boolean }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
+  | {
+      payload?: { text?: string; verbose?: boolean }
+      session_id?: string
+      type: 'reasoning.delta' | 'reasoning.available'
+    }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {

@@ -956,6 +956,37 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
   })
 
+  it('preserves workflow phase metadata on subagent events', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        goal: 'verify backlog',
+        subagent_id: 'sa-workflow',
+        task_index: 0,
+        workflow_id: 'wf_demo',
+        workflow_node_id: 'verify',
+        workflow_phase_id: 'verify',
+        workflow_phase_title: 'Verify',
+        workflow_task_title: 'Verifier backlog',
+        task_prompt: 'Verify every captured document'
+      },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { status: 'running', subagent_id: 'sa-workflow', task_index: 0, tool_name: 'terminal' },
+      type: 'subagent.tool'
+    } as any)
+
+    const item = getTurnState().subagents.find(s => s.id === 'sa-workflow')
+    expect(item?.workflowId).toBe('wf_demo')
+    expect(item?.workflowNodeId).toBe('verify')
+    expect(item?.workflowPhaseTitle).toBe('Verify')
+    expect(item?.workflowTaskTitle).toBe('Verifier backlog')
+    expect(item?.taskPrompt).toBe('Verify every captured document')
+  })
+
   it('nudges toward /agents on the first spawn_requested of a turn', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

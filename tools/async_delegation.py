@@ -172,6 +172,7 @@ def dispatch_async_delegation(
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    observability_context: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -204,6 +205,8 @@ def dispatch_async_delegation(
     """
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
+    if observability_context is not None:
+        observability_context.setdefault("delegation_id", delegation_id)
     record: Dict[str, Any] = {
         "delegation_id": delegation_id,
         "goal": goal,
@@ -217,6 +220,8 @@ def dispatch_async_delegation(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
     }
+    if observability_context:
+        record["observability_context"] = dict(observability_context)
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
     # from different gateway sessions) both pass the check and exceed the cap.
@@ -336,6 +341,9 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
+    observability_context = record.get("observability_context")
+    if isinstance(observability_context, dict):
+        evt.update(observability_context)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover

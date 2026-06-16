@@ -111,6 +111,38 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_completion_event_preserves_workflow_observability_context():
+    def runner():
+        return {"status": "completed", "summary": "done"}
+
+    res = ad.dispatch_async_delegation(
+        goal="verify backlog",
+        context=None,
+        toolsets=["terminal"],
+        role="leaf",
+        model="test-model",
+        session_key="",
+        runner=runner,
+        max_async_children=3,
+        observability_context={
+            "workflow_id": "wf_demo",
+            "workflow_node_id": "verify",
+            "workflow_phase_id": "verify",
+            "workflow_phase_title": "Verify",
+            "workflow_task_title": "Verifier backlog",
+        },
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["delegation_id"] == res["delegation_id"]
+    assert evt["workflow_id"] == "wf_demo"
+    assert evt["workflow_node_id"] == "verify"
+    assert evt["workflow_phase_title"] == "Verify"
+    assert evt["workflow_task_title"] == "Verifier backlog"
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -520,4 +552,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-

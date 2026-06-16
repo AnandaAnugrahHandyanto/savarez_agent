@@ -156,6 +156,16 @@ interface RootGroup {
   taskCount: number
 }
 
+interface WorkflowPhaseGroup {
+  activeCount: number
+  completedCount: number
+  failedCount: number
+  id: string
+  nodes: SubagentNode[]
+  title: string
+  totalCount: number
+}
+
 function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
   const groups: RootGroup[] = []
   let n = 0
@@ -186,10 +196,85 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
   return groups
 }
 
+function workflowPhaseKey(node: SubagentNode): string | null {
+  if (
+    !node.workflowId &&
+    !node.workflowNodeId &&
+    !node.workflowPhaseId &&
+    !node.workflowPhaseTitle &&
+    !node.workflowTaskTitle
+  ) {
+    return null
+  }
+
+  return `${node.workflowId || 'workflow'}:${node.workflowPhaseId || node.workflowPhaseTitle || 'workflow'}`
+}
+
+function summarizeNodes(nodes: readonly SubagentNode[]) {
+  const items = flatten(nodes)
+
+  return {
+    activeCount: items.filter(n => n.status === 'running' || n.status === 'queued').length,
+    completedCount: items.filter(n => n.status === 'completed').length,
+    failedCount: items.filter(n => n.status === 'failed' || n.status === 'interrupted').length,
+    totalCount: items.length
+  }
+}
+
+function groupWorkflowPhases(roots: readonly SubagentNode[]): WorkflowPhaseGroup[] {
+  const map = new Map<string, WorkflowPhaseGroup>()
+  const ungrouped: SubagentNode[] = []
+
+  for (const node of roots) {
+    const key = workflowPhaseKey(node)
+
+    if (!key) {
+      ungrouped.push(node)
+
+      continue
+    }
+
+    let group = map.get(key)
+
+    if (!group) {
+      group = {
+        activeCount: 0,
+        completedCount: 0,
+        failedCount: 0,
+        id: key,
+        nodes: [],
+        title: node.workflowPhaseTitle || node.workflowPhaseId || node.workflowId || 'Workflow',
+        totalCount: 0
+      }
+      map.set(key, group)
+    }
+
+    group.nodes.push(node)
+  }
+
+  const groups = [...map.values()]
+
+  for (const group of groups) {
+    Object.assign(group, summarizeNodes(group.nodes))
+  }
+
+  if (groups.length > 0 && ungrouped.length > 0) {
+    groups.push({
+      id: 'workflow:other',
+      nodes: ungrouped,
+      title: 'Other agents',
+      ...summarizeNodes(ungrouped)
+    })
+  }
+
+  return groups
+}
+
 function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   const { t } = useI18n()
   const flat = useMemo(() => flatten(tree), [tree])
   const groups = useMemo(() => groupDelegations(tree), [tree])
+  const workflowGroups = useMemo(() => groupWorkflowPhases(tree), [tree])
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   const active = flat.filter(n => n.status === 'running' || n.status === 'queued').length
@@ -234,12 +319,35 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
       <p className="shrink-0 text-[0.7rem] text-muted-foreground/70">{summary.join(' · ')}</p>
       <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1">
         <div className="flex min-w-0 flex-col gap-6">
-          {groups.map(group => (
-            <DelegationGroup group={group} key={group.id} nowMs={nowMs} />
-          ))}
+          {workflowGroups.length > 0
+            ? workflowGroups.map(group => <WorkflowPhaseSection group={group} key={group.id} nowMs={nowMs} />)
+            : groups.map(group => <DelegationGroup group={group} key={group.id} nowMs={nowMs} />)}
         </div>
       </div>
     </div>
+  )
+}
+
+function WorkflowPhaseSection({ group, nowMs }: { group: WorkflowPhaseGroup; nowMs: number }) {
+  const { t } = useI18n()
+
+  return (
+    <section className="grid min-w-0 gap-3">
+      <p className="text-[0.66rem] font-medium uppercase tracking-wider text-muted-foreground/70">
+        {group.title} <span className="text-muted-foreground/50">·</span> {group.completedCount}/{group.totalCount}
+        {group.activeCount > 0 ? (
+          <span className="text-primary/85"> · {t.agents.workersActive(group.activeCount)}</span>
+        ) : null}
+        {group.failedCount > 0 ? (
+          <span className="text-destructive"> · {t.agents.failedCount(group.failedCount)}</span>
+        ) : null}
+      </p>
+      <div className="grid min-w-0 gap-4">
+        {group.nodes.map(node => (
+          <SubagentRow key={node.id} node={node} nowMs={nowMs} />
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -322,6 +430,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
   const fileLines = [...node.filesWritten.map(p => `+ ${p}`), ...node.filesRead.map(p => `· ${p}`)]
 
   const subtitle = [
+    node.workflowNodeId ? node.workflowNodeId : '',
     node.model,
     fmtDuration(durationSeconds, t.agents),
     node.toolCount ? t.agents.toolsCount(node.toolCount) : '',
@@ -345,7 +454,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
               running && 'shimmer text-foreground/65'
             )}
           >
-            {node.goal}
+            {node.workflowTaskTitle || node.goal}
           </span>
           {subtitle.length > 0 ? (
             <FadeText className="text-[0.66rem] leading-[1.05rem] text-muted-foreground/65">

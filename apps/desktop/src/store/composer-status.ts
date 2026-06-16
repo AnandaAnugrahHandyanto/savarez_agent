@@ -43,7 +43,7 @@ const subToItem = (s: SubagentProgress): ComposerStatusItem => ({
   id: s.id,
   sessionId: s.sessionId,
   state: 'running',
-  title: s.goal,
+  title: s.workflowTaskTitle || s.goal,
   type: 'subagent'
 })
 

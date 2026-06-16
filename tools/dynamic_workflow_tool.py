@@ -85,6 +85,11 @@ def _normalise_role(value: Any) -> str:
     return role
 
 
+def _slug_id(value: str, *, fallback: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.:-]+", "-", value.strip().lower()).strip("-")
+    return (slug or fallback)[:96]
+
+
 def _normalise_nodes(raw_nodes: Any) -> Tuple[List[Dict[str, Any]], List[str]]:
     issues: List[str] = []
     if raw_nodes is None:
@@ -127,9 +132,27 @@ def _normalise_nodes(raw_nodes: Any) -> Tuple[List[Dict[str, Any]], List[str]]:
             issues.append(toolsets_issue)
             continue
 
+        phase_title = _cap_text(raw.get("phase_title") or raw.get("phase"))
+        phase_id = ""
+        if raw.get("phase_id"):
+            phase_id, phase_issue = _normalise_id(
+                raw.get("phase_id"),
+                field=f"nodes[{index}].phase_id",
+                pattern=_NODE_ID_RE,
+            )
+            if phase_issue:
+                issues.append(phase_issue)
+                continue
+            assert phase_id is not None
+        elif phase_title:
+            phase_id = _slug_id(phase_title, fallback=f"phase-{index + 1}")
+
         nodes.append(
             {
                 "node_id": node_id,
+                "title": _cap_text(raw.get("title") or raw.get("task_title") or goal),
+                "phase_id": phase_id or None,
+                "phase_title": phase_title or None,
                 "goal": goal,
                 "context": _cap_text(raw.get("context")),
                 "depends_on": depends_on,
@@ -262,6 +285,10 @@ def _worker_context(workflow: Dict[str, Any], node: Dict[str, Any]) -> str:
         f"node_id: {node['node_id']}",
         f"objective: {workflow['objective']}",
     ]
+    if node.get("phase_title") or node.get("phase_id"):
+        lines.append(f"phase: {node.get('phase_title') or node.get('phase_id')}")
+    if node.get("title"):
+        lines.append(f"task_title: {node['title']}")
     if workflow.get("context"):
         lines.extend(["", "Workflow context:", workflow["context"]])
     if node.get("context"):
@@ -306,6 +333,16 @@ def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: i
             role=node.get("role") or "leaf",
             background=True,
             parent_agent=parent_agent,
+            _observability_context={
+                "workflow_id": workflow["workflow_id"],
+                "workflow_node_id": node_id,
+                "workflow_phase_id": node.get("phase_id") or "",
+                "workflow_phase_title": node.get("phase_title") or "",
+                "workflow_task_title": node.get("title") or node["goal"],
+                "workflow_objective": workflow["objective"],
+                "task_prompt": node["goal"],
+                "task_context": node.get("context") or "",
+            },
         )
         try:
             parsed = json.loads(raw)
@@ -313,11 +350,17 @@ def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: i
             parsed = {"error": raw}
 
         if parsed.get("status") == "dispatched" and parsed.get("delegation_id"):
+            optional_ids = {
+                key: parsed[key]
+                for key in ("subagent_id", "child_session_id")
+                if parsed.get(key)
+            }
             node["status"] = "dispatched"
             node["delegation_id"] = parsed["delegation_id"]
+            node.update(optional_ids)
             node["dispatched_at"] = _now()
             node["updated_at"] = _now()
-            dispatched.append({"node_id": node_id, "delegation_id": parsed["delegation_id"]})
+            dispatched.append({"node_id": node_id, "delegation_id": parsed["delegation_id"], **optional_ids})
         else:
             errors.append({"node_id": node_id, "error": parsed.get("error") or parsed})
 
@@ -526,6 +569,18 @@ DYNAMIC_WORKFLOW_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "node_id": {"type": "string", "description": "Stable node id unique within the workflow."},
+                        "title": {
+                            "type": "string",
+                            "description": "Short reader-facing task title for workflow monitors.",
+                        },
+                        "phase_id": {
+                            "type": "string",
+                            "description": "Stable phase id used to group related workflow tasks in monitors.",
+                        },
+                        "phase_title": {
+                            "type": "string",
+                            "description": "Reader-facing phase label, e.g. Investigate, Build, Verify.",
+                        },
                         "goal": {"type": "string", "description": "Self-contained worker goal."},
                         "context": {"type": "string", "description": "Node-specific context."},
                         "depends_on": {

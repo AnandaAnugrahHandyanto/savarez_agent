@@ -46,6 +46,15 @@ export interface SubagentProgress {
   toolCount: number
   tools: string[]
   toolsets?: string[]
+  workflowId?: string
+  workflowNodeId?: string
+  workflowObjective?: string
+  workflowPhaseId?: string
+  workflowPhaseTitle?: string
+  workflowTaskTitle?: string
+  taskPrompt?: string
+  taskContext?: string
+  delegationId?: string
 }
 
 export interface SubagentOutputEntry {
