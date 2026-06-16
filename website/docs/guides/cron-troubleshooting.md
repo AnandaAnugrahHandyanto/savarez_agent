@@ -192,7 +192,25 @@ The scheduler executes jobs sequentially within each tick. If multiple jobs are 
 
 ### Large script output
 
-Scripts that dump megabytes of output will slow down the agent and may hit token limits. Filter/summarize at the script level — emit only what the agent needs to reason about.
+Scripts that dump megabytes of output will slow down the agent and may hit token limits. Filter/summarize at the script level -- emit only what the agent needs to reason about.
+
+### Gateway memory growth under heavy cron load
+
+If you run many cron jobs, the gateway process RSS may climb over time. This is usually not a code leak -- it is Python's memory allocator holding onto freed memory. Each cron subagent session allocates Python objects, and the default allocator keeps that memory mapped to the process even after the session ends.
+
+For deployments with many cron jobs, preload jemalloc to fix this:
+
+```bash
+mkdir -p ~/.config/systemd/user/hermes-gateway.service.d
+cat > ~/.config/systemd/user/hermes-gateway.service.d/memory.conf << 'EOF'
+[Service]
+Environment="LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2"
+EOF
+systemctl --user daemon-reload
+systemctl --user restart hermes-gateway
+```
+
+See [Production Deployment](./production-deployment.md) for details.
 
 ---
 
