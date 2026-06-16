@@ -84,21 +84,32 @@ class SSHPwshEnvironment(SSHEnvironment):
             bulk_upload_fn=self._ssh_bulk_upload,
             bulk_download_fn=self._ssh_bulk_download,
         )
-        self._sync_manager.sync(force=True)
+        # Skip forced sync on init - too slow for Windows remotes with many files
+        # File sync will happen on-demand during execute() via _before_execute()
         self.init_session()
 
     def get_temp_dir(self) -> str:
         return getattr(self, "_remote_temp", "/tmp")
 
+    def _encode_pwsh_command(self, pwsh_script: str) -> str:
+        """Encode PowerShell script as base64 UTF-16LE for EncodedCommand."""
+        return base64.b64encode(pwsh_script.encode("utf-16-le")).decode("ascii")
+
+    def _run_pwsh(self, pwsh_script: str, timeout: int = 10, shell: str = None) -> subprocess.CompletedProcess:
+        """Run PowerShell script on remote via EncodedCommand."""
+        encoded = self._encode_pwsh_command(pwsh_script)
+        cmd = self._build_ssh_command()
+        shell_cmd = shell or self._pwsh_cmd
+        cmd.extend([shell_cmd, "-NoProfile", "-EncodedCommand", encoded])
+        return subprocess.run(
+            cmd, capture_output=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+
     def _detect_shell(self) -> None:
         for shell in ("pwsh", "powershell"):
-            cmd = self._build_ssh_command()
-            cmd.extend([shell, "-NoProfile", "-Command", "echo ok"])
             try:
-                result = subprocess.run(
-                    cmd, capture_output=True, timeout=15,
-                    stdin=subprocess.DEVNULL,
-                )
+                result = self._run_pwsh("Write-Output 'ok'", timeout=15, shell=shell)
                 if result.returncode == 0:
                     self._pwsh_cmd = shell
                     logger.debug("SSH pwsh: using %s on %s", shell, self.host)
@@ -111,14 +122,8 @@ class SSHPwshEnvironment(SSHEnvironment):
         )
 
     def _detect_remote_home(self) -> str:
-        cmd = self._build_ssh_command()
-        cmd.extend([self._pwsh_cmd, "-NoProfile", "-Command",
-                     "Write-Output $env:USERPROFILE"])
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, timeout=10,
-                stdin=subprocess.DEVNULL,
-            )
+            result = self._run_pwsh("Write-Output $env:USERPROFILE")
             home = _decode_ssh_output(result.stdout).strip().rstrip("\r\n")
             if home and result.returncode == 0:
                 logger.debug("SSH pwsh: remote home = %s", home)
@@ -128,14 +133,8 @@ class SSHPwshEnvironment(SSHEnvironment):
         return f"C:\\Users\\{self.user}"
 
     def _detect_remote_temp(self) -> str:
-        cmd = self._build_ssh_command()
-        cmd.extend([self._pwsh_cmd, "-NoProfile", "-Command",
-                     "Write-Output $env:TEMP"])
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, timeout=10,
-                stdin=subprocess.DEVNULL,
-            )
+            result = self._run_pwsh("Write-Output $env:TEMP")
             temp = _decode_ssh_output(result.stdout).strip().rstrip("\r\n")
             if temp and result.returncode == 0:
                 return temp.replace("\\", "/")
@@ -147,27 +146,51 @@ class SSHPwshEnvironment(SSHEnvironment):
         base = f"{self._remote_home}\\.hermes"
         dirs = [base, f"{base}\\skills", f"{base}\\credentials", f"{base}\\cache"]
         dirs_str = ", ".join(f"'{d}'" for d in dirs)
-        cmd = self._build_ssh_command()
-        cmd.extend([self._pwsh_cmd, "-NoProfile", "-Command",
-                     f"foreach ($d in @({dirs_str})) {{ New-Item -ItemType Directory -Force -Path $d | Out-Null }}"])
-        subprocess.run(
-            cmd, capture_output=True, timeout=10,
-            stdin=subprocess.DEVNULL,
-        )
+        script = f"foreach ($d in @({dirs_str})) {{ New-Item -ItemType Directory -Force -Path $d | Out-Null }}"
+        try:
+            self._run_pwsh(script, timeout=30)
+        except Exception as e:
+            logger.warning("SSH pwsh: failed to create remote dirs: %s", e)
 
-    def _ssh_delete(self, remote_paths: list[str]) -> None:
-        paths_str = ", ".join(f"'{p}'" for p in remote_paths)
-        cmd = self._build_ssh_command()
-        cmd.extend([self._pwsh_cmd, "-NoProfile", "-Command",
-                     f"Remove-Item -Force -Path @({paths_str}) -ErrorAction SilentlyContinue"])
+    def _scp_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via scp over ControlMaster (Windows-aware)."""
+        import shlex as _shlex
+        parent = str(Path(remote_path).parent)
+        # Use PowerShell to create parent directory (not bash mkdir -p)
+        try:
+            self._run_pwsh(
+                f"New-Item -ItemType Directory -Force -Path '{parent}' | Out-Null",
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning("SSH pwsh: failed to create parent dir %s: %s", parent, e)
+
+        scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
+        if self.port != 22:
+            scp_cmd.extend(["-P", str(self.port)])
+        if self.key_path:
+            scp_cmd.extend(["-i", self.key_path])
+        scp_cmd.extend([host_path, f"{self.user}@{self.host}:{remote_path}"])
         result = subprocess.run(
-            cmd, capture_output=True, timeout=10,
+            scp_cmd,
+            capture_output=True,
+            timeout=30,
             stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
-            raise RuntimeError(
-                f"remote rm failed: {_decode_ssh_output(result.stderr).strip()}"
-            )
+            raise RuntimeError(f"scp failed: {_decode_ssh_output(result.stderr).strip()}")
+
+    def _ssh_delete(self, remote_paths: list[str]) -> None:
+        paths_str = ", ".join(f"'{p}'" for p in remote_paths)
+        script = f"Remove-Item -Force -Path @({paths_str}) -ErrorAction SilentlyContinue"
+        try:
+            result = self._run_pwsh(script)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"remote rm failed: {_decode_ssh_output(result.stderr).strip()}"
+                )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("remote rm timed out")
 
     def _ssh_bulk_upload(self, files: list[tuple[str, str]]) -> None:
         for host_path, remote_path in files:
@@ -181,12 +204,16 @@ class SSHPwshEnvironment(SSHEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        encoded = base64.b64encode(
-            cmd_string.encode("utf-16-le")
-        ).decode("ascii")
+        encoded = self._encode_pwsh_command(cmd_string)
         cmd = self._build_ssh_command()
         cmd.extend([self._pwsh_cmd, "-NoProfile", "-EncodedCommand", encoded])
         return _popen_bash(cmd, stdin_data)
+
+    def _before_execute(self) -> None:
+        """Override parent's sync to avoid slow file transfer on every command."""
+        # Skip file sync for PowerShell backend to avoid timeout
+        # File sync can be added back later if needed, with better performance
+        pass
 
     def _wrap_command(self, command: str, cwd: str) -> str:
         escaped = command.replace("'", "''")

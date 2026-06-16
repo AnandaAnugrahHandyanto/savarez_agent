@@ -1,5 +1,6 @@
 """Tests for the SSH PowerShell remote execution environment backend."""
 
+import base64
 import subprocess
 from unittest.mock import MagicMock
 
@@ -12,6 +13,20 @@ def _mock_completed(stdout=b"", stderr=b"", returncode=0):
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
 
 
+def _decode_pwsh_cmd(cmd_list):
+    """Decode EncodedCommand from SSH command list to get the PowerShell script."""
+    try:
+        # Find -EncodedCommand in the command list
+        for i, arg in enumerate(cmd_list):
+            if arg == "-EncodedCommand" and i + 1 < len(cmd_list):
+                encoded = cmd_list[i + 1]
+                # Decode base64 UTF-16LE
+                return base64.b64decode(encoded).decode("utf-16-le")
+    except Exception:
+        pass
+    return ""
+
+
 @pytest.fixture
 def mock_ssh_deps(monkeypatch):
     monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
@@ -20,16 +35,17 @@ def mock_ssh_deps(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         call_log.append(cmd)
-        cmd_str = " ".join(str(c) for c in cmd)
-        if "pwsh" in cmd_str and "echo ok" in cmd_str:
+        # Decode EncodedCommand to check the actual PowerShell script
+        pwsh_script = _decode_pwsh_cmd(cmd)
+        cmd_str = " ".join(str(c) for c in cmd) + " " + pwsh_script
+        
+        if "Write-Output 'ok'" in pwsh_script:
             return _mock_completed(stdout=b"ok\r\n")
-        if "powershell" in cmd_str and "echo ok" in cmd_str:
-            return _mock_completed(stdout=b"ok\r\n")
-        if "pwsh" in cmd_str and "USERPROFILE" in cmd_str:
+        if "USERPROFILE" in pwsh_script:
             return _mock_completed(stdout=b"C:\\Users\\test\r\n")
-        if "pwsh" in cmd_str and "env:TEMP" in cmd_str:
+        if "env:TEMP" in pwsh_script:
             return _mock_completed(stdout=b"C:\\Users\\test\\AppData\\Local\\Temp\r\n")
-        if "pwsh" in cmd_str and "New-Item" in cmd_str:
+        if "New-Item" in pwsh_script and "Directory" in pwsh_script:
             return _mock_completed()
         return _mock_completed()
 
