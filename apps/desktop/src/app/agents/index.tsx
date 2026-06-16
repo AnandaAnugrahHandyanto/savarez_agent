@@ -210,14 +210,12 @@ function workflowPhaseKey(node: SubagentNode): string | null {
   return `${node.workflowId || 'workflow'}:${node.workflowPhaseId || node.workflowPhaseTitle || 'workflow'}`
 }
 
-function summarizeNodes(nodes: readonly SubagentNode[]) {
-  const items = flatten(nodes)
-
+export function summarizeNodes(nodes: readonly SubagentNode[]) {
   return {
-    activeCount: items.filter(n => n.status === 'running' || n.status === 'queued').length,
-    completedCount: items.filter(n => n.status === 'completed').length,
-    failedCount: items.filter(n => n.status === 'failed' || n.status === 'interrupted').length,
-    totalCount: items.length
+    activeCount: nodes.filter(n => n.status === 'running' || n.status === 'queued').length,
+    completedCount: nodes.filter(n => n.status === 'completed').length,
+    failedCount: nodes.filter(n => n.status === 'failed' || n.status === 'interrupted').length,
+    totalCount: nodes.length
   }
 }
 

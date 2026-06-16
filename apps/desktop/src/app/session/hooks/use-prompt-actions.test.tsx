@@ -56,6 +56,7 @@ function Harness({
   busyRef,
   onReady,
   onSeedState,
+  openAgents,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -65,6 +66,7 @@ function Harness({
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
+  openAgents?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
@@ -90,6 +92,7 @@ function Harness({
     busyRef: localBusyRef,
     createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
     handleSkinCommand: () => '',
+    openAgents: openAgents ?? (() => undefined),
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
@@ -214,6 +217,26 @@ describe('usePromptActions desktop slash pickers', () => {
     cleanup()
     vi.useRealTimers()
     vi.restoreAllMocks()
+  })
+
+  it('opens the desktop Agents overlay for /agents instead of running the backend slash command', async () => {
+    const openAgents = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        openAgents={openAgents}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/agents')
+
+    expect(openAgents).toHaveBeenCalledTimes(1)
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
   it('resumes an exact session id even when it is not in the loaded sidebar cache', async () => {

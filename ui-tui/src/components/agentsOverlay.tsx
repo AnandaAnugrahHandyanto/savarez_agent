@@ -163,13 +163,31 @@ const workflowPhaseKey = (item: SubagentProgress): string | null => {
   return `${workflow}:${phase}`
 }
 
-const buildWorkflowPhases = (subagents: SubagentProgress[]): WorkflowPhaseGroup[] => {
+export const buildWorkflowPhases = (subagents: SubagentProgress[]): WorkflowPhaseGroup[] => {
   const map = new Map<string, WorkflowPhaseGroup>()
+  const other: WorkflowPhaseGroup = {
+    activeCount: 0,
+    completedCount: 0,
+    failedCount: 0,
+    ids: new Set<string>(),
+    key: 'workflow:other',
+    title: 'Other agents',
+    totalCount: 0
+  }
 
   for (const item of subagents) {
     const key = workflowPhaseKey(item)
 
     if (!key) {
+      other.ids.add(item.id)
+      other.totalCount += 1
+      if (isActiveStatus(item.status)) {
+        other.activeCount += 1
+      } else if (item.status === 'completed') {
+        other.completedCount += 1
+      } else if (isFailedStatus(item.status)) {
+        other.failedCount += 1
+      }
       continue
     }
 
@@ -199,7 +217,13 @@ const buildWorkflowPhases = (subagents: SubagentProgress[]): WorkflowPhaseGroup[
     }
   }
 
-  return [...map.values()]
+  const phases = [...map.values()]
+
+  if (phases.length > 0 && other.totalCount > 0) {
+    phases.push(other)
+  }
+
+  return phases
 }
 
 const workflowPhaseStatus = (phase: WorkflowPhaseGroup): Status => {

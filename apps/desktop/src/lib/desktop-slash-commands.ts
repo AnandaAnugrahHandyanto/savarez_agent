@@ -29,6 +29,7 @@ export interface DesktopThemeCommandOption {
  * keyed by the id.
  */
 export type DesktopActionId =
+  | 'agents'
   | 'branch'
   | 'browser'
   | 'handoff'
@@ -121,8 +122,10 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     args: true
   },
 
+  // Desktop-native overlays and actions
+  { name: '/agents', description: 'Show live subagent activity', aliases: ['/tasks'], surface: action('agents') },
+
   // Backend-executed commands that render useful inline output
-  { name: '/agents', description: 'Show active desktop sessions and running tasks', aliases: ['/tasks'], surface: exec() },
   { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
   { name: '/compress', description: 'Compress this conversation context', surface: exec() },
   { name: '/debug', description: 'Create a debug report', surface: exec() },
