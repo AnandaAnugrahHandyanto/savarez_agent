@@ -577,6 +577,20 @@ class TestValidateApiNotFound:
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
 
+    def test_model_known_to_curated_catalog_accepted_with_warning(self):
+        """Models in curated catalog but not in live API are accepted with warning.
+
+        Regression test for Z.AI glm-5.2: the model was added to _PROVIDER_MODELS
+        but the provider's live /models endpoint hadn't listed it yet. The
+        validator should accept it with a warning instead of rejecting it.
+        """
+        # Z.AI uses unprefixed model IDs (glm-5.2, not zai/glm-5.2)
+        result = _validate("glm-5.2", provider="zai", api_models=["glm-5.1"])
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "known model" in result["message"].lower() or "still work" in result["message"].lower()
+
 
 # -- validate — API unreachable — soft-accept via catalog or warning --------
 

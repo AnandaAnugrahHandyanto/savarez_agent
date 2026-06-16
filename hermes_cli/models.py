@@ -3913,11 +3913,7 @@ def validate_requested_model(
                 "message": None,
             }
         else:
-            # API responded but model is not listed.  Accept anyway —
-            # the user may have access to models not shown in the public
-            # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
-            # endpoints even though it's not in /models).  Warn but allow.
-
+            # API responded but model is not in the live listing.
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
@@ -3927,6 +3923,23 @@ def validate_requested_model(
                     "recognized": True,
                     "corrected_model": auto[0],
                     "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+
+            # Check curated catalog — the model may be known to Hermes
+            # even if the provider's live /models endpoint hasn't listed
+            # it yet (e.g. Z.AI glm-5.2 was added to _PROVIDER_MODELS
+            # before the API listed it).
+            if _model_in_provider_catalog(
+                requested_for_lookup.lower(), _provider_keys(normalized)
+            ):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": (
+                        f"Note: `{requested}` was not found in the live model listing "
+                        f"but is a known model for this provider.  It may still work."
+                    ),
                 }
 
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
