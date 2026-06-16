@@ -3883,7 +3883,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True
 
-        # Normal busy case (agent actively running a task)
+        # --- Contextual followup detection ---
+        # If this message is a reply to one of our own bot messages within
+        # the active session, route it to _queued_events so it is processed
+        # as a distinct next turn rather than merged into the pending text
+        # slot.  This enables conversational follow-ups (e.g. user replies
+        # to a bot's question with "yes") to remain separate turns.
+        if (
+            event.reply_to_message_id
+            and self._is_our_bot_message(event.reply_to_message_id)
+            and event.message_type == MessageType.TEXT
+        ):
+            event._is_contextual_followup = True
+            logger.debug(
+                "Contextual followup detected for session %s — routing to _queued_events "
+                "(reply_to_message_id=%s)",
+                session_key,
+                event.reply_to_message_id,
+            )
+            self._queued_events.setdefault(session_key, []).append(event)
+            return True
+
+        # --- Normal busy case (agent actively running a task) ---
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return False  # let default path handle it
