@@ -772,21 +772,42 @@ class SessionDB:
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
         err = str(exc).lower()
-        return "no such module" in err and "fts5" in err
+        if "no such module" in err and "fts5" in err:
+            return True
+        if "no such tokenizer" in err:
+            return True
+        return False
 
-    def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
-        self._fts_enabled = False
+    @staticmethod
+    def _is_trigram_only_error(exc: sqlite3.OperationalError) -> bool:
+        """Return True if the error is specifically about the trigram tokenizer
+        being unavailable (not a wholesale FTS5 absence)."""
+        err = str(exc).lower()
+        return "no such tokenizer" in err
+
+    def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError, *, trigram_only: bool = False) -> None:
+        if not trigram_only:
+            self._fts_enabled = False
         if self._fts_unavailable_warned:
             return
         self._fts_unavailable_warned = True
-        logger.warning(
-            "SQLite FTS5 unavailable for %s; full-text session search "
-            "disabled. Run `hermes update` to rebuild the venv with a "
-            "current Python (managed uv guarantees FTS5). "
-            "(underlying error: %s)",
-            self.db_path,
-            exc,
-        )
+        if trigram_only:
+            logger.warning(
+                "SQLite trigram tokenizer unavailable for %s; "
+                "CJK/substring search will fall back to LIKE. "
+                "(underlying error: %s)",
+                self.db_path,
+                exc,
+            )
+        else:
+            logger.warning(
+                "SQLite FTS5 unavailable for %s; full-text session search "
+                "disabled. Run `hermes update` to rebuild the venv with a "
+                "current Python (managed uv guarantees FTS5). "
+                "(underlying error: %s)",
+                self.db_path,
+                exc,
+            )
 
     def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
         try:
@@ -796,7 +817,7 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             if not self._is_fts5_unavailable_error(exc):
                 raise
-            self._warn_fts5_unavailable(exc)
+            self._warn_fts5_unavailable(exc, trigram_only=self._is_trigram_only_error(exc))
             return False
 
     @staticmethod
@@ -844,7 +865,7 @@ class SessionDB:
             return True
         except sqlite3.OperationalError as exc:
             if self._is_fts5_unavailable_error(exc):
-                self._warn_fts5_unavailable(exc)
+                self._warn_fts5_unavailable(exc, trigram_only=self._is_trigram_only_error(exc))
                 return None
             if "no such table" in str(exc).lower():
                 return False
@@ -868,7 +889,7 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             if not self._is_fts5_unavailable_error(exc):
                 raise
-            self._warn_fts5_unavailable(exc)
+            self._warn_fts5_unavailable(exc, trigram_only=self._is_trigram_only_error(exc))
             return False
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
@@ -1166,7 +1187,7 @@ class SessionDB:
                         except sqlite3.OperationalError as exc:
                             if not self._is_fts5_unavailable_error(exc):
                                 raise
-                            self._warn_fts5_unavailable(exc)
+                            self._warn_fts5_unavailable(exc, trigram_only=self._is_trigram_only_error(exc))
                             fts5_available = False
                             fts_migrations_complete = False
                             break
