@@ -404,10 +404,7 @@ async def test_flood_control_rich_error_falls_back_to_legacy():
     contract covered all transient errors uniformly.
     """
     adapter = _make_adapter()
-    # conftest mocks RetryAfter with retry_after as a class attribute; set
-    # the value on the instance to mimic a real 429.
-    flood = RetryAfter()
-    flood.retry_after = 12
+    flood = RetryAfter(retry_after=12)
     flood.error_code = 429
     adapter._bot.do_api_request = AsyncMock(side_effect=flood)
 
@@ -418,9 +415,89 @@ async def test_flood_control_rich_error_falls_back_to_legacy():
     assert result.success is True
     adapter._bot.do_api_request.assert_awaited_once()
     adapter._bot.send_message.assert_awaited_once()
-    # Rich must not be latched off — a single flood strike is not a
+    # Rich must not be latched off -- a single flood strike is not a
     # capability issue.
     assert adapter._rich_send_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_flood_control_rich_edit_falls_back_to_legacy():
+    """Flood control on the rich ``editMessageText`` finalize path: same
+    pre-delivery signal as the send path -> legacy MarkdownV2 edit takes
+    over so the streamed preview gets rendered instead of stuck as raw
+    markdown.
+    """
+    adapter = _make_adapter()
+    flood = RetryAfter(retry_after=9)
+    flood.error_code = 429
+    adapter._bot.do_api_request = AsyncMock(side_effect=flood)
+
+    result = await adapter.edit_message(
+        "12345", "555", RICH_CONTENT, finalize=True,
+    )
+
+    # Legacy edit path took over: edit_message_text was called, do_api_request
+    # was only invoked for the rich attempt.
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+    adapter._bot.edit_message_text.assert_awaited_once()
+    # Rich must not be latched off -- same rationale as the send path.
+    assert adapter._rich_send_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_rich_error_falls_back_to_legacy():
+    """Connect timeout means the TCP connection was never established ->
+    Telegram never saw the request -> safe to fall back to legacy MarkdownV2
+    (same pre-delivery reasoning as flood control).
+
+    Uses ``_looks_like_connect_timeout`` directly (the only real way to
+    trigger the connect-timeout arm in a unit test) so the assertion stays
+    independent of the production helper's string-matching heuristics.
+    """
+    adapter = _make_adapter()
+    connect_err = NetworkError("connect timed out")
+    adapter._bot.do_api_request = AsyncMock(side_effect=connect_err)
+    # Force the connect-timeout detector to recognise this NetworkError even
+    # if the helper's class-name / text matching misses it (e.g. PTB version
+    # change).  This decouples the test from the helper's exact rules.
+    adapter._looks_like_connect_timeout = lambda exc: True
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    # Legacy send path took over.
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+    adapter._bot.send_message.assert_awaited_once()
+    # Rich must not be latched off.
+    assert adapter._rich_send_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_flood_control_rich_preserves_retryable_for_network_error():
+    """A plain mid-response ``NetworkError`` (not a timeout, not a flood)
+    still returns ``SendResult(success=False, retryable=True)`` so the
+    caller's retry loop (stream consumer's flood-strike backoff) can
+    re-attempt the rich request on the next cycle.
+
+    The first PR version silently changed ``retryable`` to ``False`` for
+    all fallthrough transients, breaking any caller that reads the flag.
+    This test pins the original semantics.
+    """
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=NetworkError("connection reset"))
+
+    # We can't observe the rich-path return value from outside (it goes
+    # straight into the stream consumer's flood_strikes counter), so
+    # exercise it through the same internal helper the call site uses.
+    rich_result = await adapter._try_send_rich("12345", RICH_CONTENT, None, None)
+
+    assert rich_result is not None
+    assert rich_result.success is False
+    # NetworkError (not a timeout, not a connect timeout, not a flood) ->
+    # retryable=True.  This is the original pre-PR behaviour the review
+    # caught as a silent regression.
+    assert rich_result.retryable is True
 
 
 @pytest.mark.asyncio
