@@ -6313,27 +6313,25 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 
-def _session_latest_descendant(session_id: str):
+def _session_latest_descendant(session_id: str, profile: Optional[str] = None):
     """Resolve a session id to the newest child leaf session.
 
     /model may create child sessions. Dashboard refresh should continue the
     newest child instead of reopening the old parent.
     """
-    from hermes_state import SessionDB
-
-    def row_get(row, key, index):
-        if isinstance(row, dict):
-            return row.get(key)
-        try:
-            return row[key]
-        except Exception:
-            try:
-                return row[index]
-            except Exception:
-                return None
-
-    db = SessionDB()
+    db = _open_session_db_for_profile(profile)
     try:
+
+        def row_get(row, key, index):
+            if isinstance(row, dict):
+                return row.get(key)
+            try:
+                return row[key]
+            except Exception:
+                try:
+                    return row[index]
+                except Exception:
+                    return None
         sid = db.resolve_session_id(session_id)
         if not sid or not db.get_session(sid):
             return None, []
@@ -6406,7 +6404,10 @@ class BulkDeleteSessions(BaseModel):
 
 
 @app.post("/api/sessions/bulk-delete")
-async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
+async def bulk_delete_sessions_endpoint(
+    body: BulkDeleteSessions,
+    profile: Optional[str] = None,
+):
     """Delete every session in ``body.ids`` in a single DB transaction.
 
     Backs the dashboard's bulk-select-and-delete flow on the sessions
@@ -6447,7 +6448,7 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
             status_code=400,
             detail="ids must contain at most 500 entries",
         )
-    db = _open_session_db_for_profile(body.profile)
+    db = _open_session_db_for_profile(body.profile or profile)
     try:
         deleted = db.delete_sessions(body.ids)
         return {"ok": True, "deleted": deleted}
@@ -6529,7 +6530,10 @@ async def get_session_stats(profile: Optional[str] = None):
         db.close()
 
 
-def _open_session_db_for_profile(profile: Optional[str]):
+def _open_session_db_for_profile(
+    profile: Optional[str],
+    home: Optional[Path] = None,
+):
     """Open a SessionDB for read paths, optionally for another profile.
 
     ``profile`` None/empty → this process's own ``state.db`` (the common,
@@ -6538,22 +6542,29 @@ def _open_session_db_for_profile(profile: Optional[str]):
     (transcripts, detail) without spawning that profile's backend.
     """
     from hermes_state import SessionDB
+
     if not profile:
         return SessionDB()
-    _name, home = _cron_profile_home(profile)
-    return SessionDB(db_path=Path(home) / "state.db")
+
+    resolved_home = home if home is not None else _cron_profile_home(profile)[1]
+    return SessionDB(db_path=resolved_home / "state.db")
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
-    db = _open_session_db_for_profile(profile)
+    resolved_name = None
+    resolved_home = None
+    if profile:
+        resolved_name, resolved_home = _cron_profile_home(profile)
+
+    db = _open_session_db_for_profile(profile, resolved_home)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        if profile:
-            session["profile"] = _cron_profile_home(profile)[0]
+        if resolved_name:
+            session["profile"] = resolved_name
         return session
     finally:
         db.close()
@@ -6561,8 +6572,11 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
-async def get_session_latest_descendant(session_id: str):
-    latest, path = _session_latest_descendant(session_id)
+async def get_session_latest_descendant(
+    session_id: str,
+    profile: Optional[str] = None,
+):
+    latest, path = _session_latest_descendant(session_id, profile=profile)
     if not latest:
         raise HTTPException(status_code=404, detail="Session not found")
     return {
@@ -6609,14 +6623,18 @@ class SessionRename(BaseModel):
 
 
 @app.patch("/api/sessions/{session_id}")
-async def rename_session_endpoint(session_id: str, body: SessionRename):
+async def rename_session_endpoint(
+    session_id: str,
+    body: SessionRename,
+    profile: Optional[str] = None,
+):
     """Update a session: rename (or clear its title) and/or archive it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
     restores the session. Either field may be omitted. ``profile`` targets
     another profile's session.
     """
-    db = _open_session_db_for_profile(body.profile)
+    db = _open_session_db_for_profile(body.profile or profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -6665,14 +6683,19 @@ class SessionPrune(BaseModel):
 
 
 @app.post("/api/sessions/prune")
-async def prune_sessions_endpoint(body: SessionPrune):
+async def prune_sessions_endpoint(
+    body: SessionPrune,
+    profile: Optional[str] = None,
+):
     """Delete ended sessions older than N days (mirrors `hermes sessions prune`)."""
     if body.older_than_days < 1:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
-    profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
-    db = _open_session_db_for_profile(body.profile)
+
+    selected_profile = body.profile or profile
+    resolved_home = _cron_profile_home(selected_profile)[1] if selected_profile else get_hermes_home()
+    db = _open_session_db_for_profile(selected_profile, resolved_home)
     try:
-        sessions_dir = profile_home / "sessions"
+        sessions_dir = resolved_home / "sessions"
         removed = db.prune_sessions(
             older_than_days=body.older_than_days,
             source=(body.source or None),

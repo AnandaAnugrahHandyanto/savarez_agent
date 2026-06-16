@@ -58,11 +58,10 @@ export function getManagementProfile(): string {
   return _managementProfile;
 }
 
-// Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope or explicit per-profile DB opens). Anything else — ops,
-// pairing, telegram onboarding, cron (which has its own per-job profile
-// params), profiles themselves — is machine-global or self-scoped and must
-// NOT be rewritten.
+// Endpoint families that honor ?profile= on the backend. Sessions now
+// participate in the same management-profile scope as the other profile-
+// scoped dashboard pages; other machine-global surfaces (analytics, ops,
+// pairing, telegram onboarding, cron jobs, profiles) are left untouched.
 const PROFILE_SCOPED_PREFIXES = [
   "/api/analytics",
   "/api/skills",
@@ -75,6 +74,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/set",
   "/api/model/auxiliary",
   "/api/model/options",
+  "/api/sessions",
 ];
 
 function withManagementProfile(url: string): string {
