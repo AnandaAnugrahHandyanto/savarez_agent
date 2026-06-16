@@ -1165,6 +1165,40 @@ def _reset_terminal_input_modes_on_exit() -> None:
 _active_worktree: Optional[Dict[str, str]] = None
 
 
+def _build_concurrent_sessions_note(concurrent: list) -> str:
+    """Build a structured block for the agent's system prompt.
+
+    When another Hermes session is active in the same git repository the agent
+    must know about it so it avoids destructive operations (reset --hard,
+    rebase, checkout --) that would clobber the other session's in-flight work.
+
+    Returns an empty string when there are no concurrent sessions.
+    """
+    if not concurrent:
+        return ''
+    import datetime as _dt
+    lines = [
+        '[Concurrent sessions]',
+        'Other active Hermes sessions are open in this repository:',
+    ]
+    for e in concurrent:
+        sid = (e.get('session_id') or '?')[:24]
+        pid = e.get('pid', '?')
+        branch = (e.get('metadata') or {}).get('branch', 'unknown')
+        started_raw = e.get('started_at')
+        try:
+            started = _dt.datetime.fromtimestamp(float(started_raw)).strftime('%H:%M:%S')
+        except Exception:
+            started = str(started_raw or '?')
+        lines.append(f'- ID: {sid}, branch: {branch}, PID: {pid}, started: {started}')
+    lines.append(
+        'Uncommitted changes may exist in the shared working tree. '
+        'Avoid destructive git operations (reset --hard, checkout --, rebase) '
+        'unless you have confirmed no other session holds in-flight work.'
+    )
+    return '\n'.join(lines)
+
+
 def _normalize_git_bash_path(p: Optional[str]) -> Optional[str]:
     """Translate a Git Bash-style path (``/c/Users/...``) to the native
     Windows form (``C:\\Users\\...``) that Python's ``subprocess.Popen``
@@ -1340,6 +1374,17 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
         except Exception as e:
             logger.debug("Error copying .worktreeinclude entries: %s", e)
 
+    # Lock the worktree so other processes (and `git worktree remove`) can see
+    # it is actively in use.  Fail-soft: a lock failure never blocks the session.
+    try:
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", f"hermes pid={os.getpid()}", str(wt_path)],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+        logger.debug("Worktree locked: %s (pid=%s)", wt_path, os.getpid())
+    except Exception as e:
+        logger.debug("git worktree lock failed (non-fatal): %s", e)
+
     info = {
         "path": str(wt_path),
         "branch": branch_name,
@@ -1404,6 +1449,16 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
     if not Path(wt_path).exists():
         return
+
+    # Unlock before removal so `git worktree remove` succeeds even when a
+    # lock was placed at creation time.  Fail-soft — never block cleanup.
+    try:
+        subprocess.run(
+            ["git", "worktree", "unlock", wt_path],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+    except Exception as e:
+        logger.debug("git worktree unlock failed (non-fatal): %s", e)
 
     has_unpushed = _worktree_has_unpushed_commits(wt_path, timeout=10)
 
@@ -3612,10 +3667,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             from hermes_cli.active_sessions import try_acquire_active_session
 
+            # Store repo_root in the registry entry so that
+            # find_concurrent_repo_sessions() can match sessions by repository.
+            _repo_root = getattr(self, '_repo_root', None) or _git_repo_root()
+            _meta = {'repo_root': _repo_root} if _repo_root else None
+
             lease, message = try_acquire_active_session(
                 session_id=self.session_id,
                 surface=surface,
                 config=self.config,
+                metadata=_meta,
             )
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
@@ -10959,6 +11020,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             pass
 
         self.show_banner()
+        # Warn when another Hermes session is already running in the same repo.
+        # Both sessions share the working tree and can clobber each other's
+        # uncommitted changes.  We also inject a note into system_prompt so
+        # the agent itself acts defensively before the first user message.
+        try:
+            from hermes_cli.active_sessions import find_concurrent_repo_sessions
+            _repo_root = getattr(self, '_repo_root', None) or _git_repo_root()
+            if _repo_root:
+                _concurrent = find_concurrent_repo_sessions(_repo_root, self.session_id)
+                if _concurrent:
+                    _ids = ', '.join(e.get('session_id', '?')[:20] for e in _concurrent)
+                    self._console_print(
+                        f'[bold yellow]⚠  Concurrent session(s) detected in this repo:[/] {_ids}\n'
+                        f'[yellow]   Both sessions share the same working tree. '
+                        f'Use [bold]hermes -w[/bold] (--worktree) to isolate each session on its own branch.[/]'
+                    )
+                    _note = _build_concurrent_sessions_note(_concurrent)
+                    if _note:
+                        self.system_prompt = ((self.system_prompt or '') + '\n\n' + _note).strip()
+        except Exception:
+            pass
         # Surface any active supply-chain security advisories right after the
         # welcome banner. Quiet/single-query paths call this themselves.
         self._show_security_advisories()
@@ -13756,6 +13838,21 @@ def main(
     if query or image:
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
+        # Concurrent-session check for single-query / piped mode.
+        # Uses stderr so the stdout output stays clean for downstream consumers.
+        try:
+            from hermes_cli.active_sessions import find_concurrent_repo_sessions
+            _sq_repo = getattr(cli, '_repo_root', None) or _git_repo_root()
+            if _sq_repo:
+                _sq_concurrent = find_concurrent_repo_sessions(_sq_repo, cli.session_id)
+                if _sq_concurrent:
+                    _sq_ids = ', '.join(e.get('session_id', '?')[:20] for e in _sq_concurrent)
+                    print(f'⚠  Concurrent Hermes session(s) in this repo: {_sq_ids}', file=sys.stderr)
+                    _note = _build_concurrent_sessions_note(_sq_concurrent)
+                    if _note:
+                        cli.system_prompt = ((cli.system_prompt or '') + '\n\n' + _note).strip()
+        except Exception:
+            pass
         try:
             query, single_query_images = _collect_query_images(query, image)
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;

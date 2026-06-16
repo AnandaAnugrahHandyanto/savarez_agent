@@ -368,8 +368,11 @@ class HonchoClientConfig:
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
-    # Session resolution
-    session_strategy: str = "per-directory"
+    # Session resolution.
+    # "per-session" gives every Hermes run its own isolated Honcho session,
+    # which prevents memory cross-bleed when two sessions share a directory.
+    # Set "per-directory" explicitly to persist context across runs in a project.
+    session_strategy: str = "per-session"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
@@ -493,7 +496,7 @@ class HonchoClientConfig:
         # sessionStrategy / sessionPeerPrefix: host first, root fallback
         session_strategy = (
             host_block.get("sessionStrategy")
-            or raw.get("sessionStrategy", "per-directory")
+            or raw.get("sessionStrategy", "per-session")
         )
         host_prefix = host_block.get("sessionPeerPrefix")
         session_peer_prefix = (

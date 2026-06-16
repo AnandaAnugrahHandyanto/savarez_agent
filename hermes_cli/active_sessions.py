@@ -78,7 +78,18 @@ def active_session_limit_message(active_count: int, max_sessions: int) -> str:
 
 
 def _state_dir() -> Path:
-    return get_hermes_home() / "runtime"
+    # Allow an explicit override for CI and container setups.
+    override = os.environ.get("HERMES_SESSIONS_STATE", "").strip()
+    if override:
+        return Path(override)
+    # Anchor to the *installation root* rather than the active profile home so
+    # that Desktop, WebUI, and CLI sessions — which may each have a different
+    # $HERMES_HOME when profiles are in use — all write to the same registry.
+    try:
+        from hermes_constants import get_default_hermes_root
+        return get_default_hermes_root() / "runtime"
+    except Exception:
+        return get_hermes_home() / "runtime"
 
 
 def _state_path() -> Path:
@@ -318,3 +329,32 @@ def active_session_registry_snapshot() -> list[dict[str, Any]]:
         entries = _prune_dead(_read_entries(state_path))
         _write_entries(state_path, entries)
         return entries
+
+
+def find_concurrent_repo_sessions(
+    repo_root: str,
+    our_session_id: str,
+) -> list[dict[str, Any]]:
+    """Return live sessions sharing the same git repository, excluding ours.
+
+    Used to warn the user (and the agent) that another Hermes session is
+    already active in the same working tree so they can avoid clobbering
+    each other's uncommitted changes.
+
+    Returns an empty list when no concurrency is detected or the registry
+    is unavailable — callers must never fail if this function raises.
+    """
+    if not repo_root:
+        return []
+    try:
+        state_path = _state_path()
+        with _FileLock(_lock_path()):
+            entries = _prune_dead(_read_entries(state_path))
+            _write_entries(state_path, entries)
+        return [
+            entry for entry in entries
+            if entry.get("session_id") != our_session_id
+            and (entry.get("metadata") or {}).get("repo_root") == repo_root
+        ]
+    except Exception:
+        return []

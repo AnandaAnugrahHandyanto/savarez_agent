@@ -31,7 +31,7 @@ class TestHonchoClientConfigDefaults:
         assert config.timeout is None
         assert config.enabled is False
         assert config.save_messages is True
-        assert config.session_strategy == "per-directory"
+        assert config.session_strategy == "per-session"
         assert config.recall_mode == "hybrid"
         assert config.session_peer_prefix is False
         assert config.sessions == {}
@@ -167,7 +167,7 @@ class TestFromGlobalConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"apiKey": "***"}))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.session_strategy == "per-directory"
+        assert config.session_strategy == "per-session"
 
     def test_context_tokens_default_is_none(self, tmp_path):
         """Default context_tokens should be None (uncapped) unless explicitly set."""

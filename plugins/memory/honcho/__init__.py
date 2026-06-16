@@ -440,23 +440,34 @@ class HonchoMemoryProvider(MemoryProvider):
         session = self._manager.get_or_create(self._session_key)
 
         # ----- B6: Memory file migration (one-time, for new sessions) -----
-        # Skip under per-session strategy: every Hermes run creates a fresh
-        # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
-        # each one would flood the backend with short-lived duplicates instead
-        # of performing a one-time migration.
+        # With per-directory strategy: migrate once per new session (safe, idempotent).
+        # With per-session strategy: every Hermes run is a fresh session, so migrating
+        # on every start would flood the Honcho backend with duplicates.  Instead we
+        # migrate exactly once (first run after install) and mark it with a marker file.
         try:
-            if not session.messages and cfg.session_strategy != "per-session":
+            if session.messages:
+                pass  # existing session — nothing to migrate
+            elif cfg.session_strategy != "per-session":
                 from hermes_constants import get_hermes_home
-                mem_dir = str(get_hermes_home() / "memories")
-                self._manager.migrate_memory_files(self._session_key, mem_dir)
-                logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
-            elif cfg.session_strategy == "per-session":
-                logger.debug(
-                    "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",
-                    self._session_key,
-                )
+                _hermes_home = get_hermes_home()
+                self._manager.migrate_memory_files(self._session_key, str(_hermes_home / "memories"))
+                logger.debug("Honcho memory migration attempted for new session: %s", self._session_key)
+            else:
+                from hermes_constants import get_hermes_home
+                _hermes_home = get_hermes_home()
+                _marker = _hermes_home / ".honcho-memory-migrated"
+                if _marker.exists():
+                    logger.debug("Honcho memory migration skipped: already done (%s)", self._session_key)
+                else:
+                    migrated = self._manager.migrate_memory_files(self._session_key, str(_hermes_home / "memories"))
+                    if migrated:
+                        try:
+                            _marker.touch()
+                        except Exception:
+                            pass
+                    logger.debug("Honcho memory migration (one-time) for %s", self._session_key)
         except Exception as e:
-            logger.debug("Honcho memory file migration skipped: %s", e)
+            logger.debug("Honcho memory migration skipped: %s", e)
 
         # ----- B7: Pre-warming at init -----
         # Context prewarm warms peer.context() (base layer), consumed via
@@ -550,26 +561,35 @@ class HonchoMemoryProvider(MemoryProvider):
         """Format the prefetch context dict into a readable system prompt block."""
         parts = []
 
-        # Session summary — session-scoped context, placed first for relevance
+        # Session summary is session-scoped: it only reflects the current run.
+        # We tag it with the session key so the agent can distinguish it from
+        # the peer-level sections that span multiple sessions (see note below).
         summary = ctx.get("summary", "")
         if summary:
-            parts.append(f"## Session Summary\n{summary}")
+            session_tag = f" [session: {self._session_key}]" if self._session_key else ""
+            parts.append(f"## Session Summary{session_tag}\n{summary}")
+
+        # Peer-level sections (representation, card) are aggregated by Honcho
+        # across ALL sessions for this peer — the Honcho API does not expose a
+        # per-session filter for these fields.  The note makes that explicit so
+        # the agent doesn't treat cross-session observations as current-run facts.
+        _peer_scope = "*(aggregated across all sessions — not limited to the current one)*"
 
         rep = ctx.get("representation", "")
         if rep:
-            parts.append(f"## User Representation\n{rep}")
+            parts.append(f"## User Representation {_peer_scope}\n{rep}")
 
         card = ctx.get("card", "")
         if card:
-            parts.append(f"## User Peer Card\n{card}")
+            parts.append(f"## User Peer Card {_peer_scope}\n{card}")
 
         ai_rep = ctx.get("ai_representation", "")
         if ai_rep:
-            parts.append(f"## AI Self-Representation\n{ai_rep}")
+            parts.append(f"## AI Self-Representation {_peer_scope}\n{ai_rep}")
 
         ai_card = ctx.get("ai_card", "")
         if ai_card:
-            parts.append(f"## AI Identity Card\n{ai_card}")
+            parts.append(f"## AI Identity Card {_peer_scope}\n{ai_card}")
 
         if not parts:
             return ""
