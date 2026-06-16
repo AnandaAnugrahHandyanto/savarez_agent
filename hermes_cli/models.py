@@ -2370,7 +2370,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
-                    if normalized in {"kimi-coding", "kimi-coding-cn"}:
+                    if normalized in {"kimi-coding", "kimi-coding-cn", "zai"}:
+                        # zai's live /v1/models endpoint sometimes omits newer
+                        # models (e.g. glm-5.2).  Merge curated first, then
+                        # append live additions so the picker never drops
+                        # models the curated list knows about.  (#47162)
                         curated = list(_PROVIDER_MODELS.get(normalized, []))
                         merged = list(curated)
                         merged_lower = {m.lower() for m in curated}
