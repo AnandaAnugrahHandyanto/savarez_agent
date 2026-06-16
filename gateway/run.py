@@ -2239,6 +2239,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_in_progress = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
+        # /after command queue: stores (wait_turns, content) tuples per session.
+        # Max 50 entries, max 500 chars per content, max N=100.
+        self._after_queue: Dict[str, List[tuple[int, str]]] = {}
+        self._after_queue_max_per_session = 50
+        self._after_queue_max_content_len = 500
+        self._after_queue_max_n = 100
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
@@ -3285,6 +3291,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     queued_events.pop(session_key, None)
         return removed
 
+    def _enqueue_after_command(self, session_key: str, args_raw: str):
+        """Validate and store a /after command entry.
+
+        Returns True on success, or a string error message on failure.
+        """
+        # Parse N and content: "3 focus on SQL" -> (3, "focus on SQL")
+        match = re.match(r"^\s*(\d{1,6})\s+(.+)$", args_raw, re.DOTALL)
+        if not match:
+            return "Usage: /after <N> <content>  (N must be a positive integer)"
+        try:
+            after_n = int(match.group(1))
+        except ValueError:
+            return "Usage: /after <N> <content>  (N must be a valid integer)"
+        after_content = match.group(2).strip()
+
+        if after_n < 1:
+            return "Usage: /after <N> <content>  (N must be >= 1)"
+        if after_n > self._after_queue_max_n:
+            return f"N too large (max {self._after_queue_max_n})"
+        if not after_content:
+            return "Usage: /after <N> <content>  (content must not be empty)"
+        if len(after_content) > self._after_queue_max_content_len:
+            after_content = after_content[:self._after_queue_max_content_len]
+
+        # Check queue depth
+        queue = self._after_queue.setdefault(session_key, [])
+        if len(queue) >= self._after_queue_max_per_session:
+            return f"Too many /after entries queued (max {self._after_queue_max_per_session})"
+
+        queue.append((after_n, after_content))
+        return True
+
     def _goal_still_active_for_session(self, session_id: str) -> bool:
         """Best-effort fresh DB check before running a queued continuation."""
         if not session_id:
@@ -3812,6 +3850,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._enqueue_fifo(session_key, event, adapter)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        # --- /after hot-path: handle before authorization gate ---
+        # /after is a self-directed command that stores a directive for
+        # later turns.  It does not need authorization — it does not
+        # interact with the running agent — so check it before the auth gate.
+        if event.get_command() == "after":
+            after_args = event.get_command_args().strip()
+            if not after_args:
+                return True  # silently ignored (usage hint already returned in cold path)
+            after_result = self._enqueue_after_command(session_key, after_args)
+            if after_result is True:
+                logger.debug(
+                    "Hot-path /after queued for session %s",
+                    session_key,
+                )
+            return True  # handled; do not fall through to interrupt/queue logic
+
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
@@ -7641,6 +7695,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # at the end of this function so the rewritten text is sent
             # to the agent as a regular user turn.
 
+        if canonical == "after":
+            # /after N <content>: inject content as user context after N AI replies.
+            # Stores in _after_queue and falls through to normal agent processing.
+            # Works in both cold and hot paths (hot path handled in
+            # _handle_active_session_busy_message before the running-agent guard).
+            after_args = event.get_command_args().strip()
+            if not after_args:
+                return "Usage: /after <N> <content>  (deliver the content after N AI replies)"
+            after_result = self._enqueue_after_command(session_key, after_args)
+            if after_result is not True:
+                return after_result
+            # Fall through to _handle_message_with_agent so the agent
+            # processes the directive with the context injected.
+            return  # Continue to end of _handle_message
+
         if canonical == "goal":
             return await self._handle_goal_command(event)
 
@@ -8828,6 +8897,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 vc_context = adapter.get_voice_channel_context(guild_id)
                 if vc_context:
                     context_prompt += f"\n\n{vc_context}"
+
+        # -----------------------------------------------------------------
+        # /after context injection — drain /after queue entries whose
+        # wait count has reached 0, inject them as user-provided context
+        # (not system directives), and decrement remaining entries.
+        # -----------------------------------------------------------------
+        _after_entries = getattr(self, "_after_queue", {}).get(_quick_key, [])
+        if _after_entries:
+            _remaining = []
+            for _turn_n, _content in _after_entries:
+                if _turn_n <= 1:
+                    # Content is ready — inject as user context, not system directive
+                    context_prompt += (
+                        f"\n\n[User directive: Focus on what was said "
+                        f"when responding. Context: {_content}]"
+                    )
+                    logger.info(
+                        "Injected /after context into session %s run %s",
+                        _quick_key, run_generation,
+                    )
+                else:
+                    _remaining.append((_turn_n - 1, _content))
+            if _remaining:
+                self._after_queue[_quick_key] = _remaining
+            else:
+                self._after_queue.pop(_quick_key, None)
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user

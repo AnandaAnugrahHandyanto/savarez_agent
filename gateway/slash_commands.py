@@ -117,6 +117,9 @@ class GatewaySlashCommandsMixin:
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
+        # Clear /after queue for the reset session.
+        if hasattr(self, "_after_queue"):
+            self._after_queue.pop(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
 
