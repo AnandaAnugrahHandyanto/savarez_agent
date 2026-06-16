@@ -2239,6 +2239,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_in_progress = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
+        # Tracks message IDs we've sent (for detecting replies to our own messages).
+        self._sent_message_ids: set = set()
+        # Maps a message_id -> session_key when we send a message in a session,
+        # so a reply to that message can be contextualized.
+        self._message_context_map: Dict[str, str] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
