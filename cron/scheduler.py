@@ -1648,6 +1648,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         from hermes_cli.fallback_config import get_fallback_chain
         from hermes_cli.auth import AuthError
         _cfg_dict: dict[str, Any] = _cfg if isinstance(_cfg, dict) else {}
+        fallback_selected_model: Optional[str] = None
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -1669,12 +1670,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 if not isinstance(entry, dict):
                     continue
                 try:
+                    entry_model = str(entry.get("model") or "").strip()
                     fb_kwargs = {"requested": entry.get("provider")}
+                    if entry_model:
+                        fb_kwargs["target_model"] = entry_model
                     if entry.get("base_url"):
                         fb_kwargs["explicit_base_url"] = entry["base_url"]
                     if entry.get("api_key"):
                         fb_kwargs["explicit_api_key"] = entry["api_key"]
                     runtime = resolve_runtime_provider(**fb_kwargs)
+                    fallback_selected_model = entry_model or None
                     logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
                     break
                 except Exception as fb_exc:
@@ -1732,7 +1737,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
 
         agent = AIAgent(
-            model=model,
+            model=fallback_selected_model or model,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
