@@ -290,6 +290,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/research/research-arxiv',
                     'user-guide/skills/bundled/research/research-blogwatcher',
                     'user-guide/skills/bundled/research/research-llm-wiki',
+                    'user-guide/skills/bundled/research/research-math-textbook-reading-companion',
                     'user-guide/skills/bundled/research/research-polymarket',
                     'user-guide/skills/bundled/research/research-research-paper-writing',
                   ],
