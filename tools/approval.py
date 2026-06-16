@@ -770,11 +770,84 @@ def _command_category(command: str) -> str:
     return f"{first} command"
 
 
+def _approval_explanation(command: str, description: str) -> str:
+    """Return the one sentence a human is actually approving or denying."""
+    try:
+        parts = shlex.split(command, posix=True)
+    except Exception:
+        parts = command.strip().split()
+
+    first = parts[0].split("/")[-1].lower() if parts else ""
+    targets = _extract_approval_targets(command, limit=1)
+    target = targets[0] if targets else ""
+    lowered = command.lower()
+
+    repo = ""
+    pr_number = ""
+    for idx, part in enumerate(parts):
+        if part == "--repo" and idx + 1 < len(parts):
+            repo = parts[idx + 1]
+            continue
+        if part.isdigit() and not pr_number:
+            pr_number = part
+
+    if first == "gh" and len(parts) >= 3 and parts[1:3] == ["pr", "view"]:
+        pr_target = f"{repo} PR {pr_number}".strip()
+        if repo and pr_number:
+            pr_target = f"{repo}#{pr_number}"
+        elif pr_number:
+            pr_target = f"pull request {pr_number}"
+        else:
+            pr_target = "a GitHub pull request"
+        return f"This will check the status of {pr_target} without changing it."
+
+    if first == "git":
+        subcmd = parts[1].lower() if len(parts) > 1 else ""
+        if subcmd in {"status", "diff", "log", "show", "rev-parse"}:
+            return "This will inspect the local Git repository without changing files or publishing anything."
+        if subcmd == "push":
+            remote = parts[2] if len(parts) > 2 else "the configured remote"
+            return f"This will push local Git commits or branches to {remote}, which can publish code changes."
+        if subcmd in {"fetch", "pull"}:
+            return f"This will contact the Git remote to {subcmd} repository data and may update local repository state."
+        if subcmd:
+            return f"This will run `git {subcmd}`, which may change repository state."
+
+    if first in {"curl", "wget"} or " curl " in f" {lowered} ":
+        if re.search(r'\b(?:-X|--request)\s*(?:POST|PUT|PATCH|DELETE)\b', command, re.IGNORECASE):
+            return f"This will send a mutating HTTP request to {target or 'a network endpoint'}."
+        return f"This will make a read-only network request to {target or 'a network endpoint'}."
+
+    if "redis-cli" in lowered:
+        if re.search(r'\b(xlen|xinfo|keys|scan|type|exists|get)\b', lowered):
+            return "This will read Redis metadata or values without writing to Redis."
+        return "This will run a Redis command; inspect the raw command to confirm whether it writes data."
+
+    if first == "ssh":
+        return f"This will run a command on the remote SSH target {parts[1] if len(parts) > 1 else target or 'shown below'}."
+
+    if first in {"bash", "sh", "zsh", "fish", "ksh"}:
+        if _MUTATING_COMMAND_RE.search(command):
+            return "This will run a shell script that may change system, file, service, or repository state."
+        if target:
+            return f"This will run a read-only shell check against {target}."
+        return "This will run a shell command for inspection; review the raw command before approving."
+
+    if first.startswith("python") or first in {"node", "ruby", "perl"}:
+        if _MUTATING_COMMAND_RE.search(command):
+            return "This will run inline code that may write files or change system state."
+        return "This will run inline code for inspection; review the raw code before approving."
+
+    if description:
+        return f"This will run a flagged command because: {description}."
+    return "This will run a flagged command; review the raw command before approving."
+
+
 def command_approval_summary(command: str, description: str) -> dict[str, str]:
     """Build human-first approval text for gateway/CLI prompts.
 
     Raw commands are still shown for auditability, but the approval decision
-    must not require users to decode shell/Python syntax first.
+    must be anchored by one plain-English sentence.
     """
     category = _command_category(command)
     targets = _extract_approval_targets(command)
@@ -789,8 +862,10 @@ def command_approval_summary(command: str, description: str) -> dict[str, str]:
     target_text = f" targeting {', '.join(targets)}" if targets else ""
     action = f"Approve this {category}{target_text}. It {mode.lower()}."
     reason = description or "flagged by command approval policy"
+    explanation = _approval_explanation(command, description)
 
     return {
+        "explanation": explanation,
         "action": action,
         "mode": mode,
         "target": ", ".join(targets) if targets else "not automatically identified",

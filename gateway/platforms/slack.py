@@ -2265,13 +2265,8 @@ class SlackAdapter(BasePlatformAdapter):
                         "type": "mrkdwn",
                         "text": (
                             f":warning: *Command Approval Required*\n"
-                            f"*{summary['action']}*\n"
-                            f"*Mode:* {summary['mode']}\n"
-                            f"*Target:* {summary['target']}\n"
-                            f"*Category:* {summary['category']}\n"
-                            f"*Need:* {summary['need']}\n"
-                            f"*Reason:* {summary['reason']}\n"
-                            f"*Risk:* {summary['risk']}\n\n"
+                            f"*Explanation:* {summary['explanation']}\n"
+                            f"*Why approval is needed:* {summary['reason']}\n\n"
                             f"*Raw command:*\n```{cmd_preview}```"
                         ),
                     },

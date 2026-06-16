@@ -2554,14 +2554,9 @@ class QQAdapter(BasePlatformAdapter):
 
         req = ApprovalRequest(
             session_key=session_key,
-            title=summary["action"],
+            title=summary["explanation"],
             description=(
-                f"Mode: {summary['mode']}\n"
-                f"Target: {summary['target']}\n"
-                f"Category: {summary['category']}\n"
-                f"Need: {summary['need']}\n"
-                f"Reason: {summary['reason']}\n"
-                f"Risk: {summary['risk']}"
+                f"Why approval is needed: {summary['reason']}"
             ),
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,

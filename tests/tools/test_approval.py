@@ -57,11 +57,22 @@ class TestCommandApprovalSummary:
             "Security scan — raw IP address; insecure TLS flag",
         )
 
-        assert summary["action"].startswith("Approve this")
-        assert "shell script" in summary["action"]
+        assert summary["explanation"] == (
+            "This will run a read-only shell check against portal.re-evolution-world.com."
+        )
         assert summary["mode"] == "Appears read-only"
         assert "portal.re-evolution-world.com" in summary["target"]
         assert "Security scan" in summary["reason"]
+
+    def test_github_pr_view_explains_actual_action(self):
+        summary = command_approval_summary(
+            "gh pr view 46682 --repo NousResearch/hermes-agent --json url,state",
+            "GitHub PR status check",
+        )
+
+        assert summary["explanation"] == (
+            "This will check the status of NousResearch/hermes-agent#46682 without changing it."
+        )
 
     def test_mutating_command_is_not_described_as_read_only(self):
         summary = command_approval_summary(
@@ -70,6 +81,9 @@ class TestCommandApprovalSummary:
         )
 
         assert summary["mode"] == "May change system state"
+        assert summary["explanation"] == (
+            "This will push local Git commits or branches to origin, which can publish code changes."
+        )
 
 
 class TestDetectDangerousRm:

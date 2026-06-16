@@ -2396,13 +2396,8 @@ class TelegramAdapter(BasePlatformAdapter):
             summary = command_approval_summary(command, description)
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<b>{_html.escape(summary['action'])}</b>\n"
-                f"Mode: {_html.escape(summary['mode'])}\n"
-                f"Target: {_html.escape(summary['target'])}\n"
-                f"Category: {_html.escape(summary['category'])}\n"
-                f"Need: {_html.escape(summary['need'])}\n"
-                f"Reason: {_html.escape(summary['reason'])}\n"
-                f"Risk: {_html.escape(summary['risk'])}\n\n"
+                f"<b>Explanation:</b> {_html.escape(summary['explanation'])}\n"
+                f"<b>Why approval is needed:</b> {_html.escape(summary['reason'])}\n\n"
                 f"Raw command:\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Choose a scope below."

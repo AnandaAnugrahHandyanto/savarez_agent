@@ -127,13 +127,18 @@ class TestTelegramExecApproval:
         )
 
         text = adapter._bot.send_message.call_args[1]["text"]
-        summary_index = text.index("Approve this")
+        summary_index = text.index("Explanation:")
         raw_index = text.index("Raw command:")
         command_index = text.index("bash -lc")
 
         assert summary_index < raw_index < command_index
-        assert "Mode: Appears read-only" in text
-        assert "Target: portal.re-evolution-world.com" in text
+        assert (
+            "This will run a read-only shell check against "
+            "portal.re-evolution-world.com."
+        ) in text
+        assert "Why approval is needed:" in text
+        for old_label in ("Mode:", "Target:", "Category:", "Need:", "Risk:"):
+            assert old_label not in text
 
     @pytest.mark.asyncio
     async def test_stores_approval_state(self):

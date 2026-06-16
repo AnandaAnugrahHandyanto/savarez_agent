@@ -1884,13 +1884,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     {
                         "tag": "markdown",
                         "content": (
-                            f"**{summary['action']}**\n\n"
-                            f"**Mode:** {summary['mode']}\n"
-                            f"**Target:** {summary['target']}\n"
-                            f"**Category:** {summary['category']}\n"
-                            f"**Need:** {summary['need']}\n"
-                            f"**Reason:** {summary['reason']}\n"
-                            f"**Risk:** {summary['risk']}\n\n"
+                            f"**Explanation:** {summary['explanation']}\n"
+                            f"**Why approval is needed:** {summary['reason']}\n\n"
                             f"**Raw command:**\n```\n{cmd_preview}\n```"
                         ),
                     },

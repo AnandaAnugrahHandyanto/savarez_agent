@@ -4037,15 +4037,10 @@ class DiscordAdapter(BasePlatformAdapter):
             summary = command_approval_summary(command, description)
             embed = discord.Embed(
                 title="⚠️ Command Approval Required",
-                description=f"**{summary['action']}**",
+                description=f"**Explanation:** {summary['explanation']}",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Mode", value=summary["mode"], inline=True)
-            embed.add_field(name="Category", value=summary["category"], inline=True)
-            embed.add_field(name="Target", value=summary["target"], inline=False)
-            embed.add_field(name="Need", value=summary["need"], inline=False)
-            embed.add_field(name="Reason", value=summary["reason"], inline=False)
-            embed.add_field(name="Risk", value=summary["risk"], inline=False)
+            embed.add_field(name="Why approval is needed", value=summary["reason"], inline=False)
             embed.add_field(name="Raw command", value=f"```\n{cmd_display}\n```", inline=False)
 
             view = ExecApprovalView(
