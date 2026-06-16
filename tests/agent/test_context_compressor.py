@@ -2264,3 +2264,130 @@ class TestPreflightSentinelGuard:
         compressor.last_prompt_tokens = 50_000
         result = self._seed(compressor.last_prompt_tokens, 10_000)
         assert result == 50_000
+
+
+class TestStripHistoricalMediaToolResults:
+    """_strip_historical_media should strip images from tool results, not just user messages.
+
+    browser_vision and computer_use return ``_multimodal`` envelopes as tool results.
+    Without this fix those payloads survived every compression pass because the anchor
+    search only looked at user-role messages, so sessions with multiple browser_vision
+    calls accumulated multi-MB base-64 screenshots and always hit HTTP 413 errors.
+    """
+
+    def _make_multimodal_envelope(self, summary: str = "screenshot of page") -> dict:
+        return {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "Image loaded into your context."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA" + "x" * 1000}},
+            ],
+            "text_summary": summary,
+            "meta": {"size_bytes": 1024},
+        }
+
+    def test_multimodal_tool_result_before_anchor_is_stripped(self):
+        from agent.context_compressor import _strip_historical_media
+
+        messages = [
+            {"role": "user", "content": "take a screenshot"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("first screenshot"), "tool_call_id": "c1"},
+            {"role": "assistant", "content": "I see the login page."},
+            {"role": "user", "content": "take another screenshot"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("second screenshot"), "tool_call_id": "c2"},
+            {"role": "assistant", "content": "I see a modal."},
+        ]
+
+        result = _strip_historical_media(messages)
+
+        # Oldest tool result (index 2) must be stripped — image payload gone, summary kept.
+        assert result[2]["content"] == "[screenshot removed] first screenshot"
+        # Most recent tool result (index 6) is the anchor — must be preserved verbatim.
+        assert result[6]["content"] == messages[6]["content"]
+        # Non-image messages must not be mutated.
+        assert result[0] is messages[0]
+        assert result[3] is messages[3]
+
+    def test_only_tool_result_images_no_user_images(self):
+        """No user message has images — anchor comes from the tool result."""
+        from agent.context_compressor import _strip_historical_media
+
+        messages = [
+            {"role": "user", "content": "browse the web"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("old screenshot"), "tool_call_id": "c1"},
+            {"role": "assistant", "content": "Done browsing."},
+            {"role": "user", "content": "take a fresh look"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("new screenshot"), "tool_call_id": "c2"},
+            {"role": "assistant", "content": "I see the updated page."},
+        ]
+
+        result = _strip_historical_media(messages)
+
+        assert result[2]["content"] == "[screenshot removed] old screenshot"
+        assert result[6]["content"] == messages[6]["content"]
+
+    def test_single_tool_result_not_stripped(self):
+        """Only one tool result with images — it is the anchor, nothing to strip."""
+        from agent.context_compressor import _strip_historical_media
+
+        messages = [
+            {"role": "user", "content": "screenshot please"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("only screenshot"), "tool_call_id": "c1"},
+            {"role": "assistant", "content": "Here you go."},
+        ]
+
+        result = _strip_historical_media(messages)
+        assert result is messages  # returned unchanged
+
+    def test_legacy_user_image_stripping_still_works(self):
+        """Existing behaviour: user-attached images before the anchor are stripped."""
+        from agent.context_compressor import _strip_historical_media, _is_image_part
+
+        img_part = {"type": "image_url", "image_url": {"url": "data:image/png;base64,OLD"}}
+        img_part2 = {"type": "image_url", "image_url": {"url": "data:image/png;base64,NEW"}}
+
+        messages = [
+            {"role": "user", "content": [img_part, {"type": "text", "text": "old image"}]},
+            {"role": "assistant", "content": "analysis of old"},
+            {"role": "user", "content": [img_part2, {"type": "text", "text": "new image"}]},
+            {"role": "assistant", "content": "analysis of new"},
+        ]
+
+        result = _strip_historical_media(messages)
+
+        # First user message: image stripped, text kept.
+        assert not any(_is_image_part(p) for p in result[0]["content"])
+        assert any(p.get("text") == "old image" for p in result[0]["content"] if isinstance(p, dict))
+        # Second user message (anchor): unchanged.
+        assert result[2]["content"] is messages[2]["content"]
+
+    def test_tool_result_list_style_images_stripped(self):
+        """OpenAI-style list content in tool results is also stripped."""
+        from agent.context_compressor import _strip_historical_media, _is_image_part
+
+        list_content = [
+            {"type": "text", "text": "vision result"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,SCREENSHOT"}},
+        ]
+
+        messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": list_content, "tool_call_id": "c1"},
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("new"), "tool_call_id": "c2"},
+            {"role": "assistant", "content": "done again"},
+        ]
+
+        result = _strip_historical_media(messages)
+
+        stripped_tool_content = result[2]["content"]
+        assert isinstance(stripped_tool_content, list)
+        assert not any(_is_image_part(p) for p in stripped_tool_content)

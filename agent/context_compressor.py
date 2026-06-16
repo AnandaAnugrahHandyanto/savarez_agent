@@ -411,43 +411,83 @@ def _strip_images_from_content(content: Any) -> Any:
     return new_parts
 
 
+def _tool_result_has_media(content: Any) -> bool:
+    """True when a tool result's content carries image data that should be stripped.
+
+    Covers two shapes:
+    - ``_multimodal`` envelope dict: ``{"_multimodal": True, "content": [...]}``
+      returned by browser_vision / computer_use on the native-vision fast path.
+    - OpenAI-style list with image parts: ``[{"type": "image_url", ...}, ...]``
+    """
+    if isinstance(content, dict) and content.get("_multimodal"):
+        return True
+    if isinstance(content, list):
+        return _content_has_images(content)
+    return False
+
+
+def _strip_tool_result_media(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a shallow copy of a tool-result message with its image payload removed.
+
+    ``_multimodal`` envelopes are replaced with their ``text_summary`` string so
+    the model retains a readable description without the base-64 bulk.  List-style
+    multimodal content is stripped via ``_strip_image_parts_from_parts``.
+    """
+    content = msg.get("content")
+    new_msg = msg.copy()
+    if isinstance(content, dict) and content.get("_multimodal"):
+        summary = content.get("text_summary") or "[screenshot removed to save context]"
+        new_msg["content"] = f"[screenshot removed] {summary[:200]}"
+    elif isinstance(content, list):
+        stripped = _strip_image_parts_from_parts(content)
+        if stripped is not None:
+            new_msg["content"] = stripped
+    return new_msg
+
+
 def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Replace image parts in older messages with placeholder text.
+    """Replace image payloads in older messages with placeholder text.
 
-    The anchor is the *last* user message that has any image content. Every
-    message before that anchor gets its image parts replaced with a short
-    placeholder so the outgoing request stops re-shipping the same multi-MB
-    base-64 image blobs on every turn.
+    The anchor is the *last* message — user or tool result — that carries image
+    content.  Every message before that anchor has its image data replaced with a
+    short placeholder, stopping the outgoing request from re-shipping the same
+    multi-MB base-64 blobs on every turn.
 
-    If no user message carries images, the list is returned unchanged.
-    If the only user message with images is the very first one (nothing
-    earlier to strip), the list is returned unchanged.
+    Two image-bearing message shapes are handled:
+    - User messages with OpenAI-style multimodal content lists (e.g. attached
+      screenshots sent by the user).
+    - Tool result messages whose content is a ``_multimodal`` envelope
+      (``browser_vision`` / ``computer_use`` native-vision fast path) or an
+      OpenAI-style list.  These were previously invisible to the anchor search,
+      so a session that only used browser_vision never stripped any screenshots
+      and accumulated unbounded base-64 payload — causing HTTP 413 errors even
+      after multiple compression passes.
 
-    Shallow copies of touched messages only; input is never mutated.
-    Port of Kilo-Org/kilocode#9434 (adapted for the OpenAI-style message
-    shape the hermes compressor emits).
+    If no image-bearing message exists, or it is the very first message (nothing
+    earlier to strip), the list is returned unchanged.  Shallow copies of touched
+    messages only; input is never mutated.
+
+    Port of Kilo-Org/kilocode#9434 (adapted for hermes message shapes).
     """
     if not messages:
         return messages
 
-    # Find the newest user message that carries at least one image part.
-    # We anchor on image-bearing user messages (not all user messages) so
-    # a plain text follow-up after a big-image turn still strips the old
-    # image — matching the problem kilocode#9434 set out to solve.
+    # Find the newest message (user or tool result) that carries image content.
     anchor = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") != "user":
-            continue
-        if _content_has_images(msg.get("content")):
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "user" and _content_has_images(content):
+            anchor = i
+            break
+        if role == "tool" and _tool_result_has_media(content):
             anchor = i
             break
 
     if anchor <= 0:
-        # No image-bearing user message, or it's the very first message —
-        # nothing before it to strip.
         return messages
 
     changed = False
@@ -456,14 +496,18 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
         if i >= anchor or not isinstance(msg, dict):
             result.append(msg)
             continue
+        role = msg.get("role")
         content = msg.get("content")
-        if not _content_has_images(content):
+        if role == "user" and _content_has_images(content):
+            new_msg = msg.copy()
+            new_msg["content"] = _strip_images_from_content(content)
+            result.append(new_msg)
+            changed = True
+        elif role == "tool" and _tool_result_has_media(content):
+            result.append(_strip_tool_result_media(msg))
+            changed = True
+        else:
             result.append(msg)
-            continue
-        new_msg = msg.copy()
-        new_msg["content"] = _strip_images_from_content(content)
-        result.append(new_msg)
-        changed = True
 
     return result if changed else messages
 
