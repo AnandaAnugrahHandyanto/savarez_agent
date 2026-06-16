@@ -87,6 +87,11 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_GATEWAY_BENIGN_STATUS_RE = re.compile(
+    r"codex\s+gpt-5\.5\s+caps\s+context.+auto-compaction\s+was\s+raised.+compression\.codex_gpt55_autoraise",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -362,6 +367,8 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
     if not text:
+        return None
+    if event_type == "lifecycle" and _GATEWAY_BENIGN_STATUS_RE.search(text):
         return None
     if _gateway_platform_value(platform) != "telegram":
         return text
@@ -3845,13 +3852,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
+                reply_to=self._status_reply_to_for_event(event, reply_anchor),
                 metadata=thread_meta,
             )
             return True
@@ -4046,13 +4047,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
+                reply_to=self._status_reply_to_for_event(event, reply_anchor),
                 metadata=thread_meta,
             )
         except Exception as e:
@@ -11405,6 +11400,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
         """Return the platform-specific reply anchor for GatewayRunner sends."""
         return _reply_anchor_for_event(event)
+
+    @staticmethod
+    def _status_reply_to_for_event(event: MessageEvent, reply_anchor: Optional[str]) -> Optional[str]:
+        """Return the reply target for status/ack sends.
+
+        Telegram non-DM topics route by metadata only; other platforms should
+        use the normalized reply anchor so adapter-specific suppression (for
+        example Feishu merge_forward) is respected.
+        """
+        if (
+            event.source.platform == Platform.TELEGRAM
+            and event.source.thread_id
+            and event.source.chat_type != "dm"
+        ):
+            return None
+        return reply_anchor
 
 
     # ------------------------------------------------------------------
