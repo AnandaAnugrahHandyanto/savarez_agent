@@ -2646,9 +2646,17 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
 
     if result.get("success"):
+        from agent.display import redact_tool_args_for_display
+
+        display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
+
         response = {
             "success": True,
-            "typed": text,
+            # Never echo raw typed text back to tool progress/log surfaces: it
+            # is commonly a password, API key, or other credential.  Redact
+            # only the returned display value; the original text was already
+            # sent to the browser command above.
+            "typed": display_text,
             "element": ref
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
