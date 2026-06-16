@@ -2736,6 +2736,33 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
         )
 
 
+def test_archive_child_sweeps_deferred_scratch_parent(kanban_home):
+    """Archiving a child task must sweep a deferred scratch-workspace parent.
+
+    Regression for the gap where ``archive_task`` never called
+    ``_cleanup_workspace`` / ``_try_cleanup_parent_workspaces``, leaving the
+    parent's scratch dir stranded when a child is archived instead of
+    completed via ``complete_task``.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="scratch parent")
+        child = kb.create_task(conn, title="child task")
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+
+        kb.complete_task(conn, parent, result="handoff")
+        assert parent_ws.exists(), "cleanup must be deferred while child is active"
+
+        kb.archive_task(conn, child)
+
+    assert not parent_ws.exists(), (
+        "archiving the last active child must trigger the deferred parent "
+        "scratch workspace cleanup"
+    )
+
+
 def test_archive_task_triggers_recompute_ready_for_dependents(kanban_home):
     """Archiving a parent must immediately unblock its children.
 

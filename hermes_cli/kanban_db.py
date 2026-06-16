@@ -4628,6 +4628,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
     recompute_ready(conn)
+    # Archiving a child task transitions it to a terminal state, which may
+    # unblock a scratch parent that deferred its own cleanup (#33774). Mirror
+    # the complete_task path: clean up this task's own scratch workspace and
+    # sweep any parent whose deferred cleanup is now unblocked.
+    _cleanup_workspace(conn, task_id)
     return True
 
 
