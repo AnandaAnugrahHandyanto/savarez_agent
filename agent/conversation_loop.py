@@ -2728,6 +2728,47 @@ def run_conversation(
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
+                usage_limit_reached = agent._is_usage_limit_reached_error(api_error)
+                if usage_limit_reached and agent._fallback_index < len(agent._fallback_chain):
+                    # OpenAI/Codex-style account usage limits include an
+                    # explicit reset window in the payload. Retrying the
+                    # primary cannot succeed before that reset, but a
+                    # configured fallback provider can. Prefer failover over
+                    # terminating the turn; only surface the reset message if
+                    # the fallback chain is exhausted or unavailable.
+                    agent._buffer_status("⚠️ API usage limit reached — switching to fallback provider...")
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
+
+                if usage_limit_reached:
+                    # No fallback recovered. Surface the actionable reset
+                    # window immediately instead of wasting calls.
+                    agent._flush_status_buffer()
+                    _final_summary = agent._summarize_api_error(api_error)
+                    _usage_limit_message = agent._usage_limit_error_message(api_error)
+                    agent._emit_status(f"❌ {_usage_limit_message}")
+                    logger.error(
+                        "%sAPI usage limit reached. %s | provider=%s model=%s msgs=%s tokens=~%s",
+                        agent.log_prefix, _final_summary,
+                        _provider, _model, len(api_messages), f"{approx_tokens:,}",
+                    )
+                    if api_kwargs is not None:
+                        agent._dump_api_request_debug(
+                            api_kwargs, reason="usage_limit_reached", error=api_error,
+                        )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": _usage_limit_message,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": _final_summary,
+                    }
+
                 if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
