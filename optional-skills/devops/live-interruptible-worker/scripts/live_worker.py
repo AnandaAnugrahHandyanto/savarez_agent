@@ -361,6 +361,9 @@ def run(tasks: list, task_type: str = 'search'):
                 break
             elif handled in ('skip',):
                 skipped += 1
+                # Consume the stale cancel flag set by stdin reader
+                # for SKIP/FOCUS commands
+                channel.check_cancel()
                 break
 
         if interrupted:
@@ -426,12 +429,16 @@ def run(tasks: list, task_type: str = 'search'):
                             break
                         elif handled in ('skip',):
                             skipped += 1
+                            # Consume stale cancel flag set by stdin reader
+                            channel.check_cancel()
                             auto_continue = True
                             break
                         elif handled == 'next':
                             auto_continue = True
                             break
                         elif handled == 'focus':
+                            # Consume stale cancel flag set by stdin reader
+                            channel.check_cancel()
                             auto_continue = False
                             break
                     if interrupted:
@@ -446,20 +453,22 @@ def run(tasks: list, task_type: str = 'search'):
                 time.sleep(0.1)
                 waited = round(waited + 0.1, 1)
 
-    # Final summary
+    # Final summary — derive skipped from actual counts
     completed_count = len(
         [c for c in completed if c.get('_status') == 'completed'])
     cancelled_count = len(
         [c for c in completed if c.get('_status') == 'cancelled'])
     error_count = len(
         [c for c in completed if c.get('_status') == 'error'])
+    items_accounted = completed_count + cancelled_count + error_count
+    actual_skipped = total - items_accounted - len(remaining)
 
     print(f"\n{'='*60}")
     print("\U0001f3c1 LiveWorker finished!")
     print(f"   Completed: {completed_count}")
     print(f"   Cancelled: {cancelled_count}")
     print(f"   Errors:    {error_count}")
-    print(f"   Skipped:   {skipped}")
+    print(f"   Skipped:   {actual_skipped}")
     if interrupted:
         print(f"   Remaining: {len(remaining)} (cancelled by STOP)")
     print(f"{'='*60}")
@@ -472,7 +481,7 @@ def run(tasks: list, task_type: str = 'search'):
         'completed': completed_count,
         'cancelled': cancelled_count,
         'errors': error_count,
-        'skipped': skipped,
+        'skipped': actual_skipped,
         'remaining': len(remaining),
         'interrupted': interrupted,
         'items': completed,
