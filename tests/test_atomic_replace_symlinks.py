@@ -161,84 +161,129 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     assert missing.read_text(encoding="utf-8") == "created-through-link\n"
 
 
-# ─── Cross-device fallback (EXDEV) ─────────────────────────────────────────
+# ─── EXDEV / EBUSY copy fallback ───────────────────────────────────────────
 
 
-def test_atomic_replace_exdev_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When os.replace fails with EXDEV (cross-device link), the helper
-    falls back to shutil.copy2 + os.unlink so WSL→Windows symlinked configs
-    still update successfully.
-    """
-    import utils as utils_mod
-
-    target = tmp_path / "target.yaml"
+@pytest.mark.parametrize("fail_errno", [errno.EXDEV, errno.EBUSY])
+def test_atomic_replace_copy_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_errno: int
+) -> None:
+    target = tmp_path / "config.yaml"
     target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
 
-    original_replace = os.replace
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(fail_errno, os.strerror(fail_errno), src, None, dst)
 
-    def _raise_exdev(src: str, dst: str) -> None:
-        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+    monkeypatch.setattr("utils.os.replace", fail_replace)
 
-    monkeypatch.setattr(os, "replace", _raise_exdev)
-
-    tmp = _write_tmp(tmp_path, "cross-device\n")
-    returned = atomic_replace(tmp, target)
-
-    assert Path(returned) == target
-    assert target.read_text(encoding="utf-8") == "cross-device\n"
-    assert not tmp.exists(), "temp file must be cleaned up after EXDEV fallback"
+    assert Path(atomic_replace(tmp, target)) == target
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
 
 
-def test_atomic_replace_exdev_fallback_via_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """EXDEV fallback works when target is a symlink pointing to another fs."""
+def test_atomic_replace_copy_fallback_preserves_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
-    real.write_text("original\n", encoding="utf-8")
+    real.write_text("old\n", encoding="utf-8")
     link.symlink_to(real)
+    tmp = _write_tmp(tmp_path, "new\n")
 
-    def _raise_exdev(src: str, dst: str) -> None:
+    def fail_replace(src: str, dst: str) -> None:
         raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
 
-    monkeypatch.setattr(os, "replace", _raise_exdev)
+    monkeypatch.setattr("utils.os.replace", fail_replace)
 
-    tmp = _write_tmp(tmp_path, "updated-via-symlink\n")
-    returned = atomic_replace(tmp, link)
-
-    assert link.is_symlink(), "symlink must be preserved even after EXDEV fallback"
-    assert Path(returned) == real
-    assert real.read_text(encoding="utf-8") == "updated-via-symlink\n"
-    assert not tmp.exists(), "temp file must be cleaned up after EXDEV fallback"
+    assert Path(atomic_replace(tmp, link)) == real
+    assert link.is_symlink()
+    assert real.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
 
 
-def test_atomic_replace_exdev_does_not_swallow_other_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Non-EXDEV OSErrors from os.replace must propagate, not be silently caught."""
-    target = tmp_path / "target.yaml"
-    target.write_text("unchanged\n", encoding="utf-8")
+def test_atomic_replace_copy_fallback_preserves_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX-only")
 
-    def _raise_eacces(src: str, dst: str) -> None:
-        raise OSError(errno.EACCES, "Permission denied", dst)
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    os.chmod(target, 0o600)
+    tmp = _write_tmp(tmp_path, "new\n")
+    os.chmod(tmp, 0o644)
 
-    monkeypatch.setattr(os, "replace", _raise_eacces)
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EBUSY, os.strerror(errno.EBUSY), src, None, dst)
 
-    tmp = _write_tmp(tmp_path, "should-not-land\n")
-    with pytest.raises(OSError, match="Permission denied"):
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    atomic_replace(tmp, target)
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert target.stat().st_mode & 0o777 == 0o644
+
+
+def test_atomic_replace_other_oserror_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    with pytest.raises(OSError) as excinfo:
         atomic_replace(tmp, target)
+    assert excinfo.value.errno == errno.EACCES
+    assert target.read_text(encoding="utf-8") == "old\n"
+    assert tmp.exists()
 
-    # Target should be untouched.
-    assert target.read_text(encoding="utf-8") == "unchanged\n"
 
-
-def test_atomic_yaml_write_exdev_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_atomic_yaml_write_exdev_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """End-to-end: atomic_yaml_write recovers from EXDEV during write."""
     target = tmp_path / "config.yaml"
     target.write_text("placeholder: true\n", encoding="utf-8")
 
-    def _raise_exdev(src: str, dst: str) -> None:
+    def fail_replace(src: str, dst: str) -> None:
         raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
 
-    monkeypatch.setattr(os, "replace", _raise_exdev)
+    monkeypatch.setattr("utils.os.replace", fail_replace)
 
     atomic_yaml_write(target, {"display": {"skin": "auto"}})
 
     data = yaml.safe_load(target.read_text(encoding="utf-8"))
     assert data == {"display": {"skin": "auto"}}
+
+
+def test_atomic_replace_real_cross_device(tmp_path: Path) -> None:
+    shm = Path("/dev/shm")
+    if os.name != "posix" or not os.access(shm, os.W_OK):
+        pytest.skip("requires writable /dev/shm")
+
+    import shutil as _shutil
+    import uuid as _uuid
+
+    other_fs_dir = shm / f"hermes-exdev-test-{_uuid.uuid4().hex[:8]}"
+    other_fs_dir.mkdir()
+    try:
+        real = other_fs_dir / "config.yaml"
+        real.write_text("old\n", encoding="utf-8")
+        if os.stat(real).st_dev == os.stat(tmp_path).st_dev:
+            pytest.skip("/dev/shm is not a separate filesystem here")
+
+        link = tmp_path / "config.yaml"
+        link.symlink_to(real)
+        tmp = _write_tmp(tmp_path, "new\n")
+
+        assert Path(atomic_replace(tmp, link)) == real
+        assert link.is_symlink()
+        assert real.read_text(encoding="utf-8") == "new\n"
+        assert not tmp.exists()
+    finally:
+        _shutil.rmtree(other_fs_dir, ignore_errors=True)
