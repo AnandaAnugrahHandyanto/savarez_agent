@@ -606,3 +606,62 @@ def test_aggregator_dedup_multiple_user_providers():
     assert or_row["models"] == ["model-z"]
     assert or_row["total_models"] == 1
 
+
+def test_aggregator_dedup_custom_provider_keeps_own_models():
+    """A custom: provider must not filter its own models away.
+
+    is_aggregator() returns True for every ``custom:`` slug, so a
+    user-defined custom provider matches both the source side of the
+    dedup (is_user_defined populates user_models) and the target side
+    (its slug looks like an aggregator). Without a guard it filters its
+    own models against the set it just populated and drops to zero, so
+    the /model picker shows the provider with no models even though the
+    config lists several. This exercises the real is_aggregator() rather
+    than mocking it, since the custom: slug behaviour is the whole point.
+    """
+    rows = [
+        _user_provider_row("custom:llama-cpp", [
+            "gpt-oss-20b",
+            "qwen3-30b",
+            "gemma-4-e4b",
+        ]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    row = next(r for r in payload["providers"] if r["slug"] == "custom:llama-cpp")
+    assert row["models"] == ["gpt-oss-20b", "qwen3-30b", "gemma-4-e4b"]
+    assert row["total_models"] == 3
+
+
+def test_aggregator_dedup_custom_provider_alongside_real_aggregator():
+    """The custom: guard keeps the #45954 fix working for real aggregators.
+
+    A custom provider keeps all of its own models, and a genuine
+    aggregator in the same payload still loses models that overlap with
+    user-defined providers.
+    """
+    rows = [
+        _user_provider_row("custom:local", ["llama-3-8b", "qwen3-30b"]),
+        _aggregator_row("openrouter", [
+            "qwen3-30b",  # overlaps with the custom provider
+            "anthropic/claude-sonnet-4.6",
+        ]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    custom_row = next(r for r in payload["providers"] if r["slug"] == "custom:local")
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+
+    # Custom provider keeps everything it serves.
+    assert custom_row["models"] == ["llama-3-8b", "qwen3-30b"]
+    assert custom_row["total_models"] == 2
+
+    # Real aggregator still gets thinned of the overlap.
+    assert "qwen3-30b" not in or_row["models"]
+    assert "anthropic/claude-sonnet-4.6" in or_row["models"]
+    assert or_row["total_models"] == 1
+

@@ -179,6 +179,14 @@ def build_models_payload(
         if user_models:
             for row in rows:
                 slug = row.get("slug", "")
+                # Skip user-defined providers. Every custom: slug reports
+                # is_aggregator() == True, so without this guard a custom
+                # provider would filter its own models against the
+                # user_models set it just populated and collapse to zero
+                # models in the picker. The dedup only needs to thin the
+                # curated catalogs of real aggregators (openrouter, etc.).
+                if row.get("is_user_defined"):
+                    continue
                 if not _is_aggregator(slug):
                     continue
                 original = row.get("models") or []
