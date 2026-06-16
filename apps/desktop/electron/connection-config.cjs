@@ -203,6 +203,39 @@ function profileRemoteOverride(config, profile) {
   }
 }
 
+/**
+ * In global-remote mode one backend serves every Desktop profile, so REST calls
+ * that are scoped by renderer-side `request.profile` must carry that scope as a
+ * query parameter. Local pooled backends and per-profile remote overrides do not
+ * need this: they already run against a backend scoped to the target profile.
+ */
+function pathWithGlobalRemoteProfile(path, profile, opts = {}) {
+  const scopedProfile = connectionScopeKey(profile)
+  if (!scopedProfile || !opts.globalRemote || opts.profileRemoteOverride) {
+    return path
+  }
+
+  const rawPath = String(path || '')
+  if (!rawPath) {
+    return path
+  }
+
+  let parsed
+  try {
+    parsed = new URL(rawPath, 'http://hermes.local')
+  } catch {
+    return path
+  }
+
+  if (parsed.searchParams.has('profile')) {
+    return path
+  }
+
+  parsed.searchParams.set('profile', scopedProfile)
+
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}
+
 function tokenPreview(value) {
   const raw = String(value || '')
 
@@ -289,6 +322,7 @@ module.exports = {
   normTransportMode,
   normalizeRemoteBaseUrl,
   normalizeRemoteTransport,
+  pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   remoteEffectiveUrl,
   remotePublicUrl,
