@@ -127,6 +127,41 @@ class TestCompressionBoundaryHook:
             f"got {comp_calls!r}"
         )
 
+    def test_todo_snapshot_is_preserved_as_system_note(self):
+        """Compression keeps todo state visible without faking a user turn."""
+        from run_agent import AIAgent
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=None,
+                session_id="original-session",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        compressor = MagicMock()
+        compressor.compress.return_value = [{"role": "user", "content": "compressed summary"}]
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        agent.context_compressor = compressor
+        agent._todo_store.format_for_injection = MagicMock(
+            return_value="[Your active task list was preserved across context compression]\n- [ ] Next"
+        )
+
+        compressed, _prompt = agent._compress_context(
+            [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+        )
+
+        assert compressed[-1]["role"] == "system"
+        assert "active task list" in compressed[-1]["content"]
+
     def test_hook_failure_does_not_break_compression(self):
         """If the context engine raises from on_session_start, compression still completes."""
         from hermes_state import SessionDB
