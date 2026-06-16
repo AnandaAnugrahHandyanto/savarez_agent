@@ -882,6 +882,12 @@ const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  const senderDevice = useAuiState(s => {
+    const custom = (s.message.metadata?.custom ?? {}) as { senderDevice?: unknown }
+
+    return typeof custom.senderDevice === 'string' && custom.senderDevice.trim() ? custom.senderDevice.trim() : null
+  })
+
   // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
   // doesn't dominate the viewport while the response streams underneath; the
   // clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
@@ -954,34 +960,34 @@ const UserMessage: FC<{
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
-  const bubbleContent = hasBody && (
-    // Render the user's text through a minimal markdown pipeline:
-    // backtick `code` and ``` fenced ``` blocks, with directive chips
-    // (`@file:` etc.) still resolved inside the plain-text spans.
-    <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
-      {/* Match the edit composer's collapsed line box (min-h-[1.25rem]) so
-          clicking to edit can't grow the bubble by a sub-pixel and reflow the
-          turn 1px. */}
-      <div className="min-h-[1.25rem]" ref={clampInnerRef}>
-        <UserMessageText className="wrap-anywhere" text={messageText} />
-      </div>
-    </div>
+  const bubbleContent = (
+    <>
+      {senderDevice && (
+        <span className="-mb-0.5 block truncate text-[0.625rem] font-medium leading-none text-(--ui-text-tertiary)">
+          {senderDevice}
+        </span>
+      )}
+      {attachmentRefs.length > 0 && (
+        <span className="-mx-1 flex flex-wrap gap-1 border-b border-border/45 pb-1.5">
+          <DirectiveContent text={attachmentRefs.join(' ')} />
+        </span>
+      )}
+      {hasBody && (
+        // Render the user's text through a minimal markdown pipeline:
+        // backtick `code` and ``` fenced ``` blocks, with directive chips
+        // (`@file:` etc.) still resolved inside the plain-text spans.
+        <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
+          <div ref={clampInnerRef}>
+            <UserMessageText className="wrap-anywhere" text={messageText} />
+          </div>
+        </div>
+      )}
+    </>
   )
 
   return (
     <MessagePrimitive.Root asChild>
-      <StickyHumanMessageContainer
-        attachments={
-          // Attachments live BELOW the sticky bubble in normal flow, so they
-          // scroll away behind the pinned bubble instead of riding along with
-          // it. Image refs render as thumbnails, file refs as chips; no border.
-          attachmentRefs.length > 0 ? (
-            <div className="flex flex-wrap gap-1 -mt-3 mb-2">
-              <DirectiveContent text={attachmentRefs.join(' ')} />
-            </div>
-          ) : null
-        }
-      >
+      <StickyHumanMessageContainer>
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
