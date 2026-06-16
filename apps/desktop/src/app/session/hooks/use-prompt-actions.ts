@@ -1379,9 +1379,20 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
-    const keepStopping = () => {
-      setMutableRef(busyRef, true)
-      setBusy(true)
+    const interruptWithTimeout = async (runtimeSessionId: string) => {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          requestGateway('session.interrupt', { session_id: runtimeSessionId }),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('interrupt request timed out')), 3500)
+          })
+        ])
+      } finally {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId)
+        }
+      }
     }
 
     setAwaitingResponse(false)
@@ -1411,30 +1422,25 @@ export function usePromptActions({
       return {
         ...state,
         messages,
-        // session.interrupt is cooperative: the RPC means "interrupt requested",
-        // not "the agent thread has released session.running". Keep the session
-        // locally busy until message.complete/session.info confirms idle, or the
-        // next user send can race the backend and get a confusing "session busy".
-        busy: true,
+        // Stop is the user's escape hatch. session.interrupt is cooperative,
+        // but the UI must not stay trapped behind a stale busy flag if the
+        // websocket/gateway is disconnected or the backend takes time to unwind.
+        busy: false,
         awaitingResponse: false,
         streamId: null,
         pendingBranchGroup: null,
-        // Do not mark the session interrupted yet. session.interrupt only asks
-        // the backend to stop; while it unwinds it may still emit tool/progress
-        // events. The stream layer drops events for interrupted sessions, which
-        // made a cooperative-but-slow cancel look frozen even though the backend
-        // was still doing work.
-        interrupted: false
+        interrupted: true
       }
     })
+    setMutableRef(busyRef, false)
+    setBusy(false)
 
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
 
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
-      keepStopping()
+      await interruptWithTimeout(sessionId)
     } catch (err) {
       let stopError = err
 
@@ -1448,8 +1454,7 @@ export function usePromptActions({
 
           if (recoveredId) {
             activeSessionIdRef.current = recoveredId
-            await requestGateway('session.interrupt', { session_id: recoveredId })
-            keepStopping()
+            await interruptWithTimeout(recoveredId)
 
             return
           }

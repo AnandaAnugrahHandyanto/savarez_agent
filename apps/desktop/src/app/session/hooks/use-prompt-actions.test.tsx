@@ -900,7 +900,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
   })
 
-  it('keeps cancel locally busy until the backend emits the real turn completion', async () => {
+  it('releases the frontend busy state immediately when cancelling a live turn', async () => {
     const busyRef = { current: true }
     const states: Record<string, unknown>[] = []
     const requestGateway = vi.fn(async () => ({}) as never)
@@ -920,8 +920,8 @@ describe('usePromptActions sleep/wake session recovery', () => {
     await handle!.cancelRun()
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
-    expect(busyRef.current).toBe(true)
-    expect(states.at(-1)).toMatchObject({ awaitingResponse: false, busy: true, interrupted: false })
+    expect(busyRef.current).toBe(false)
+    expect(states.at(-1)).toMatchObject({ awaitingResponse: false, busy: false, interrupted: true })
   })
 
   it('surfaces the original error (no resume) when the failure is not "session not found"', async () => {

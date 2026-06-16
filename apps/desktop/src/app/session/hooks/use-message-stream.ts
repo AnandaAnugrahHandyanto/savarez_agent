@@ -1086,8 +1086,9 @@ export function useMessageStream({
           // composer/status bar stays in "working" instead of appearing frozen.
           updateSessionState(sessionId, state => ({
             ...state,
-            busy: true,
-            turnStartedAt: state.turnStartedAt ?? Date.now()
+            awaitingResponse: state.interrupted ? false : state.awaitingResponse,
+            busy: state.interrupted ? false : true,
+            turnStartedAt: state.interrupted ? null : (state.turnStartedAt ?? Date.now())
           }))
           if (isActiveEvent) {
             setTurnStartedAt(current => current ?? Date.now())
