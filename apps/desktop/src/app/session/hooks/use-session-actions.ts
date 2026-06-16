@@ -442,7 +442,7 @@ export function useSessionActions({
         // a backend resolves its own launch profile to None (_profile_home).
         const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
         await ensureGatewayProfile(newChatProfile)
-        const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
+        const cwd = workspaceCwdForNewSession()
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
@@ -682,6 +682,7 @@ export function useSessionActions({
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
+
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)

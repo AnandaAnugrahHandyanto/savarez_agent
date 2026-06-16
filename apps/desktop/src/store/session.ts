@@ -12,20 +12,31 @@ type Updater<T> = T | ((current: T) => T)
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
 let configuredDefaultProjectDir = ''
+let activeWorkspaceProfile = 'default'
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
+  const profile = (connection?.profile || activeWorkspaceProfile || 'default').trim() || 'default'
+
   if (connection?.mode !== 'remote') {
+    if (profile !== 'default') {
+      return `${WORKSPACE_CWD_KEY}.local.${encodeURIComponent(profile)}`
+    }
+
     return WORKSPACE_CWD_KEY
   }
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
-  const profile = encodeURIComponent(connection.profile || 'default')
-  return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
+
+  return `${WORKSPACE_CWD_KEY}.remote.${base}.${encodeURIComponent(profile)}`
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
 
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
+
+export function setWorkspaceProfileKey(profile: null | string | undefined): void {
+  activeWorkspaceProfile = (profile || '').trim() || 'default'
+}
 
 export async function syncConfiguredDefaultProjectDir(): Promise<string> {
   const settings = window.hermesDesktop?.settings?.getDefaultProjectDir
@@ -65,6 +76,7 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
   if ($connection.get()?.mode === 'remote') {
     seedLiveCwd(remembered)
+
     return
   }
 
@@ -141,6 +153,7 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
@@ -267,11 +280,21 @@ export const setCurrentCwd = (next: Updater<string>) => {
 }
 
 export const workspaceCwdForNewSession = (): string => {
-  if ($connection.get()?.mode === 'remote') {
+  const connection = $connection.get()
+  const profile = (connection?.profile || activeWorkspaceProfile || 'default').trim() || 'default'
+
+  if (connection?.mode === 'remote') {
     return getRememberedWorkspaceCwd()
   }
 
-  return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
+  const configured = getConfiguredDefaultProjectDir()
+  const remembered = getRememberedWorkspaceCwd()
+
+  if (configured || remembered) {
+    return configured || remembered
+  }
+
+  return profile === 'default' ? $currentCwd.get().trim() : ''
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
