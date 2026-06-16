@@ -102,6 +102,13 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn(f"up to {max_children}", tasks_desc)
         # role parameter description names the spawn-depth limit.
         self.assertIn(f"max_spawn_depth={max_depth}", role_desc)
+        # background=true exists, but it is process-local rather than
+        # restart-durable; the model-facing text must not describe all
+        # delegation as synchronous-only.
+        self.assertIn("background work is detached from the current turn", desc)
+        self.assertIn("still process-local", desc)
+        self.assertNotIn("delegate_task runs SYNCHRONOUSLY", desc)
+        self.assertNotIn("Children cannot continue in the background", desc)
         # The misleading "default 3" / "default 2" wording is gone from
         # every dynamic surface (model-facing).
         for surface in (desc, tasks_desc, role_desc):
@@ -145,7 +152,17 @@ class TestChildSystemPrompt(unittest.TestCase):
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
-        result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
+        result = _strip_blocked_tools(
+            [
+                "terminal",
+                "file",
+                "delegation",
+                "dynamic_workflow",
+                "clarify",
+                "memory",
+                "code_execution",
+            ]
+        )
         self.assertEqual(sorted(result), ["file", "terminal"])
 
     def test_preserves_allowed_toolsets(self):

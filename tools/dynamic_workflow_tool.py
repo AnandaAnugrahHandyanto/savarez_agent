@@ -37,7 +37,7 @@ _MAX_DISPATCH_PER_CALL = 16
 _MAX_TEXT_CHARS = 16_000
 
 _workflows_lock = threading.RLock()
-_workflows: Dict[str, Dict[str, Any]] = {}
+_workflows: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _reconciled_async_delegations: set[str] = set()
 
 
@@ -51,6 +51,15 @@ def _json(data: Dict[str, Any]) -> str:
 
 def _new_workflow_id() -> str:
     return f"wf_{uuid.uuid4().hex[:10]}"
+
+
+def _workflow_scope(parent_agent: Any = None) -> str:
+    """Return the in-process visibility scope for a workflow."""
+    for attr in ("session_id", "_gateway_session_key"):
+        value = getattr(parent_agent, attr, None)
+        if value:
+            return f"{attr}:{value}"
+    return "global"
 
 
 def _cap_text(value: Any, *, default: str = "") -> str:
@@ -346,14 +355,22 @@ def _public_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return public
 
 
-def _get_workflow(workflow_id: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def _workflow_key(workflow_id: Any, parent_agent: Any = None) -> Tuple[Optional[Tuple[str, str]], Optional[str]]:
     wf_id, issue = _normalise_id(workflow_id, field="workflow_id", pattern=_WORKFLOW_ID_RE)
     if issue:
         return None, issue
     assert wf_id is not None
-    workflow = _workflows.get(wf_id)
+    return (_workflow_scope(parent_agent), wf_id), None
+
+
+def _get_workflow(workflow_id: Any, parent_agent: Any = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    key, issue = _workflow_key(workflow_id, parent_agent)
+    if issue:
+        return None, issue
+    assert key is not None
+    workflow = _workflows.get(key)
     if workflow is None:
-        return None, f"unknown workflow_id: {wf_id}"
+        return None, f"unknown workflow_id: {key[1]}"
     return workflow, None
 
 
@@ -487,10 +504,12 @@ def _create(args: Dict[str, Any], parent_agent: Any) -> str:
         return tool_error("; ".join(issues))
 
     with _workflows_lock:
-        if wf_id in _workflows:
+        key = (_workflow_scope(parent_agent), wf_id)
+        if key in _workflows:
             return tool_error(f"workflow_id already exists: {wf_id}")
         workflow = {
             "workflow_id": wf_id,
+            "scope": key[0],
             "objective": objective,
             "context": _cap_text(args.get("context")),
             "nodes": {},
@@ -502,7 +521,7 @@ def _create(args: Dict[str, Any], parent_agent: Any) -> str:
         issue = _merge_nodes(workflow, nodes)
         if issue:
             return tool_error(issue)
-        _workflows[wf_id] = workflow
+        _workflows[key] = workflow
         dispatch = (
             _dispatch_ready(workflow, parent_agent, args.get("max_dispatch") or _MAX_DISPATCH_PER_CALL)
             if args.get("dispatch_ready")
@@ -519,7 +538,7 @@ def _add_nodes(args: Dict[str, Any], parent_agent: Any) -> str:
         return tool_error("nodes is required for action='add_nodes'.")
 
     with _workflows_lock:
-        workflow, issue = _get_workflow(args.get("workflow_id"))
+        workflow, issue = _get_workflow(args.get("workflow_id"), parent_agent)
         if issue:
             return tool_error(issue)
         assert workflow is not None
@@ -537,7 +556,6 @@ def _add_nodes(args: Dict[str, Any], parent_agent: Any) -> str:
 
 
 def _record_result(args: Dict[str, Any], parent_agent: Any) -> str:
-    del parent_agent
     node_id, issue = _normalise_id(args.get("node_id"), field="node_id", pattern=_NODE_ID_RE)
     if issue:
         return tool_error(issue)
@@ -548,13 +566,18 @@ def _record_result(args: Dict[str, Any], parent_agent: Any) -> str:
         return tool_error(f"status must be one of: {', '.join(sorted(_RESULT_STATUSES))}")
 
     with _workflows_lock:
-        workflow, issue = _get_workflow(args.get("workflow_id"))
+        workflow, issue = _get_workflow(args.get("workflow_id"), parent_agent)
         if issue:
             return tool_error(issue)
         assert workflow is not None
         node = workflow["nodes"].get(node_id)
         if node is None:
             return tool_error(f"unknown node_id: {node_id}")
+        if status == "completed" and not all(
+            workflow["nodes"][dep].get("status") == "completed"
+            for dep in node.get("depends_on") or []
+        ):
+            return tool_error(f"node {node_id} cannot complete before its dependencies complete")
         node["status"] = status
         node["summary"] = _cap_text(args.get("summary"))
         node["error"] = _cap_text(args.get("error")) if args.get("error") else None
@@ -566,20 +589,29 @@ def _record_result(args: Dict[str, Any], parent_agent: Any) -> str:
         return _json({"workflow": _public_workflow(workflow)})
 
 
-def _status(args: Dict[str, Any]) -> str:
+def _status(args: Dict[str, Any], parent_agent: Any) -> str:
     with _workflows_lock:
         if args.get("workflow_id"):
-            workflow, issue = _get_workflow(args.get("workflow_id"))
+            workflow, issue = _get_workflow(args.get("workflow_id"), parent_agent)
             if issue:
                 return tool_error(issue)
             assert workflow is not None
             return _json({"workflow": _public_workflow(workflow)})
-        return _json({"workflows": [_public_workflow(wf) for wf in _workflows.values()]})
+        scope = _workflow_scope(parent_agent)
+        return _json(
+            {
+                "workflows": [
+                    _public_workflow(wf)
+                    for (wf_scope, _wf_id), wf in _workflows.items()
+                    if wf_scope == scope
+                ]
+            }
+        )
 
 
 def _dispatch(args: Dict[str, Any], parent_agent: Any) -> str:
     with _workflows_lock:
-        workflow, issue = _get_workflow(args.get("workflow_id"))
+        workflow, issue = _get_workflow(args.get("workflow_id"), parent_agent)
         if issue:
             return tool_error(issue)
         assert workflow is not None
@@ -587,11 +619,11 @@ def _dispatch(args: Dict[str, Any], parent_agent: Any) -> str:
         return _json({"workflow": _public_workflow(workflow), **dispatch})
 
 
-def _cancel(args: Dict[str, Any]) -> str:
+def _cancel(args: Dict[str, Any], parent_agent: Any) -> str:
     interrupt = bool(args.get("interrupt", True))
     interrupted: List[str] = []
     with _workflows_lock:
-        workflow, issue = _get_workflow(args.get("workflow_id"))
+        workflow, issue = _get_workflow(args.get("workflow_id"), parent_agent)
         if issue:
             return tool_error(issue)
         assert workflow is not None
@@ -626,9 +658,9 @@ def handle_dynamic_workflow(args: Dict[str, Any], parent_agent: Any = None) -> s
     if action == "dispatch_ready":
         return _dispatch(args, parent_agent)
     if action == "status":
-        return _status(args)
+        return _status(args, parent_agent)
     if action == "cancel":
-        return _cancel(args)
+        return _cancel(args, parent_agent)
     return tool_error("action must be one of: create, add_nodes, record_result, dispatch_ready, status, cancel")
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,10 @@ def _clean_workflows():
 
 def _call(args, parent_agent=None):
     return json.loads(dwt.handle_dynamic_workflow(args, parent_agent=parent_agent))
+
+
+def _parent(session_id):
+    return SimpleNamespace(session_id=session_id)
 
 
 def test_create_validates_dag_and_reports_ready_nodes():
@@ -74,6 +79,45 @@ def test_create_rejects_cycles():
 
     assert "error" in result
     assert "cycle detected" in result["error"]
+
+
+def test_workflows_are_scoped_to_parent_session():
+    parent_a = _parent("session-a")
+    parent_b = _parent("session-b")
+
+    created_a = _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_shared",
+            "objective": "Session A workflow",
+            "nodes": [{"node_id": "a", "goal": "A"}],
+        },
+        parent_agent=parent_a,
+    )
+    assert created_a["workflow"]["objective"] == "Session A workflow"
+
+    missing_from_b = _call(
+        {"action": "status", "workflow_id": "wf_shared"},
+        parent_agent=parent_b,
+    )
+    assert missing_from_b["error"] == "unknown workflow_id: wf_shared"
+
+    created_b = _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_shared",
+            "objective": "Session B workflow",
+            "nodes": [{"node_id": "b", "goal": "B"}],
+        },
+        parent_agent=parent_b,
+    )
+    assert created_b["workflow"]["objective"] == "Session B workflow"
+
+    status_a = _call({"action": "status"}, parent_agent=parent_a)
+    status_b = _call({"action": "status"}, parent_agent=parent_b)
+
+    assert [wf["objective"] for wf in status_a["workflows"]] == ["Session A workflow"]
+    assert [wf["objective"] for wf in status_b["workflows"]] == ["Session B workflow"]
 
 
 def test_dispatch_ready_uses_delegate_task_background(monkeypatch):
@@ -201,6 +245,51 @@ def test_record_result_then_model_can_extend_graph_with_dependent_node():
         "source_triage",
         "pricing_gap",
     ]
+
+
+def test_record_result_cannot_complete_node_before_dependencies():
+    _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_deps",
+            "objective": "Respect readiness",
+            "nodes": [
+                {"node_id": "first", "goal": "First"},
+                {"node_id": "second", "goal": "Second", "depends_on": ["first"]},
+            ],
+        }
+    )
+
+    early = _call(
+        {
+            "action": "record_result",
+            "workflow_id": "wf_deps",
+            "node_id": "second",
+            "status": "completed",
+            "summary": "too early",
+        }
+    )
+    assert early["error"] == "node second cannot complete before its dependencies complete"
+
+    _call(
+        {
+            "action": "record_result",
+            "workflow_id": "wf_deps",
+            "node_id": "first",
+            "status": "completed",
+            "summary": "first done",
+        }
+    )
+    later = _call(
+        {
+            "action": "record_result",
+            "workflow_id": "wf_deps",
+            "node_id": "second",
+            "status": "completed",
+            "summary": "now ready",
+        }
+    )
+    assert later["workflow"]["status"] == "completed"
 
 
 def test_status_reconciles_completed_async_workflow_node(monkeypatch):
