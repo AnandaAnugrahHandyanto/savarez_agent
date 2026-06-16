@@ -288,6 +288,27 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
             return
         record["status"] = status
         record["completed_at"] = time.time()
+        record["summary"] = result.get("summary")
+        record["error"] = result.get("error")
+        record["api_calls"] = result.get("api_calls", 0)
+        record["duration_seconds"] = result.get(
+            "duration_seconds",
+            round(
+                record["completed_at"]
+                - (record.get("dispatched_at") or record["completed_at"]),
+                2,
+            ),
+        )
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cost_usd",
+            "exit_reason",
+            "model",
+        ):
+            if key in result and result.get(key) is not None:
+                record[key] = result.get(key)
         record["interrupt_fn"] = None  # drop the closure; child is done
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)

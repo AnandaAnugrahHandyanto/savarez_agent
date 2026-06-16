@@ -94,7 +94,9 @@ def test_async_executor_workers_are_daemon_threads():
 def test_completion_event_lands_on_shared_queue_with_session_key():
     def runner():
         return {"status": "completed", "summary": "the result",
-                "api_calls": 3, "duration_seconds": 2.0, "model": "test-model"}
+                "api_calls": 3, "duration_seconds": 2.0, "model": "test-model",
+                "input_tokens": 11, "output_tokens": 7, "reasoning_tokens": 5,
+                "cost_usd": 0.02, "exit_reason": "completed"}
 
     res = ad.dispatch_async_delegation(
         goal="compute X", context="some context", toolsets=["web", "file"],
@@ -109,6 +111,20 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["summary"] == "the result"
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["delegation_id"] == res["delegation_id"]
+
+    retained = {
+        item["delegation_id"]: item
+        for item in ad.list_async_delegations()
+    }[res["delegation_id"]]
+    assert retained["summary"] == "the result"
+    assert retained["api_calls"] == 3
+    assert retained["duration_seconds"] == 2.0
+    assert retained["input_tokens"] == 11
+    assert retained["output_tokens"] == 7
+    assert retained["reasoning_tokens"] == 5
+    assert retained["cost_usd"] == 0.02
+    assert retained["exit_reason"] == "completed"
+    assert retained["model"] == "test-model"
 
 
 def test_completion_event_preserves_workflow_observability_context():

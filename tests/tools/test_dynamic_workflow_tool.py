@@ -203,6 +203,118 @@ def test_record_result_then_model_can_extend_graph_with_dependent_node():
     ]
 
 
+def test_status_reconciles_completed_async_workflow_node(monkeypatch):
+    def fake_delegate_task(**kwargs):
+        return json.dumps({"status": "dispatched", "delegation_id": "deleg_done"})
+
+    def fake_delegations():
+        return [
+            {
+                "delegation_id": "deleg_done",
+                "status": "completed",
+                "summary": "Worker finished cleanly.",
+                "completed_at": 123.0,
+                "duration_seconds": 4.5,
+                "api_calls": 2,
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "reasoning_tokens": 10,
+                "cost_usd": 0.01,
+                "model": "test-model",
+            }
+        ]
+
+    from tools import delegate_tool
+    import tools.async_delegation as ad
+
+    monkeypatch.setattr(delegate_tool, "delegate_task", fake_delegate_task)
+    monkeypatch.setattr(ad, "list_async_delegations", fake_delegations)
+
+    _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_reconcile",
+            "objective": "Auto reconcile",
+            "dispatch_ready": True,
+            "nodes": [{"node_id": "worker", "goal": "Do work"}],
+        },
+        parent_agent=object(),
+    )
+
+    status = _call({"action": "status", "workflow_id": "wf_reconcile"})
+
+    node = status["workflow"]["nodes"][0]
+    assert status["workflow"]["status"] == "completed"
+    assert node["status"] == "completed"
+    assert node["summary"] == "Worker finished cleanly."
+    assert node["completed_at"] == 123.0
+    assert node["duration_seconds"] == 4.5
+    assert node["api_calls"] == 2
+    assert node["input_tokens"] == 100
+    assert node["output_tokens"] == 25
+    assert node["reasoning_tokens"] == 10
+    assert node["cost_usd"] == 0.01
+    assert node["model"] == "test-model"
+
+
+def test_dispatch_ready_unlocks_dependents_after_async_reconcile(monkeypatch):
+    dispatches = []
+
+    def fake_delegate_task(**kwargs):
+        dispatches.append(kwargs["goal"])
+        return json.dumps(
+            {"status": "dispatched", "delegation_id": f"deleg_{len(dispatches)}"}
+        )
+
+    def fake_delegations():
+        return [
+            {
+                "delegation_id": "deleg_1",
+                "status": "completed",
+                "summary": "First worker done.",
+            }
+        ]
+
+    from tools import delegate_tool
+    import tools.async_delegation as ad
+
+    monkeypatch.setattr(delegate_tool, "delegate_task", fake_delegate_task)
+    monkeypatch.setattr(ad, "list_async_delegations", fake_delegations)
+
+    _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_unlock",
+            "objective": "Unlock dependents",
+            "dispatch_ready": True,
+            "max_dispatch": 1,
+            "nodes": [
+                {"node_id": "first", "goal": "First"},
+                {"node_id": "second", "goal": "Second", "depends_on": ["first"]},
+            ],
+        },
+        parent_agent=object(),
+    )
+
+    dispatched = _call(
+        {
+            "action": "dispatch_ready",
+            "workflow_id": "wf_unlock",
+            "max_dispatch": 1,
+        },
+        parent_agent=object(),
+    )
+
+    assert dispatches == ["First", "Second"]
+    assert dispatched["dispatched"] == [
+        {"node_id": "second", "delegation_id": "deleg_2"}
+    ]
+    assert [node["status"] for node in dispatched["workflow"]["nodes"]] == [
+        "completed",
+        "dispatched",
+    ]
+
+
 def test_cancel_interrupts_dispatched_workflow_children(monkeypatch):
     def fake_delegate_task(**kwargs):
         return json.dumps({"status": "dispatched", "delegation_id": "deleg_a"})

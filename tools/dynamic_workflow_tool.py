@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 _WORKFLOW_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 _NODE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 _RESULT_STATUSES = {"completed", "failed", "cancelled"}
+_ASYNC_COMPLETED = {"completed", "success", "succeeded"}
+_ASYNC_FAILED = {"error", "failed", "failure", "timeout"}
+_ASYNC_CANCELLED = {"cancelled", "canceled", "interrupted"}
 _MAX_NODES_PER_WORKFLOW = 256
 _MAX_DISPATCH_PER_CALL = 16
 _MAX_TEXT_CHARS = 16_000
@@ -228,7 +231,70 @@ def _workflow_status(workflow: Dict[str, Any]) -> str:
     return "waiting"
 
 
+def _node_status_from_async(status: Any) -> Optional[str]:
+    text = str(status or "").strip().lower()
+    if text in _ASYNC_COMPLETED:
+        return "completed"
+    if text in _ASYNC_FAILED:
+        return "failed"
+    if text in _ASYNC_CANCELLED:
+        return "cancelled"
+    return None
+
+
+def _reconcile_async_delegations(workflow: Dict[str, Any]) -> List[str]:
+    """Refresh dispatched workflow nodes from retained async delegation records."""
+    dispatched = {
+        node.get("delegation_id"): node
+        for node in workflow["nodes"].values()
+        if node.get("status") == "dispatched" and node.get("delegation_id")
+    }
+    if not dispatched:
+        return []
+
+    try:
+        from tools.async_delegation import list_async_delegations
+
+        records = list_async_delegations()
+    except Exception as exc:  # pragma: no cover - status must stay best-effort
+        logger.debug("dynamic_workflow async reconciliation failed: %s", exc)
+        return []
+
+    updated: List[str] = []
+    for record in records:
+        node = dispatched.get(record.get("delegation_id"))
+        if not node:
+            continue
+        next_status = _node_status_from_async(record.get("status"))
+        if not next_status:
+            continue
+
+        node["status"] = next_status
+        node["summary"] = _cap_text(record.get("summary"))
+        node["error"] = _cap_text(record.get("error")) if record.get("error") else None
+        node["completed_at"] = record.get("completed_at") or _now()
+        for key in (
+            "duration_seconds",
+            "api_calls",
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cost_usd",
+            "exit_reason",
+            "model",
+        ):
+            if key in record and record.get(key) is not None:
+                node[key] = record.get(key)
+        node["updated_at"] = _now()
+        updated.append(node["node_id"])
+
+    if updated:
+        workflow["updated_at"] = _now()
+    return updated
+
+
 def _public_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
+    _reconcile_async_delegations(workflow)
     public = {
         "workflow_id": workflow["workflow_id"],
         "objective": workflow["objective"],
@@ -300,14 +366,17 @@ def _worker_context(workflow: Dict[str, Any], node: Dict[str, Any]) -> str:
         [
             "",
             "When you finish, include workflow_id and node_id in your summary. "
-            "The parent coordinator will record your result with dynamic_workflow(action='record_result') "
-            "and may extend the workflow based on your output.",
+            "Hermes reconciles async completion into the workflow automatically; "
+            "the parent coordinator may still record or refine results with "
+            "dynamic_workflow(action='record_result') and may extend the workflow "
+            "based on your output.",
         ]
     )
     return "\n".join(lines)
 
 
 def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: int) -> Dict[str, Any]:
+    _reconcile_async_delegations(workflow)
     if parent_agent is None:
         return {
             "dispatched": [],
