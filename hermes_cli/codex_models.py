@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 ACTIVE_CODEX_MODEL_IDS: tuple[str, ...] = ("gpt-5.5",)
 
 DEFAULT_CODEX_MODELS: List[str] = [
-    # Verified active fallback for KangYu's Hermes/Codex route on 2026-06-17.
+    # Curated active fallback for the OAuth-backed Codex route.
     # Older GPT-5.x Codex slugs may still appear in cached/API catalogs, but
     # they must not be hardcoded or returned as active fallback recommendations.
     *ACTIVE_CODEX_MODEL_IDS,

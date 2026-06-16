@@ -640,6 +640,34 @@ class TestProbeEnvResolution:
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_probe_does_not_wrap_keyboard_interrupt(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+
+        def _raise_keyboard(coro, timeout=None):
+            coro.close()
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("tools.mcp_tool._ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr("tools.mcp_tool._run_on_mcp_loop", _raise_keyboard)
+        monkeypatch.setattr("tools.mcp_tool._stop_mcp_loop_if_idle", lambda: None)
+
+        with pytest.raises(KeyboardInterrupt):
+            mc._probe_single_server("local", {"command": "test-mcp"})
+
+    def test_smoke_call_does_not_wrap_keyboard_interrupt(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+
+        def _raise_keyboard(coro, timeout=None):
+            coro.close()
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("tools.mcp_tool._ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr("tools.mcp_tool._run_on_mcp_loop", _raise_keyboard)
+        monkeypatch.setattr("tools.mcp_tool._stop_mcp_loop_if_idle", lambda: None)
+
+        with pytest.raises(KeyboardInterrupt):
+            mc._call_single_server_tool("local", {"command": "test-mcp"}, "ping", {})
+
 
 class TestStripBearerPrefix:
     """Pasted tokens that already include ``Bearer `` would otherwise produce

@@ -274,7 +274,7 @@ def _probe_single_server(
 
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
-    except BaseException as exc:
+    except Exception as exc:
         raise _unwrap_exception_group(exc) from None
     finally:
         _stop_mcp_loop_if_idle()
@@ -315,7 +315,7 @@ def _call_single_server_tool(
 
     try:
         return _run_on_mcp_loop(_call(), timeout=connect_timeout + 10)
-    except BaseException as exc:
+    except Exception as exc:
         raise _unwrap_exception_group(exc) from None
     finally:
         _stop_mcp_loop_if_idle()
