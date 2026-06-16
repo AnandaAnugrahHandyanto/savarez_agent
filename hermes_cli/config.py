@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from typing import Dict, Any, Optional, List, Tuple
 
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -239,17 +239,19 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any], "_ReadonlyConfigVie
 _CONFIG_LOCK = threading.RLock()
 
 
-class _ReadonlyConfigView(Mapping):
-    """Zero-copy read-only facade over a cached config dict.
+class _ReadonlyConfigView(dict):
+    """Zero-copy read-only ``dict`` subclass over a cached config mapping.
 
-    Prevents accidental in-place mutation of the shared config cache without
-    paying for a defensive deepcopy on every readonly load.
+    Subclasses ``dict`` so existing ``isinstance(cfg, dict)`` guards keep
+    working. Reads proxy the backing store; writes raise ``TypeError``.
     """
 
     __slots__ = ("_data",)
 
-    def __init__(self, data: Dict[str, Any]) -> None:
-        self._data = data
+    def __new__(cls, data: Dict[str, Any]) -> "_ReadonlyConfigView":
+        inst = super().__new__(cls)
+        object.__setattr__(inst, "_data", data)
+        return inst
 
     def __getitem__(self, key: str) -> Any:
         val = self._data[key]
@@ -263,10 +265,48 @@ class _ReadonlyConfigView(Mapping):
     def __len__(self) -> int:
         return len(self._data)
 
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
+
     def get(self, key: str, default: Any = None) -> Any:
         if key not in self._data:
             return default
         return self[key]
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        for key in self._data:
+            yield self[key]
+
+    def items(self):
+        for key in self._data:
+            yield key, self[key]
+
+    def __setitem__(self, key, value) -> None:
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def __delitem__(self, key) -> None:
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def update(self, *args, **kwargs) -> None:
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def pop(self, *args, **kwargs):
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def popitem(self):
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def clear(self) -> None:
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def setdefault(self, key, default=None):
+        if key in self._data:
+            return self[key]
+        return default
+
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).

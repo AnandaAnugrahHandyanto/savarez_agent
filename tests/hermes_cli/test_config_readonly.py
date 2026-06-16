@@ -82,3 +82,29 @@ def test_load_config_readonly_rejects_mutation(monkeypatch, tmp_path):
     cfg = load_config_readonly()
     with pytest.raises(TypeError):
         cfg["agent"]["max_turns"] = 99
+
+
+def test_readonly_views_pass_isinstance_dict_checks(monkeypatch, tmp_path):
+    """Readonly config must satisfy existing isinstance(cfg, dict) guards."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          openrouter:
+            request_timeout_seconds: 120
+            models:
+              test-model:
+                timeout_seconds: 90
+        agent:
+          max_turns: 42
+        """,
+    )
+
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.timeouts import get_provider_request_timeout
+
+    cfg = load_config_readonly()
+    assert isinstance(cfg, dict)
+    assert isinstance(cfg.get("providers"), dict)
+    assert get_provider_request_timeout("openrouter", "test-model") == 90.0
