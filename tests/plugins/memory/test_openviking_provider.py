@@ -491,6 +491,50 @@ def test_on_session_end_skips_commit_when_async_writes_do_not_flush(monkeypatch)
     assert provider._turn_count == 2
 
 
+def test_on_session_end_commits_pending_turns_and_resets_count(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._session_id = "session-1"
+    provider._turn_count = 2
+    monkeypatch.setattr(provider, "_flush_async_writes", lambda timeout=10.0: True)
+
+    provider.on_session_end([])
+
+    provider._client.get.assert_not_called()
+    provider._client.post.assert_called_once_with("/api/v1/sessions/session-1/commit")
+    assert provider._turn_count == 0
+
+
+def test_on_session_end_commits_pending_tokens_without_turn_count(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.return_value = {"result": {"pending_tokens": 42}}
+    provider._session_id = "session-1"
+    provider._turn_count = 0
+    monkeypatch.setattr(provider, "_flush_async_writes", lambda timeout=10.0: True)
+
+    provider.on_session_end([])
+
+    provider._client.get.assert_called_once_with("/api/v1/sessions/session-1")
+    provider._client.post.assert_called_once_with("/api/v1/sessions/session-1/commit")
+    assert provider._turn_count == 0
+
+
+def test_on_session_end_skips_commit_without_turns_or_pending_tokens(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.return_value = {"result": {"pending_tokens": 0}}
+    provider._session_id = "session-1"
+    provider._turn_count = 0
+    monkeypatch.setattr(provider, "_flush_async_writes", lambda timeout=10.0: True)
+
+    provider.on_session_end([])
+
+    provider._client.get.assert_called_once_with("/api/v1/sessions/session-1")
+    provider._client.post.assert_not_called()
+    assert provider._turn_count == 0
+
+
 def test_on_memory_write_uses_content_write_without_session_turn(monkeypatch):
     provider = OpenVikingMemoryProvider()
     provider._client = object()
@@ -567,6 +611,16 @@ def test_tool_remember_uses_content_write_category_subdir():
     assert payload["mode"] == "create"
     assert result["status"] == "stored"
     assert result["uri"] == payload["uri"]
+
+
+def test_tool_remember_returns_tool_error_when_content_write_fails():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.side_effect = RuntimeError("write unavailable")
+
+    result = json.loads(provider._tool_remember({"content": "Remember this"}))
+
+    assert result == {"error": "Failed to store memory: write unavailable"}
 
 
 def test_tool_search_uses_openviking_limit_and_ignores_dead_mode():
@@ -789,6 +843,75 @@ def test_prefetch_ignores_cached_result_for_different_query_and_fetches_fresh(mo
     ]
 
 
+def test_queue_prefetch_result_is_consumed_by_matching_prefetch(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+    seen_payloads = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            seen_payloads.append((path, payload))
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://memories/cached",
+                            "score": 0.88,
+                            "abstract": "cached memory",
+                        }
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "cached memory"}
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon=False, name=""):
+            self._target = target
+            self._alive = False
+            self.daemon = daemon
+            self.name = name
+
+        def start(self):
+            self._alive = True
+            self._target()
+            self._alive = False
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+    monkeypatch.setattr(openviking_module.threading, "Thread", ImmediateThread)
+
+    provider.queue_prefetch("cached query")
+    result = provider.prefetch("cached query")
+
+    assert "cached memory" in result
+    assert "viking://memories/cached" in result
+    assert seen_payloads == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "cached query",
+                "limit": 32,
+            },
+        ),
+    ]
+
+
 def test_prefetch_detail_uses_relevant_excerpt_from_long_content(monkeypatch):
     provider = OpenVikingMemoryProvider()
     provider._client = object()
@@ -996,9 +1119,10 @@ def test_handle_tool_call_reconnects_after_startup_health_failure(monkeypatch):
     result = json.loads(provider.handle_tool_call("viking_remember", {"content": "stable fact"}))
 
     assert result["status"] == "stored"
-    assert len(instances) == 2
-    assert len(instances[1].posts) == 1
-    path, payload = instances[1].posts[0]
+    assert len(instances) >= 2
+    posted_clients = [client for client in instances if client.posts]
+    assert len(posted_clients) == 1
+    path, payload = posted_clients[0].posts[0]
     assert path == "/api/v1/content/write"
     assert payload["uri"].startswith("viking://user/default/agent/hermes/memories/preferences/mem_")
     assert payload["uri"].endswith(".md")

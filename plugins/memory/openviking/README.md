@@ -54,5 +54,5 @@ refresh semantic/vector indexes without creating synthetic conversation turns.
 | `viking_search` | Search durable memory and indexed resources |
 | `viking_read` | Read one URI or up to three URIs (abstract/overview/full) |
 | `viking_browse` | Diagnostic URI navigation (list/tree/stat), with capped output |
-| `viking_remember` | Store a fact for extraction on session commit |
+| `viking_remember` | Store an explicit fact immediately via `content/write` |
 | `viking_add_resource` | Ingest URLs/docs into the knowledge base |

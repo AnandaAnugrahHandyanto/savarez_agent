@@ -101,9 +101,9 @@ _CATEGORY_SUBDIR_MAP = {
 }
 _DEFAULT_MEMORY_SUBDIR = "preferences"
 
-# Maps the built-in memory tool's `target` ("user" vs "memory") to a subdir
-# for on_memory_write mirroring. User profile facts → preferences; agent
-# notes / observations → patterns. Anything unknown falls back to the default.
+# Built-in Hermes memory targets are coarser than viking_remember categories:
+# user profile facts map to preferences, while agent notes/observations map to
+# patterns. Anything unknown falls back to the default memory subdirectory.
 _MEMORY_WRITE_TARGET_SUBDIR_MAP = {
     "user": "preferences",
     "memory": "patterns",
@@ -1299,6 +1299,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return "Ranked OpenViking evidence:\n" + "\n".join(lines), diagnostics
 
     def _search_prefetch(self, query: str) -> str:
+        # Prefetch runs on background/current-query paths; use an isolated
+        # client so slow recall does not share foreground tool-call state.
         client = self._new_client()
         search_query = (query or "").strip()
         try:
