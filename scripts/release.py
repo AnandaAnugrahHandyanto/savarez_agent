@@ -92,6 +92,7 @@ AUTHOR_MAP = {
     "237263164+ft-ioxcs@users.noreply.github.com": "ft-ioxcs",
     "tharushkadinujaya05@gmail.com": "0xneobyte",
     "138671361+Veritas-7@users.noreply.github.com": "Veritas-7",
+    "Veritas-7@users.noreply.github.com": "Veritas-7",
     "keiron@onehanded.com": "kmccammon",
     "268233388+CiarasClaws@users.noreply.github.com": "CiarasClaws",
     "amy@ravenwolf.de": "WolframRavenwolf",
