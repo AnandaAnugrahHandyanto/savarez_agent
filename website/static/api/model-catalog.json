@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-13T08:41:46Z",
+  "updated_at": "2026-06-16T19:42:54Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -82,6 +82,10 @@
         },
         {
           "id": "moonshotai/kimi-k2.7-code",
+          "description": ""
+        },
+        {
+          "id": "minimax/minimax-m2.7",
           "description": ""
         },
         {
@@ -198,6 +202,9 @@
         },
         {
           "id": "moonshotai/kimi-k2.7-code"
+        },
+        {
+          "id": "minimax/minimax-m2.7"
         },
         {
           "id": "minimax/minimax-m3"
