@@ -121,6 +121,117 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_injects_anthropic_speed_without_latency_rewrite():
+    runner = _make_runner()
+    runner._service_tier = "priority"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://api.anthropic.com",
+        "provider": "anthropic",
+        "api_mode": "anthropic_messages",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "hi",
+        "claude-opus-4-6",
+        runtime_kwargs,
+    )
+
+    assert route["model"] == "claude-opus-4-6"
+    assert route["runtime"]["provider"] == "anthropic"
+    assert route["request_overrides"] == {"speed": "fast"}
+
+
+def test_turn_route_uses_lower_latency_model_for_short_ack():
+    runner = _make_runner()
+    runner._service_tier = None
+    credential_pool = SimpleNamespace(name="pool")
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": credential_pool,
+        "request_overrides": {"extra_headers": {"X-Test": "1"}},
+    }
+
+    for message in ("Thanks, sounds good", "네", "확인했습니다", "감사합니다", "안녕하세요"):
+        route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+            runner,
+            message,
+            "anthropic/claude-opus-4.7",
+            runtime_kwargs,
+        )
+
+        assert route["model"] == "anthropic/claude-sonnet-4.6"
+        assert route["runtime"]["credential_pool"] is credential_pool
+        assert route["request_overrides"] == {"extra_headers": {"X-Test": "1"}}
+
+
+def test_turn_route_keeps_opus_for_code_tool_and_kanban_requests():
+    runner = _make_runner()
+    runner._service_tier = None
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://api.anthropic.com",
+        "provider": "anthropic",
+        "api_mode": "anthropic_messages",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    examples = [
+        "Fix the failing pytest in gateway/run.py",
+        "Use the terminal tool to inspect the repo",
+        "Dispatch this to kanban workers",
+        "Research the CI failure and open a PR",
+        "코드 수정해줘",
+        "칸반 워커 디스패치해줘",
+        "CI 실패 분석해줘",
+        "네 코드 수정해줘",
+        "안녕하세요 CI 실패 분석해줘",
+    ]
+
+    for message in examples:
+        route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+            runner,
+            message,
+            "claude-opus-4-7",
+            runtime_kwargs,
+        )
+        assert route["model"] == "claude-opus-4-7"
+
+
+def test_turn_route_does_not_rewrite_non_opus_model():
+    runner = _make_runner()
+    runner._service_tier = None
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://api.openai.com/v1",
+        "provider": "openai",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "ok",
+        "gpt-5.4",
+        runtime_kwargs,
+    )
+
+    assert route["model"] == "gpt-5.4"
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()

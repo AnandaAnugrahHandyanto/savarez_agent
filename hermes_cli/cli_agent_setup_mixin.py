@@ -123,6 +123,7 @@ class CLIAgentSetupMixin:
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
+        self._runtime_request_overrides = runtime.get("request_overrides")
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -180,6 +181,7 @@ class CLIAgentSetupMixin:
         API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.latency_routing import route_latency_model
 
         runtime = {
             "api_key": self.api_key,
@@ -190,11 +192,24 @@ class CLIAgentSetupMixin:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        base_overrides = getattr(self, "_runtime_request_overrides", None) or None
+        service_tier = getattr(self, "service_tier", None)
+        fast_overrides = None
+        if service_tier:
+            try:
+                fast_overrides = resolve_fast_mode_overrides(self.model)
+            except Exception:
+                fast_overrides = None
+        model = (
+            self.model
+            if fast_overrides
+            else route_latency_model(self.model, runtime["provider"], user_message)
+        )
         route = {
-            "model": self.model,
+            "model": model,
             "runtime": runtime,
             "signature": (
-                self.model,
+                model,
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
@@ -203,16 +218,17 @@ class CLIAgentSetupMixin:
             ),
         }
 
-        service_tier = getattr(self, "service_tier", None)
         if not service_tier:
-            route["request_overrides"] = None
+            route["request_overrides"] = dict(base_overrides) if base_overrides else None
             return route
 
-        try:
-            overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides
+        overrides = fast_overrides
+        if base_overrides and overrides:
+            route["request_overrides"] = {**dict(base_overrides), **overrides}
+        elif base_overrides:
+            route["request_overrides"] = dict(base_overrides)
+        else:
+            route["request_overrides"] = overrides
         return route
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:

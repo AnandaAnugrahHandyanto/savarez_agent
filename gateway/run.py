@@ -3050,6 +3050,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.latency_routing import route_latency_model
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -3061,6 +3062,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+        base_overrides = runtime_kwargs.get("request_overrides") or {}
+        service_tier = getattr(self, "_service_tier", None)
+        fast_overrides = None
+        if service_tier:
+            try:
+                fast_overrides = resolve_fast_mode_overrides(model)
+            except Exception:
+                fast_overrides = None
+        model = (
+            model
+            if fast_overrides
+            else route_latency_model(model, runtime["provider"], user_message)
+        )
         route = {
             "model": model,
             "runtime": runtime,
@@ -3074,16 +3088,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
-        service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = dict(base_overrides)
             return route
 
-        try:
-            overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides or {}
+        overrides = fast_overrides
+        route["request_overrides"] = {**dict(base_overrides), **(overrides or {})}
         return route
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
