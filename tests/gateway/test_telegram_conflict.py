@@ -3,6 +3,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from gateway.config import PlatformConfig
@@ -285,6 +286,83 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
 
     assert ok is True
     bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+
+
+@pytest.mark.asyncio
+async def test_polling_transport_disables_keepalive_only_for_getupdates(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+    monkeypatch.setenv("HERMES_TELEGRAM_POLL_TIMEOUT", "3")
+    monkeypatch.setenv("HERMES_TELEGRAM_POLL_INTERVAL", "2.5")
+
+    request_calls = []
+
+    def fake_httpx_request(**kwargs):
+        request = MagicMock()
+        request.kwargs = kwargs
+        request_calls.append(kwargs)
+        return request
+
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", fake_httpx_request)
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert len(request_calls) == 2
+    assert "httpx_kwargs" not in request_calls[0]
+    limits = request_calls[1]["httpx_kwargs"]["limits"]
+    assert isinstance(limits, httpx.Limits)
+    assert limits.max_keepalive_connections == 0
+    assert limits.max_connections == request_calls[1]["connection_pool_size"]
+
+    initial_poll_kwargs = updater.start_polling.await_args.kwargs
+    assert initial_poll_kwargs["timeout"] == 3
+    assert initial_poll_kwargs["poll_interval"] == 2.5
+
+    updater.start_polling.reset_mock()
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    retry_poll_kwargs = updater.start_polling.await_args.kwargs
+    assert retry_poll_kwargs["timeout"] == 3
+    assert retry_poll_kwargs["poll_interval"] == 2.5
 
 
 @pytest.mark.asyncio

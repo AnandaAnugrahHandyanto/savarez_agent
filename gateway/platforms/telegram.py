@@ -16,6 +16,7 @@ import os
 import tempfile
 import html as _html
 import re
+import httpx
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -1361,6 +1362,8 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=False,
+                timeout=getattr(self, "_poll_timeout", 1),
+                poll_interval=getattr(self, "_poll_interval", 1.0),
                 error_callback=self._polling_error_callback_ref,
             )
             logger.info(
@@ -1488,6 +1491,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=False,
+                    timeout=getattr(self, "_poll_timeout", 1),
+                    poll_interval=getattr(self, "_poll_interval", 1.0),
                     error_callback=self._polling_error_callback_ref,
                 )
                 logger.info(
@@ -1931,6 +1936,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
+            poll_timeout = max(1, min(_env_int("HERMES_TELEGRAM_POLL_TIMEOUT", 10), 60))
+            poll_interval = max(0.0, min(_env_float("HERMES_TELEGRAM_POLL_INTERVAL", 0.0), 60.0))
+            self._poll_timeout = poll_timeout
+            self._poll_interval = poll_interval
+            poll_limits = httpx.Limits(
+                max_connections=request_kwargs["connection_pool_size"],
+                max_keepalive_connections=0,
+            )
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
@@ -1958,17 +1971,27 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(fallback_ips),
+                        "limits": poll_limits,
+                    },
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
                 request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs={"limits": poll_limits},
+                )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
                 request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs={"limits": poll_limits},
+                )
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
@@ -2090,6 +2113,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True,
+                    timeout=poll_timeout,
+                    poll_interval=poll_interval,
                     error_callback=_polling_error_callback,
                 )
             
