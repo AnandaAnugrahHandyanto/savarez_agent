@@ -22,7 +22,7 @@ import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-s
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $gatewaySwapTarget } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget } from '@/store/profile'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -285,6 +285,7 @@ export function ChatView({
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -417,6 +418,7 @@ export function ChatView({
         {...dropHandlers}
       >
         <ChatRuntimeBoundary
+          key={`${activeGatewayProfile}:${threadKey}`}
           busy={busy}
           onCancel={onCancel}
           onEdit={onEdit}
