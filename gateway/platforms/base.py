@@ -3142,12 +3142,15 @@ class BasePlatformAdapter(ABC):
         interval: float = 2.0,
         metadata=None,
         stop_event: asyncio.Event | None = None,
+        max_active_seconds: float | None = 120.0,
     ) -> None:
         """
         Continuously send typing indicator until cancelled.
         
         Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
-        to recover quickly after progress messages interrupt it.
+        to recover quickly after progress messages interrupt it. For long-running turns,
+        stop refreshing after ``max_active_seconds`` so messaging clients do not show an
+        endless "typing" state while the agent is doing background tool work.
         
         Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
         the agent is waiting for dangerous-command approval).  This is critical
@@ -3167,11 +3170,18 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if chat_id not in self._typing_paused:
+                typing_window_open = (
+                    max_active_seconds is None
+                    or max_active_seconds <= 0
+                    or (loop.time() - started_at) < max_active_seconds
+                )
+                if typing_window_open and chat_id not in self._typing_paused:
                     try:
                         await asyncio.wait_for(
                             self.send_typing(chat_id, metadata=metadata),

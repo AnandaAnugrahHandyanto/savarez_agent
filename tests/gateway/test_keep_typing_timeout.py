@@ -200,6 +200,33 @@ class TestKeepTypingTimeoutPerTick:
         )
 
     @pytest.mark.asyncio
+    async def test_typing_refresh_stops_after_active_window(self, monkeypatch):
+        """Long turns should keep running without refreshing typing forever."""
+        adapter = _StubAdapter()
+        calls = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            calls.append(asyncio.get_running_loop().time())
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="long-chat",
+                interval=0.2,
+                stop_event=stop_event,
+                max_active_seconds=0.55,
+            )
+        )
+        await asyncio.sleep(1.2)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert 2 <= len(calls) <= 4
+
+    @pytest.mark.asyncio
     async def test_stop_typing_refresh_blocks_late_cancel_tick(self, monkeypatch):
         """Final cleanup must not let a cancelled refresh loop send typing again."""
         adapter = _StubAdapter()
