@@ -1080,6 +1080,18 @@ export function useMessageStream({
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
+        } else if (sessionId && payload?.kind === 'heartbeat') {
+          // Long-running tool turns may not emit tokens/tool progress for a
+          // while. Treat the backend heartbeat as authoritative liveness so the
+          // composer/status bar stays in "working" instead of appearing frozen.
+          updateSessionState(sessionId, state => ({
+            ...state,
+            busy: true,
+            turnStartedAt: state.turnStartedAt ?? Date.now()
+          }))
+          if (isActiveEvent) {
+            setTurnStartedAt(current => current ?? Date.now())
+          }
         }
       } else if (event.type === 'review.summary') {
         // Self-improvement background review saved something to memory/skills

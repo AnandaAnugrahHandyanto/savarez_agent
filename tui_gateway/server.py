@@ -6330,6 +6330,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
     def run():
         approval_token = None
+        heartbeat_stop = threading.Event()
+        heartbeat_thread: threading.Thread | None = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
@@ -6357,6 +6359,31 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text
+
+            def _heartbeat() -> None:
+                while not heartbeat_stop.wait(8.0):
+                    with session["history_lock"]:
+                        if not session.get("running"):
+                            return
+                        started = (
+                            (session.get("inflight_turn") or {}).get("started_at")
+                            if isinstance(session.get("inflight_turn"), dict)
+                            else None
+                        )
+                    elapsed = int(max(0, time.time() - float(started or time.time())))
+                    _emit(
+                        "status.update",
+                        sid,
+                        {
+                            "elapsed": elapsed,
+                            "kind": "heartbeat",
+                            "running": True,
+                            "text": "Still working",
+                        },
+                    )
+
+            heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+            heartbeat_thread.start()
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
@@ -6668,6 +6695,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             _emit("error", sid, {"message": str(e)})
         finally:
+            heartbeat_stop.set()
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)

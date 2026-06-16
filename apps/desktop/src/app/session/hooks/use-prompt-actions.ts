@@ -737,14 +737,34 @@ export function usePromptActions({
 
         return true
       } catch (err) {
-        releaseBusy()
+        // A submit can race a backend turn the frontend has lost track of
+        // (missed websocket event, reconnect, long tool-only stretch). Treat
+        // "session busy" as authoritative backend state, not as a failed prompt:
+        // keep the session busy and let the composer queue/auto-drain retry when
+        // the gateway reports idle.
+        if (isSessionBusyError(err)) {
+          if (sessionId) {
+            dropOptimistic(sessionId)
+            updateSessionState(
+              sessionId,
+              state => ({
+                ...state,
+                busy: true,
+                awaitingResponse: true,
+                turnStartedAt: state.turnStartedAt ?? Date.now()
+              }),
+              selectedStoredSessionIdRef.current
+            )
+          }
 
-        // A queued drain that raced a not-yet-settled turn gets a transient
-        // "session busy" (4009). Don't surface an error bubble/toast — the entry
-        // stays queued and the composer's bounded auto-drain retries when idle.
-        if (options?.fromQueue && isSessionBusyError(err)) {
+          setMutableRef(busyRef, true)
+          setBusy(true)
+          setAwaitingResponse(true)
+
           return false
         }
+
+        releaseBusy()
 
         const message = inlineErrorMessage(err, copy.promptFailed)
 
@@ -1359,9 +1379,9 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
-    const releaseBusy = () => {
-      setMutableRef(busyRef, false)
-      setBusy(false)
+    const keepStopping = () => {
+      setMutableRef(busyRef, true)
+      setBusy(true)
     }
 
     setAwaitingResponse(false)
@@ -1377,7 +1397,8 @@ export function usePromptActions({
         )
 
     if (!sessionId) {
-      releaseBusy()
+      setMutableRef(busyRef, false)
+      setBusy(false)
       setMessages(finalizeMessages($messages.get()))
 
       return
@@ -1390,11 +1411,20 @@ export function usePromptActions({
       return {
         ...state,
         messages,
-        busy: false,
+        // session.interrupt is cooperative: the RPC means "interrupt requested",
+        // not "the agent thread has released session.running". Keep the session
+        // locally busy until message.complete/session.info confirms idle, or the
+        // next user send can race the backend and get a confusing "session busy".
+        busy: true,
         awaitingResponse: false,
         streamId: null,
         pendingBranchGroup: null,
-        interrupted: true
+        // Do not mark the session interrupted yet. session.interrupt only asks
+        // the backend to stop; while it unwinds it may still emit tool/progress
+        // events. The stream layer drops events for interrupted sessions, which
+        // made a cooperative-but-slow cancel look frozen even though the backend
+        // was still doing work.
+        interrupted: false
       }
     })
 
@@ -1404,7 +1434,7 @@ export function usePromptActions({
 
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
-      releaseBusy()
+      keepStopping()
     } catch (err) {
       let stopError = err
 
@@ -1419,7 +1449,7 @@ export function usePromptActions({
           if (recoveredId) {
             activeSessionIdRef.current = recoveredId
             await requestGateway('session.interrupt', { session_id: recoveredId })
-            releaseBusy()
+            keepStopping()
 
             return
           }
@@ -1428,7 +1458,8 @@ export function usePromptActions({
         }
       }
 
-      releaseBusy()
+      setMutableRef(busyRef, false)
+      setBusy(false)
       notifyError(stopError, copy.stopFailed)
     }
   }, [
