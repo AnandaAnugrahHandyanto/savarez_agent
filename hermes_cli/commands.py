@@ -78,7 +78,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
+    CommandDef("undo", "Back up N half-turns and re-prompt (default 1)", "Session",
+               args_hint="[N]"),
+    CommandDef("redo", "Redo N undo operations (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
@@ -1044,6 +1046,11 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # native slot, the alias spelling stays reachable via /hermes reset).
 _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 
+# High-value canonical commands that must survive the same 50-slash cap. Adding
+# /redo otherwise pushes /debug just past the clamp on upstream's registry,
+# breaking Telegram-vs-Slack native-command parity.
+_SLACK_PRIORITY_CANONICALS = ("debug",)
+
 # Canonical commands intentionally NOT given a native Slack slash slot. Slack
 # caps apps at 50 slash commands and the registry is at that ceiling; rather
 # than let the clamp silently drop whichever command sorts last (and break
@@ -1053,7 +1060,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits"})
+#   - version: low-frequency diagnostics; reached via /hermes version on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1127,13 +1135,23 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         if cmd is not None:
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
+    _canonical_by_name = {
+        cmd.name: cmd
+        for cmd in COMMAND_REGISTRY
+        if _is_gateway_available(cmd, overrides)
+    }
+    for name in _SLACK_PRIORITY_CANONICALS:
+        cmd = _canonical_by_name.get(name)
+        if cmd is not None:
+            _add(cmd.name, cmd.description, cmd.args_hint or "")
+
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Second pass: remaining aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
