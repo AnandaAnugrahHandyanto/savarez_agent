@@ -6617,3 +6617,106 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+# ── _ensure_db_session title inheritance (issue #46840) ──────────────────────
+
+class TestEnsureDbSessionTitleInheritance:
+    """When a session is created with a parent_session_id and the parent has a
+    title, the new session should inherit an auto-numbered variant of that
+    title (issue #46840).  Sub-agents (platform='subagent') must not consume
+    title slots because they are internal background sessions."""
+
+    def _make_agent(self, parent_session_id=None, platform=None):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                parent_session_id=parent_session_id,
+                platform=platform,
+            )
+            a.client = MagicMock()
+            return a
+
+    def _make_db(self, parent_id="parent-1", parent_title="My Session"):
+        db = MagicMock()
+        db.create_session.return_value = None
+        db.get_session_title.return_value = parent_title
+        db.get_next_title_in_lineage.return_value = f"{parent_title} #2"
+        db.set_session_title.return_value = True
+        return db
+
+    def test_inherits_numbered_title_from_parent(self):
+        """New session with a titled parent gets '<title> #2'."""
+        agent = self._make_agent(parent_session_id="parent-1")
+        db = self._make_db(parent_title="My Session")
+        agent._session_db = db
+        agent._session_db_created = False
+
+        with patch.dict("os.environ", {"HERMES_SESSION_SOURCE": "cli"}):
+            agent._ensure_db_session()
+
+        db.get_session_title.assert_called_once_with("parent-1")
+        db.get_next_title_in_lineage.assert_called_once_with("My Session")
+        db.set_session_title.assert_called_once_with(agent.session_id, "My Session #2")
+
+    def test_skips_inheritance_when_parent_has_no_title(self):
+        """If parent is untitled, the new session starts untitled too."""
+        agent = self._make_agent(parent_session_id="parent-1")
+        db = self._make_db(parent_title=None)
+        agent._session_db = db
+        agent._session_db_created = False
+
+        with patch.dict("os.environ", {"HERMES_SESSION_SOURCE": "cli"}):
+            agent._ensure_db_session()
+
+        db.get_next_title_in_lineage.assert_not_called()
+        db.set_session_title.assert_not_called()
+
+    def test_skips_inheritance_when_no_parent(self):
+        """Session without parent_session_id must not touch title at all."""
+        agent = self._make_agent(parent_session_id=None)
+        db = self._make_db()
+        agent._session_db = db
+        agent._session_db_created = False
+
+        with patch.dict("os.environ", {"HERMES_SESSION_SOURCE": "cli"}):
+            agent._ensure_db_session()
+
+        db.get_session_title.assert_not_called()
+        db.set_session_title.assert_not_called()
+
+    def test_subagent_does_not_consume_title_slot(self):
+        """Sub-agents (platform='subagent') must not inherit titles even when
+        parent has one — they are hidden internal sessions and must not burn
+        title-lineage numbers."""
+        agent = self._make_agent(parent_session_id="parent-1", platform="subagent")
+        db = self._make_db(parent_title="My Session")
+        agent._session_db = db
+        agent._session_db_created = False
+
+        agent._ensure_db_session()
+
+        db.get_session_title.assert_not_called()
+        db.set_session_title.assert_not_called()
+
+    def test_title_collision_is_swallowed(self):
+        """A ValueError from set_session_title (race / duplicate) must not
+        crash the session — the new session simply stays untitled."""
+        agent = self._make_agent(parent_session_id="parent-1")
+        db = self._make_db(parent_title="My Session")
+        db.set_session_title.side_effect = ValueError("already in use")
+        agent._session_db = db
+        agent._session_db_created = False
+
+        with patch.dict("os.environ", {"HERMES_SESSION_SOURCE": "cli"}):
+            agent._ensure_db_session()  # must not raise
+
+        assert agent._session_db_created is True

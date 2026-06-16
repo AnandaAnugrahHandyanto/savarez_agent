@@ -523,6 +523,24 @@ class AIAgent:
                 cwd=_launch_cwd_for_session(source),
             )
             self._session_db_created = True
+            # Inherit the parent's title so a resumed/continued session keeps
+            # the same name instead of getting a new LLM-generated one
+            # (issue #46840).  Sub-agents (platform="subagent") are internal
+            # background sessions and must not consume title slots.
+            if self._parent_session_id and source != "subagent":
+                parent_title = self._session_db.get_session_title(
+                    self._parent_session_id
+                )
+                if parent_title:
+                    inherited = self._session_db.get_next_title_in_lineage(
+                        parent_title
+                    )
+                    try:
+                        self._session_db.set_session_title(
+                            self.session_id, inherited
+                        )
+                    except ValueError:
+                        pass  # title collision edge-case; leave untitled
         except Exception as e:
             # Transient failure (e.g. SQLite lock). Keep _session_db alive —
             # _session_db_created stays False so next run_conversation() retries.
