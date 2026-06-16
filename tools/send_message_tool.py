@@ -13,6 +13,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
 
@@ -123,6 +124,64 @@ async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs)
                 raise
             logger.warning(
                 "Transient Telegram send failure (attempt %d/%d), retrying in %.1fs: %s",
+                attempt + 1,
+                attempts,
+                delay,
+                _sanitize_error_text(exc),
+            )
+            await asyncio.sleep(delay)
+
+
+def _telegram_bot_supports_rich(bot) -> bool:
+    """Return True when a PTB Bot exposes the raw Bot API coroutine."""
+    import inspect
+
+    return inspect.iscoroutinefunction(getattr(bot, "do_api_request", None))
+
+
+def _telegram_rich_message_id(raw_result):
+    if isinstance(raw_result, dict):
+        message_id = raw_result.get("message_id")
+        if message_id is None:
+            message_id = (raw_result.get("result") or {}).get("message_id")
+        return message_id
+    return getattr(raw_result, "message_id", None)
+
+
+def _telegram_rich_can_fallback(exc: Exception) -> bool:
+    """True when rich failed permanently before/at validation.
+
+    BadRequest/parser/unsupported/capability failures are safe to resend through
+    the legacy path. Unknown network failures are not: the rich request may have
+    reached Telegram, so falling back could duplicate the message.
+    """
+    if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
+        return True
+    if getattr(exc, "error_code", None) == 404:
+        return True
+    name = exc.__class__.__name__.lower()
+    text = str(exc).lower()
+    if "badrequest" in name or text.startswith("bad request") or "bad request" in text:
+        return True
+    if ("method" in text or "endpoint" in text) and (
+        "not found" in text or "does not exist" in text
+    ):
+        return True
+    return "no such method" in text or "unsupported" in text or "not implemented" in text
+
+
+async def _send_telegram_rich_with_retry(bot, *, attempts: int = 3, **payload):
+    for attempt in range(attempts):
+        try:
+            return await bot.do_api_request("sendRichMessage", api_kwargs=payload)
+        except Exception as exc:
+            if _telegram_rich_can_fallback(exc):
+                raise
+            delay = _telegram_retry_delay(exc, attempt)
+            if delay is None or attempt >= attempts - 1:
+                raise
+            logger.warning(
+                "Transient Telegram rich send failure (attempt %d/%d), retrying in %.1fs: %s",
                 attempt + 1,
                 attempts,
                 delay,
@@ -744,8 +803,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # Platform message length limits (from adapter class attributes for
     # built-in platforms; from PlatformEntry.max_message_length for plugins).
+    telegram_rich_enabled = bool(
+        _telegram_available
+        and (getattr(pconfig, "extra", {}) or {}).get("rich_messages", True)
+    )
     _MAX_LENGTHS = {
-        Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
+        Platform.TELEGRAM: (
+            TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+            if telegram_rich_enabled
+            else TelegramAdapter.MAX_MESSAGE_LENGTH
+        ) if _telegram_available else 4096,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
     if _feishu_available:
@@ -785,6 +852,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                rich_messages_enabled=telegram_rich_enabled,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -957,13 +1025,22 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(
+    token,
+    chat_id,
+    message,
+    media_files=None,
+    thread_id=None,
+    disable_link_previews=False,
+    force_document=False,
+    rich_messages_enabled=True,
+):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
-    Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
-    so that bold, links, and headers render correctly.  If the message
-    already contains HTML tags, it is sent with ``parse_mode='HTML'``
-    instead, bypassing MarkdownV2 conversion.
+    Uses Bot API rich messages for plain/markdown text when available so
+    tables, task lists, headings, and long reports survive the standalone
+    ``hermes send`` path. HTML-looking text keeps the legacy HTML path, and
+    rich parser/capability failures fall back to MarkdownV2/plain text.
     """
     try:
         from telegram import Bot
@@ -1047,48 +1124,80 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         warnings = []
 
         if formatted.strip():
-            try:
-                last_msg = await _send_telegram_message_with_retry(
-                    bot,
-                    chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **text_kwargs
-                )
-            except Exception as md_error:
-                # Thread not found — retry without message_thread_id so the
-                # message still delivers (matching the gateway adapter's
-                # fallback behaviour, issue #27012).
-                if _is_telegram_thread_not_found(md_error) and thread_kwargs:
-                    logger.warning(
-                        "Thread %s not found in _send_telegram, retrying without message_thread_id",
-                        thread_kwargs.get("message_thread_id"),
-                    )
-                    text_kwargs.pop("message_thread_id", None)
-                    last_msg = await _send_telegram_message_with_retry(
-                        bot,
-                        chat_id=int_chat_id, text=formatted,
-                        parse_mode=send_parse_mode, **text_kwargs
-                    )
-                elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
-                    logger.warning(
-                        "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
-                        send_parse_mode,
-                        _sanitize_error_text(md_error),
-                    )
-                    if not _has_html:
-                        try:
-                            from gateway.platforms.telegram import _strip_mdv2
-                            plain = _strip_mdv2(formatted)
-                        except Exception:
-                            plain = message
+            if rich_messages_enabled and not _has_html and _telegram_bot_supports_rich(bot):
+                rich_payload = {
+                    "chat_id": int_chat_id,
+                    "rich_message": {"markdown": message},
+                    **thread_kwargs,
+                }
+                if disable_link_previews:
+                    rich_payload["link_preview_options"] = {"is_disabled": True}
+                try:
+                    rich_result = await _send_telegram_rich_with_retry(bot, **rich_payload)
+                    message_id = _telegram_rich_message_id(rich_result)
+                    last_msg = SimpleNamespace(message_id=message_id)
+                except Exception as rich_error:
+                    if _telegram_rich_can_fallback(rich_error):
+                        logger.debug(
+                            "send_message: Telegram sendRichMessage rejected (%s); falling back to legacy sendMessage",
+                            _sanitize_error_text(rich_error),
+                        )
                     else:
-                        plain = message
-                    last_msg = await _send_telegram_message_with_retry(
-                        bot,
-                        chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **text_kwargs
+                        return _error(f"Telegram rich send failed: {rich_error}")
+
+            if last_msg is None:
+                try:
+                    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+                    from gateway.platforms.telegram import TelegramAdapter
+                    legacy_chunks = BasePlatformAdapter.truncate_message(
+                        formatted, TelegramAdapter.MAX_MESSAGE_LENGTH, len_fn=utf16_len
                     )
-                else:
-                    raise
+                except Exception:
+                    legacy_chunks = [formatted]
+
+                for legacy_chunk in legacy_chunks:
+                    try:
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot,
+                            chat_id=int_chat_id, text=legacy_chunk,
+                            parse_mode=send_parse_mode, **text_kwargs
+                        )
+                    except Exception as md_error:
+                        # Thread not found — retry without message_thread_id so the
+                        # message still delivers (matching the gateway adapter's
+                        # fallback behaviour, issue #27012).
+                        if _is_telegram_thread_not_found(md_error) and thread_kwargs:
+                            logger.warning(
+                                "Thread %s not found in _send_telegram, retrying without message_thread_id",
+                                thread_kwargs.get("message_thread_id"),
+                            )
+                            text_kwargs.pop("message_thread_id", None)
+                            last_msg = await _send_telegram_message_with_retry(
+                                bot,
+                                chat_id=int_chat_id, text=legacy_chunk,
+                                parse_mode=send_parse_mode, **text_kwargs
+                            )
+                        elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                            logger.warning(
+                                "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
+                                send_parse_mode,
+                                _sanitize_error_text(md_error),
+                            )
+                            if not _has_html:
+                                try:
+                                    from gateway.platforms.telegram import _strip_mdv2
+                                    plain = _strip_mdv2(legacy_chunk)
+                                except Exception:
+                                    plain = message
+                            else:
+                                plain = message
+                            last_msg = await _send_telegram_message_with_retry(
+                                bot,
+                                chat_id=int_chat_id, text=plain,
+                                parse_mode=None, **text_kwargs
+                            )
+                        else:
+                            raise
 
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
