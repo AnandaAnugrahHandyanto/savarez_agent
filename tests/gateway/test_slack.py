@@ -69,6 +69,7 @@ import gateway.platforms.slack as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig  # noqa: E402
 
 
 async def _pending_for_fake_task():
@@ -3291,6 +3292,47 @@ class TestSlackRichMarkdownBlocks:
         assert second["blocks"] == []
         assert second["text"] == "Hi &lt;@U123&gt; &lt;!channel&gt; &lt;#C123&gt;"
         assert "<@U123>" not in second["text"]
+
+    @pytest.mark.asyncio
+    async def test_stream_consumer_preview_legacy_then_final_edit_markdown_block(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "preview_ts"})
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        content = "## Title\n\n**bold** and <@U123>"
+        cfg = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=5,
+            cursor=" ▉",
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "C123",
+            cfg,
+            metadata={"thread_id": "parent_ts"},
+        )
+
+        consumer.on_delta(content)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        post_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert post_kwargs["thread_ts"] == "parent_ts"
+        assert post_kwargs["mrkdwn"] is True
+        assert "blocks" not in post_kwargs
+        assert "*Title*" in post_kwargs["text"]
+        assert "&lt;@U123&gt;" in post_kwargs["text"]
+        assert "<@U123>" not in post_kwargs["text"]
+
+        update_kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert update_kwargs["channel"] == "C123"
+        assert update_kwargs["ts"] == "preview_ts"
+        assert update_kwargs["text"].startswith("*Title*")
+        assert "<@U123>" not in update_kwargs["text"]
+        assert update_kwargs["blocks"] == [
+            {"type": "markdown", "text": "## Title\n\n**bold** and &lt;@U123&gt;"}
+        ]
 
     @pytest.mark.asyncio
     async def test_edit_long_final_content_clears_stale_blocks_with_legacy(self):
