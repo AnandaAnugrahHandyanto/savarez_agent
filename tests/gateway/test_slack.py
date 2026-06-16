@@ -3207,7 +3207,7 @@ class TestSlackRichMarkdownBlocks:
             side_effect=[RuntimeError("invalid_blocks"), {"ts": "legacy_ts"}]
         )
 
-        result = await adapter.send("C123", "## Title")
+        result = await adapter.send("C123", "Hi <@U123> <!channel> <#C123>")
 
         assert result.success is True
         assert result.message_id == "legacy_ts"
@@ -3215,21 +3215,27 @@ class TestSlackRichMarkdownBlocks:
         first = adapter._app.client.chat_postMessage.call_args_list[0].kwargs
         second = adapter._app.client.chat_postMessage.call_args_list[1].kwargs
         assert "blocks" in first
+        assert "&lt;@U123&gt;" in first["blocks"][0]["text"]
         assert "blocks" not in second
         assert second["mrkdwn"] is True
-        assert second["text"] == "*Title*"
+        assert second["text"] == "Hi &lt;@U123&gt; &lt;!channel&gt; &lt;#C123&gt;"
+        assert "<@U123>" not in second["text"]
 
     @pytest.mark.asyncio
     async def test_send_long_content_uses_legacy_fallback(self):
         adapter = self._rich_adapter()
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
-        content = "x" * (adapter.MARKDOWN_BLOCK_TEXT_LIMIT + 1)
+        content = "Hi <@U123> <!channel> <#C123>\n" + "x" * (
+            adapter.MARKDOWN_BLOCK_TEXT_LIMIT + 1
+        )
 
         await adapter.send("C123", content)
 
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "blocks" not in kwargs
         assert kwargs["mrkdwn"] is True
+        assert "&lt;@U123&gt;" in kwargs["text"]
+        assert "<!channel>" not in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_send_streaming_preview_metadata_uses_legacy_path(self):
@@ -3273,7 +3279,9 @@ class TestSlackRichMarkdownBlocks:
             side_effect=[RuntimeError("invalid_blocks"), {"ok": True}]
         )
 
-        result = await adapter.edit_message("C123", "ts1", "## final", finalize=True)
+        result = await adapter.edit_message(
+            "C123", "ts1", "Hi <@U123> <!channel> <#C123>", finalize=True
+        )
 
         assert result.success is True
         assert adapter._app.client.chat_update.call_count == 2
@@ -3281,18 +3289,23 @@ class TestSlackRichMarkdownBlocks:
         second = adapter._app.client.chat_update.call_args_list[1].kwargs
         assert "blocks" in first
         assert second["blocks"] == []
-        assert second["text"] == "*final*"
+        assert second["text"] == "Hi &lt;@U123&gt; &lt;!channel&gt; &lt;#C123&gt;"
+        assert "<@U123>" not in second["text"]
 
     @pytest.mark.asyncio
     async def test_edit_long_final_content_clears_stale_blocks_with_legacy(self):
         adapter = self._rich_adapter()
         adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
-        content = "x" * (adapter.MARKDOWN_BLOCK_TEXT_LIMIT + 1)
+        content = "Hi <@U123> <!channel> <#C123>\n" + "x" * (
+            adapter.MARKDOWN_BLOCK_TEXT_LIMIT + 1
+        )
 
         await adapter.edit_message("C123", "ts1", content, finalize=True)
 
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert kwargs["blocks"] == []
+        assert "&lt;@U123&gt;" in kwargs["text"]
+        assert "<!channel>" not in kwargs["text"]
 
 
 # ---------------------------------------------------------------------------

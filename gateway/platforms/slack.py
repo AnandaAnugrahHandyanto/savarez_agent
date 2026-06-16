@@ -1263,9 +1263,13 @@ class SlackAdapter(BasePlatformAdapter):
             # Convert standard markdown → Slack mrkdwn for the legacy path and
             # the required top-level `text` fallback on rich block payloads.
             formatted = self.format_message(content)
+            rich_output_enabled = self._slack_rich_output_mode() == self.MARKDOWN_BLOCK_MODE
 
             # Split long legacy messages, preserving code block boundaries.
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            rich_fallback_chunks = self.truncate_message(
+                self._markdown_block_fallback_text(content), self.MAX_MESSAGE_LENGTH
+            )
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -1275,9 +1279,10 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            async def _post_legacy_chunks() -> Any:
+            async def _post_legacy_chunks(*, sanitize_entities: bool = False) -> Any:
                 legacy_last_result = None
-                for i, chunk in enumerate(chunks):
+                fallback_chunks = rich_fallback_chunks if sanitize_entities else chunks
+                for i, chunk in enumerate(fallback_chunks):
                     kwargs = {
                         "channel": chat_id,
                         "text": chunk,
@@ -1308,16 +1313,18 @@ class SlackAdapter(BasePlatformAdapter):
                             "[Slack] Rich markdown block send rejected (%s); retrying legacy path",
                             self._slack_response_error_code(last_result),
                         )
-                        last_result = await _post_legacy_chunks()
+                        last_result = await _post_legacy_chunks(sanitize_entities=True)
                 except Exception as exc:
                     if not self._is_markdown_block_fallback_error(exc):
                         raise
                     logger.info(
                         "[Slack] Rich markdown block send failed validation; retrying legacy path"
                     )
-                    last_result = await _post_legacy_chunks()
+                    last_result = await _post_legacy_chunks(sanitize_entities=True)
             else:
-                last_result = await _post_legacy_chunks()
+                last_result = await _post_legacy_chunks(
+                    sanitize_entities=rich_output_enabled
+                )
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1387,13 +1394,17 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
+            rich_fallback_formatted = self._markdown_block_fallback_text(content)
+            rich_output_enabled = self._slack_rich_output_mode() == self.MARKDOWN_BLOCK_MODE
             client = self._get_client(chat_id)
 
-            async def _update_legacy(*, clear_blocks: bool = False) -> Any:
+            async def _update_legacy(
+                *, clear_blocks: bool = False, sanitize_entities: bool = False
+            ) -> Any:
                 kwargs: Dict[str, Any] = {
                     "channel": chat_id,
                     "ts": message_id,
-                    "text": formatted,
+                    "text": rich_fallback_formatted if sanitize_entities else formatted,
                 }
                 if clear_blocks:
                     # Slack can retain old blocks when only text is updated.
@@ -1414,19 +1425,26 @@ class SlackAdapter(BasePlatformAdapter):
                             "[Slack] Rich markdown block update rejected (%s); retrying legacy path",
                             self._slack_response_error_code(result),
                         )
-                        result = await _update_legacy(clear_blocks=True)
+                        result = await _update_legacy(
+                            clear_blocks=True, sanitize_entities=True
+                        )
                 except Exception as exc:
                     if not self._is_markdown_block_fallback_error(exc):
                         raise
                     logger.info(
                         "[Slack] Rich markdown block update failed validation; retrying legacy path"
                     )
-                    result = await _update_legacy(clear_blocks=True)
+                    result = await _update_legacy(
+                        clear_blocks=True, sanitize_entities=True
+                    )
             else:
                 clear_stale_blocks = (
-                    finalize and self._slack_rich_output_mode() == self.MARKDOWN_BLOCK_MODE
+                    finalize and rich_output_enabled
                 )
-                result = await _update_legacy(clear_blocks=clear_stale_blocks)
+                result = await _update_legacy(
+                    clear_blocks=clear_stale_blocks,
+                    sanitize_entities=rich_output_enabled,
+                )
 
             if finalize:
                 await self.stop_typing(chat_id)
