@@ -244,7 +244,7 @@ TOOLSETS = {
     },
     
     "delegation": {
-        "description": "Spawn subagents and coordinate DAG workflows with isolated context",
+        "description": "Spawn subagents and coordinate dynamic workflows with isolated context",
         "tools": ["delegate_task", "dynamic_workflow"],
         "includes": []
     },

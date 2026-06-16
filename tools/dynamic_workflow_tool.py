@@ -2,11 +2,12 @@
 """Dynamic workflow tool.
 
 This is a thin coordinator over Hermes' existing async delegation primitive.
-The model owns the graph: it creates or extends a DAG, records completed
-worker outputs, and decides what follow-on nodes to add. The tool owns the
-mechanics that are easy to get wrong: DAG validation, readiness, state,
-background dispatch through ``delegate_task(background=true)``, and cancellation
-of dispatched async delegations.
+The model owns the workflow shape: it creates or extends dependent worker
+steps, records completed worker outputs, and decides what follow-on work to
+add. The tool owns the mechanics that are easy to get wrong: dependency
+validation, readiness, state, background dispatch through
+``delegate_task(background=true)``, and cancellation of dispatched async
+delegations.
 """
 
 from __future__ import annotations
@@ -300,7 +301,7 @@ def _worker_context(workflow: Dict[str, Any], node: Dict[str, Any]) -> str:
             "",
             "When you finish, include workflow_id and node_id in your summary. "
             "The parent coordinator will record your result with dynamic_workflow(action='record_result') "
-            "and may extend the DAG based on your output.",
+            "and may extend the workflow based on your output.",
         ]
     )
     return "\n".join(lines)
@@ -536,7 +537,7 @@ def _reset_for_tests() -> None:
 DYNAMIC_WORKFLOW_SCHEMA = {
     "name": "dynamic_workflow",
     "description": (
-        "Create and run model-authored DAG workflows using Hermes async "
+        "Create and run model-authored dynamic workflows using Hermes async "
         "delegation for ready worker nodes."
     ),
     "parameters": {
@@ -562,7 +563,7 @@ DYNAMIC_WORKFLOW_SCHEMA = {
             "nodes": {
                 "type": "array",
                 "description": (
-                    "DAG nodes to create or add. Add new nodes after recording "
+                    "Worker nodes to create or add. Add new nodes after recording "
                     "phase outputs when the next steps depend on what workers found."
                 ),
                 "items": {

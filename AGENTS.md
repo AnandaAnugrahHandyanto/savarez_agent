@@ -987,14 +987,14 @@ turn but still process-local. For work that must survive process restart, use
 
 Use `dynamic_workflow` when work has dependent phases and the next step
 should be authored only after prior worker outputs are available. It keeps a
-model-authored DAG in Hermes state, validates dependencies, dispatches ready
-nodes through `delegate_task(background=true)`, and exposes readiness after
-results are recorded.
+model-authored workflow in Hermes state, validates dependencies, dispatches
+ready nodes through `delegate_task(background=true)`, and exposes readiness
+after results are recorded.
 
 Typical loop:
 
 1. `dynamic_workflow(action="create", nodes=[...])` with only the currently
-   knowable DAG.
+   knowable worker steps.
 2. `dynamic_workflow(action="dispatch_ready")` or `dispatch_ready=true` to run
    ready leaf workers in the background.
 3. When async delegation results re-enter the conversation, call
