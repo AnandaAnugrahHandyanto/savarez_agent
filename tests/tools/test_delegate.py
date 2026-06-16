@@ -2004,6 +2004,39 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
 
+    def test_background_forwarded_by_aiagent_dispatch_helper(self):
+        """The real agent/gateway path must forward background=True.
+
+        tools.delegate_tool.delegate_task(background=True) is covered in the
+        async-delegation tests, but gateway turns go through
+        AIAgent._dispatch_delegate_task first.  A regression here silently
+        degrades async delegation into synchronous delegation.
+        """
+        from run_agent import AIAgent
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "OK"
+
+        dummy_agent = MagicMock()
+        function_args = {
+            "goal": "test",
+            "context": "ctx",
+            "toolsets": ["terminal"],
+            "background": True,
+            "role": "leaf",
+        }
+
+        with patch("tools.delegate_tool.delegate_task", side_effect=fake_delegate_task):
+            self.assertEqual(AIAgent._dispatch_delegate_task(dummy_agent, function_args), "OK")
+
+        self.assertIs(captured.get("background"), True)
+        self.assertEqual(captured.get("goal"), "test")
+        self.assertEqual(captured.get("toolsets"), ["terminal"])
+        self.assertIs(captured.get("parent_agent"), dummy_agent)
+
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_acp_args_forwarded(self, mock_creds, mock_cfg):
