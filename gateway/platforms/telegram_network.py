@@ -136,8 +136,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 "[Telegram] Primary DNS path and all %d fallback IP(s) are unreachable. "
                 "If your network blocks api.telegram.org (e.g. an ISP-level Telegram block, "
                 "common in some regions), fallback IPs cannot help — they are in the same "
-                "blocked ranges. Set TELEGRAM_PROXY=socks5h://<host>:<port> in your .env to "
-                "route the Bot API through a reachable exit (httpx speaks SOCKS natively). "
+                "blocked ranges. Two remedies: (1) set a Cloudflare-Worker reverse proxy as "
+                "the bot's API endpoint via gateway.platforms.telegram.extra.base_url "
+                "(https://<worker>.workers.dev/bot) — fast, permanent, can't be ISP-blocked; "
+                "or (2) set TELEGRAM_PROXY=socks5h://<host>:<port> in your .env to route the "
+                "Bot API through a reachable SOCKS exit (httpx speaks SOCKS natively). "
                 "For a slow proxy, also raise HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT (default 10).",
                 len(self._fallback_ips),
             )
