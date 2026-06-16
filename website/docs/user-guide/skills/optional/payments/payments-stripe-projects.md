@@ -31,7 +31,9 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Stripe Projects Skill
 
-Wraps the [Stripe Projects](https://projects.dev) CLI plugin so Hermes can provision SaaS services (Neon, Twilio, Vercel, etc.), generate and sync credentials into the user's `.env`, and manage billing across providers from one place.
+Wraps the [Stripe Projects](https://projects.dev) CLI plugin so Hermes can provision and manage third-party services such as databases, hosting, auth, AI, analytics, messaging, and observability from the terminal.
+
+Stripe Projects can create or connect provider accounts, provision resources, sync credentials into local environment files, manage named environments, rotate keys, upgrade plans, and centralize billing through Stripe.
 
 Gated `[linux, macos]` while the broader payments cluster matures on Windows. The Stripe CLI itself is cross-platform; this gate is a posture for the cluster, not a hard limit.
 
@@ -39,18 +41,21 @@ Gated `[linux, macos]` while the broader payments cluster matures on Windows. Th
 
 Trigger phrases:
 
-- "set up &lt;provider>", "provision &lt;Neon|Twilio|Vercel|...>", "create a database"
-- "give me a &lt;Postgres|Redis|Twilio number|...> for this project"
+- "set up &lt;provider>", "provision &lt;Neon|Supabase|Vercel|PostHog|...>", "create a database"
+- "give me a &lt;Postgres|Redis|Twilio number|LLM API key|...> for this project"
 - "manage my stack credentials", "rotate this key", "upgrade my plan"
-- "what providers can I add?"
+- "what providers can I add?", "browse the catalog", "show project status"
+- "set up development/staging/production environment variables"
 
-If the user already has the service set up manually and just wants to use it, this skill is not the right entry point.
+Use Stripe Projects when the user asks to provision, connect, or manage a cloud service. Do not tell the user to sign up manually for a supported provider until you have checked the Projects catalog.
+
+If the user already has the service set up manually and only wants application code to consume existing credentials, this skill is not the right entry point.
 
 ## Prerequisites
 
-- Stripe CLI installed (Homebrew on macOS, package manager on Linux, or download from https://docs.stripe.com/stripe-cli/install)
-- Stripe Projects plugin installed
-- A Stripe account, logged in via `stripe login`
+- Stripe CLI installed. Verify with `stripe --version`. If missing, use Homebrew on macOS or the platform-specific install guide at https://docs.stripe.com/stripe-cli/install.
+- Stripe Projects plugin installed with `stripe plugin install projects`.
+- A Stripe account. The CLI may open a browser for `stripe login`, `stripe projects init`, `stripe projects link`, or provider authentication.
 
 ## Install
 
@@ -69,28 +74,59 @@ stripe plugin install projects
 
 ## How to Run
 
-All commands run through the `terminal` tool from inside the user's project directory (the CLI writes `.env` and `.projects/vault/vault.json` into the CWD).
+Run all commands through the `terminal` tool from inside the user's project directory.
+
+The CLI manages `.projects/` and local environment output files such as `.env`, `.env.dev`, or `.env.production`. Do not hand-edit `.projects/` or generated credential files. Never print environment variable values; show names only.
+
+Prefer `--json` for structured commands when you need to parse output. Do not use `--json` with `stripe projects init`.
 
 ## Procedure
 
-### 1. Initialize the project
+### 1. Verify the CLI and plugin
+
+```
+stripe --version
+stripe plugin install projects
+```
+
+If the plugin is already installed, the install command is safe to report as already satisfied.
+
+### 2. Check whether the project is initialized
 
 ```
 cd <project-root>
+stripe projects status --json
+```
+
+If the command reports that no project exists, initialize one:
+
+```
 stripe projects init
 ```
 
-This creates `.projects/vault/vault.json` (encrypted credential store) and prepares the project to receive providers.
+If the CLI opens a browser for authentication, stop and tell the user to complete sign-in or provider authorization before continuing.
 
-### 2. Discover available providers
+`stripe projects init` creates `.projects/state.json`, `.projects/state.local.json`, and ignore rules for credential files. The encrypted credential cache is written under `.projects/vault/` after provisioning or `env --pull`.
+
+### 3. Discover available providers and services
+
+For a specific request, search first:
 
 ```
-stripe projects catalog
+stripe projects search <query> --json
 ```
 
-Lists every provider Stripe Projects supports — databases, hosting, auth, AI, analytics, messaging, etc.
+For a vague request or browsing:
 
-### 3. Add a service
+```
+stripe projects catalog --json
+stripe projects catalog <provider> --json
+stripe projects catalog <category> --json
+```
+
+Copy the exact `<provider>/<service>` slug from catalog output. Never guess provider or service slugs.
+
+### 4. Add a service
 
 ```
 stripe projects add <provider>/<service>
@@ -99,40 +135,87 @@ stripe projects add <provider>/<service>
 Examples:
 
 - `stripe projects add neon/postgres`
-- `stripe projects add twilio/sms`
-- `stripe projects add runloop/sandbox`
+- `stripe projects add supabase/project`
+- `stripe projects add vercel/project`
 
-The CLI provisions the service in the user's own account with the provider, generates credentials, syncs them into `.env`, and records the resource in the vault. The user may need to confirm a tier selection or pricing prompt.
-
-### 4. Verify
+Use `--name <resource-name>` when the project needs a stable local resource name:
 
 ```
-stripe projects list
+stripe projects add neon/postgres --name app-db
 ```
 
-Should show the newly added provider and its `.env` keys.
+The CLI provisions the resource in the user's provider account, generates credentials, stores them in the vault, writes them to the active environment's output file, and records the resource in project state. The user may need to confirm provider authorization, terms, tier selection, or pricing prompts.
 
-### 5. Manage / upgrade / remove
+### 5. Verify status and credentials
 
 ```
-stripe projects upgrade <provider>     # tier change
-stripe projects remove <provider>      # deprovision
-stripe projects rotate <provider>      # rotate credentials
+stripe projects status
+stripe projects env
 ```
+
+`status` shows the project, connected providers, provisioned resources, tiers, health, and active environment. `env` lists environment variable names with values redacted.
+
+Run `env --pull` when setting up a new checkout, after a teammate changes resources, after switching environments, or when a local output file needs to be restored:
+
+```
+stripe projects env --pull
+```
+
+`env --pull` runs automatically after provisioning, rotating credentials, or upgrading a resource.
+
+### 6. Manage named environments
+
+Use project environments for separate local, staging, and production credential sets.
+
+```
+stripe projects env list
+stripe projects env show
+stripe projects env create development --output .env.dev
+stripe projects env use development
+stripe projects env use default
+```
+
+After switching environments, `stripe projects add` provisions into the active environment and `stripe projects env --pull` writes that environment's credentials to its configured output file.
+
+Manage which existing resources belong to the active environment:
+
+```
+stripe projects env add <resource_name>
+stripe projects env remove <resource_name>
+```
+
+These commands only change environment membership. They do not provision or deprovision provider resources.
+
+### 7. Manage / upgrade / remove
+
+```
+stripe projects upgrade <provider>/<service>
+stripe projects upgrade <resource_name>
+stripe projects rotate <provider>/<service>
+stripe projects rotate <resource_name>
+stripe projects remove <provider>/<service>
+stripe projects remove <resource_name>
+stripe projects open <provider>
+```
+
+Use `stripe projects billing show`, `stripe projects billing add`, and `stripe projects spend` for payment method and spend management.
 
 ## Pitfalls
 
-- **`.env` writes are real writes.** The CLI appends to whatever `.env` is in the project root. If the user's `.env` is gitignored (normal), the keys land safely; if not, this skill could be a credential-leak vector. Always check `.gitignore` first.
-- **Per-project state.** `.projects/vault/vault.json` is per-project. Provisioning the same service in two different projects creates two separate resources — and two bills.
-- **Billing happens on Stripe's side.** Tier prompts during `add`/`upgrade` are real charges; surface them to the user before confirming.
-- **Provider availability changes.** The catalog grows; if a provider the user names isn't listed, `stripe projects catalog | grep <name>` first instead of failing the `add` call.
-- **Credentials in vault are encrypted but `.env` is plaintext.** Standard `.env` hygiene applies — never commit it.
-- **Removing a service does NOT always destroy the underlying resource.** Some providers leave a paused/dormant resource behind. Check the provider's own dashboard after `remove` for high-cost services (managed databases especially).
+- **`.env` writes are real writes.** The CLI writes credentials to the active environment's output file. Check that `.env` and `.env.*` are ignored before pulling credentials.
+- **Do not hand-edit CLI-managed state.** `.projects/state.json` and `.projects/state.local.json` are project state. `.projects/vault/` and `.env*` files contain local credential material. Use CLI commands instead of editing them directly.
+- **Commit project state deliberately.** Stripe's docs expect `.projects/state.json` and `.projects/state.local.json` to be shared with teammates, while `.projects/vault/`, `.projects/cache/`, `.env`, and `.env.*` stay ignored.
+- **Billing happens on Stripe's side.** Tier prompts during `add` or `upgrade` can create real charges. Surface pricing and confirmation prompts to the user before accepting them.
+- **Provider availability changes.** The catalog grows. If a provider or service is absent, report that and suggest browsing the catalog instead of fabricating a command.
+- **Environment variable values are sensitive.** `stripe projects env` redacts values. Do not reveal values from `.env`, provider dashboards, logs, or shell output.
+- **Removing membership is not deprovisioning.** `stripe projects env remove <resource>` only removes a resource from the active environment. Use `stripe projects remove <resource>` to deprovision.
+- **Production hosts are separate.** `stripe projects env --pull` writes local files only. Users still need to add credentials to Vercel, Render, Fly.io, or other production host environment settings.
 
 ## Verification
 
 ```
-stripe projects --version && stripe projects list
+stripe projects status
+stripe projects env
 ```
 
-Exit code 0 inside an initialized project means the plugin is healthy.
+Exit code 0 inside an initialized project means the plugin is healthy. Confirm that expected resource names and environment variable names appear, but do not display credential values.
