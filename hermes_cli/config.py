@@ -1791,6 +1791,7 @@ DEFAULT_CONFIG = {
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
+        "max_async_children": 3,  # max concurrent background (background=true) subagents; new dispatches rejected at capacity
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.
@@ -2027,7 +2028,7 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
         "extra": {
-            "rich_messages": True,      # Bot API 10.1 rich messages; set false to force legacy MarkdownV2
+            "rich_messages": False,     # Opt in to Bot API 10.1 rich messages; default uses legacy MarkdownV2
         },
     },
 
@@ -2364,7 +2365,7 @@ DEFAULT_CONFIG = {
         # delivered as a fresh message if the preview has been visible at
         # least this many seconds, so the platform timestamp reflects
         # completion time. Telegram only; other platforms ignore it.
-        "fresh_final_after_seconds": 60.0,
+        "fresh_final_after_seconds": 0.0,
     },
 
     # Session storage — controls automatic cleanup of ~/.hermes/state.db.
@@ -4874,15 +4875,15 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     raw_mcp_servers = config.get("mcp_servers")
     if isinstance(raw_mcp_servers, dict):
         try:
-            from hermes_cli.mcp_security import validate_mcp_server_entry
+            from hermes_cli.mcp_security import validate_mcp_server_entry as _validate_mcp_server_entry
         except Exception:
-            validate_mcp_server_entry = None
-        if validate_mcp_server_entry:
+            _validate_mcp_server_entry = None
+        if _validate_mcp_server_entry:
             mcp_touched = False
             for server_name, entry in raw_mcp_servers.items():
                 if not isinstance(entry, dict):
                     continue
-                issues = validate_mcp_server_entry(server_name, entry)
+                issues = _validate_mcp_server_entry(server_name, entry)
                 if not issues:
                     continue
                 entry["enabled"] = False
