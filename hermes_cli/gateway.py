@@ -7,6 +7,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -306,6 +307,44 @@ def _append_unique_pid(
     pids.append(pid)
 
 
+# Literal command-line markers that denote a gateway process on their own: the
+# POSIX ``hermes`` console script with its subcommand adjacent, and the
+# gateway-dedicated launcher shims (subcommand implicit).
+_GATEWAY_LITERAL_MARKERS = (
+    "hermes gateway",
+    "hermes-gateway.exe",
+    "gateway/run.py",
+)
+# General Hermes entrypoints. The profile flag may precede the subcommand
+# (``... --profile foo gateway run``), so an adjacent ``<entrypoint> gateway``
+# substring would miss profile-scoped gateways; require the entrypoint plus a
+# standalone ``gateway`` subcommand token instead. Including ``hermes.exe`` here
+# also re-covers profile-scoped ``hermes.exe ... gateway`` runs that the earlier
+# ``hermes.exe gateway`` adjacency narrowing dropped, while still excluding
+# ``hermes.exe --profile foo dashboard``.
+_GATEWAY_ENTRYPOINTS = ("hermes_cli.main", "hermes_cli/main.py", "hermes.exe")
+_GATEWAY_SUBCOMMAND_RE = re.compile(r"(?:^|\s)gateway(?:\s|$)")
+
+
+def _looks_like_gateway(command_lc: str) -> bool:
+    """Return True if a lowercased command line denotes a *gateway* process.
+
+    Crucially this rejects same-profile non-gateway invocations such as
+    ``... hermes_cli.main --profile foo dashboard`` and ``... chat``. The
+    previous bare ``--profile`` / ``-p`` patterns matched those as
+    false-positive gateway PIDs because the profile flag precedes the
+    subcommand, so a same-profile dashboard was reported as a running gateway
+    (blocking ``gateway start``) and force-killed by ``gateway stop`` /
+    ``restart``. See #47120; this mirrors the earlier ``hermes.exe gateway``
+    narrowing that fixed the ``.exe`` form of the same false positive.
+    """
+    if any(marker in command_lc for marker in _GATEWAY_LITERAL_MARKERS):
+        return True
+    if any(entry in command_lc for entry in _GATEWAY_ENTRYPOINTS):
+        return _GATEWAY_SUBCOMMAND_RE.search(command_lc) is not None
+    return False
+
+
 def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> list[int]:
     """Best-effort process-table scan for gateway PIDs.
 
@@ -318,23 +357,6 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     # gateway.  See #13242.
     exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
-    patterns = [
-        "hermes_cli.main gateway",
-        "hermes_cli.main --profile",
-        "hermes_cli.main -p",
-        "hermes_cli/main.py gateway",
-        "hermes_cli/main.py --profile",
-        "hermes_cli/main.py -p",
-        "hermes gateway",
-        # Windows: only match invocations that actually carry the ``gateway``
-        # subcommand or the gateway-dedicated console-script shim. Bare
-        # ``hermes.exe --profile`` / ``hermes.exe -p`` would also match
-        # ``hermes.exe --profile foo dashboard`` and other CLI subcommands,
-        # producing false-positive gateway PIDs (Copilot review).
-        "hermes.exe gateway",
-        "hermes-gateway.exe",
-        "gateway/run.py",
-    ]
     current_home = str(get_hermes_home().resolve())
     current_home_lc = current_home.lower()
     current_profile_arg = _profile_arg(current_home)
@@ -430,7 +452,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     current_cmd_lc = current_cmd.lower()
-                    if any(p in current_cmd_lc for p in patterns) and (
+                    if _looks_like_gateway(current_cmd_lc) and (
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
@@ -456,7 +478,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                                 cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
                             cmdline_lc = cmdline.lower()
-                            if any(p in cmdline_lc for p in patterns) and (
+                            if _looks_like_gateway(cmdline_lc) and (
                                 all_profiles or _matches_current_profile(cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
@@ -500,7 +522,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     if pid is None:
                         continue
                     command_lc = command.lower()
-                    if any(pattern in command_lc for pattern in patterns) and (
+                    if _looks_like_gateway(command_lc) and (
                         all_profiles or _matches_current_profile(command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)

@@ -136,3 +136,38 @@ class TestProcFallback:
         # PermissionError swallowed — empty result, no crash
         assert 12345 not in pids
         mock_ps.assert_not_called()  # /proc dir existed, so ps not called
+
+    def test_same_profile_dashboard_not_matched_as_gateway(self):
+        """Regression for #47120.
+
+        A same-profile ``dashboard`` (or ``chat``) invocation carries the
+        ``--profile`` flag *before* its subcommand, exactly like the gateway.
+        The scan must match only the real ``gateway run`` process, never the
+        dashboard/chat ones, otherwise ``gateway start`` reports a false
+        "already running" and ``gateway stop`` / ``restart`` force-kills the
+        dashboard.
+        """
+        entries = {
+            12345: "python -m hermes_cli.main --profile gibson gateway run",
+            16008: (
+                "python -m hermes_cli.main --profile gibson dashboard "
+                "--no-open --host 127.0.0.1 --port 0"
+            ),
+            16009: "python -m hermes_cli.main --profile gibson chat",
+        }
+        _isdir, _listdir, _open = _fake_proc_dir(entries)
+
+        with (
+            patch("hermes_cli.gateway.is_windows", return_value=False),
+            patch("os.path.isdir", side_effect=_isdir),
+            patch("os.listdir", side_effect=_listdir),
+            patch("builtins.open", side_effect=_open),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run") as mock_ps,
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert 12345 in pids  # the actual gateway
+        assert 16008 not in pids  # dashboard must not be misidentified
+        assert 16009 not in pids  # chat must not be misidentified
+        mock_ps.assert_not_called()

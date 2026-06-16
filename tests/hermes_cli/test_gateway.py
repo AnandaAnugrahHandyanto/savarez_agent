@@ -965,3 +965,52 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+class TestLooksLikeGateway:
+    """Contract for _looks_like_gateway, the gateway process-scan matcher.
+
+    Regression guard for #47120: a profile flag preceding the subcommand must
+    not let a dashboard/chat invocation be mistaken for a gateway.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # python -m / path entrypoints, with and without a profile flag.
+            "python -m hermes_cli.main gateway run",
+            "python -m hermes_cli.main --profile gibson gateway run",
+            "python -m hermes_cli.main -p gibson gateway run",
+            "python /opt/hermes/hermes_cli/main.py --profile gibson gateway run",
+            # console scripts (profile flag may precede the subcommand for .exe).
+            "hermes gateway run",
+            "c:\\hermes\\hermes.exe gateway run",
+            "c:\\hermes\\hermes.exe --profile gibson gateway run",
+            # gateway-dedicated launcher shims (subcommand implicit).
+            "c:\\hermes\\scripts\\hermes-gateway.exe",
+            "python /opt/hermes/gateway/run.py",
+        ],
+    )
+    def test_matches_real_gateway_invocations(self, command):
+        assert gateway._looks_like_gateway(command.lower()) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The bug: same-profile non-gateway subcommands carrying --profile/-p.
+            "python -m hermes_cli.main --profile gibson dashboard --port 0",
+            "python -m hermes_cli.main -p gibson dashboard --no-open",
+            "python -m hermes_cli.main --profile gibson chat",
+            "python /opt/hermes/hermes_cli/main.py --profile gibson dashboard",
+            "c:\\hermes\\hermes.exe --profile gibson dashboard --port 0",
+            "hermes --profile gibson chat",
+            # 'gateway' only as a path/word fragment, not the subcommand token.
+            "python -m hermes_cli.main --profile gateway-team dashboard",
+            "tail -f /home/u/.hermes/profiles/gibson/logs/gateway.log",
+            # unrelated processes.
+            "python -m some_other_thing",
+            "",
+        ],
+    )
+    def test_rejects_non_gateway_invocations(self, command):
+        assert gateway._looks_like_gateway(command.lower()) is False
