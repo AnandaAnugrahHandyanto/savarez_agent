@@ -2068,6 +2068,8 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
@@ -2133,8 +2135,15 @@ def delegate_task(
             }
         )
 
-    # Load config
-    cfg = _load_config()
+    # Load config. Per-call provider/model overrides are intentionally
+    # narrow: they reuse the existing delegation credential resolver and only
+    # affect this delegate_task invocation. Omitted values preserve the
+    # configured delegation defaults / parent inheritance behavior.
+    cfg = dict(_load_config())
+    if provider is not None:
+        cfg["provider"] = str(provider).strip()
+    if model is not None:
+        cfg["model"] = str(model).strip()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -3055,6 +3064,23 @@ DELEGATE_TASK_SCHEMA = {
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider override for child agents. When set, resolves credentials "
+                    "via the configured Hermes provider of this name (same path as "
+                    "delegation.provider) and applies only to this delegate_task call. "
+                    "Omit to use delegation.provider or inherit the parent provider."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model override for child agents. When provider is also set, this "
+                    "is passed to that provider resolver; when provider is omitted, "
+                    "the child uses this model with the inherited provider credentials."
+                ),
+            },
             "background": {
                 "type": "boolean",
                 "description": (
@@ -3114,6 +3140,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        provider=args.get("provider"),
+        model=args.get("model"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),

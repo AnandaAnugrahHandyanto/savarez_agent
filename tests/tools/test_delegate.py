@@ -69,6 +69,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("provider", props)
+        self.assertIn("model", props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -1395,6 +1397,52 @@ class TestDelegationProviderIntegration(unittest.TestCase):
                 self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
                 self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
                 self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_call_provider_model_override_reaches_resolver_and_child(
+        self, mock_creds, mock_cfg
+    ):
+        """delegate_task(provider=..., model=...) overrides config for this call."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "configured-model",
+            "provider": "configured-provider",
+        }
+        mock_creds.return_value = {
+            "model": "call-model",
+            "provider": "call-provider",
+            "base_url": "https://example.test/v1",
+            "api_key": "***",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with (
+            patch("tools.delegate_tool._build_child_agent") as mock_build,
+            patch("tools.delegate_tool._run_single_child") as mock_run,
+        ):
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(
+                goal="Per-call provider routing",
+                provider="call-provider",
+                model="call-model",
+                parent_agent=parent,
+            )
+
+            resolved_cfg = mock_creds.call_args.args[0]
+            self.assertEqual(resolved_cfg["provider"], "call-provider")
+            self.assertEqual(resolved_cfg["model"], "call-model")
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs.get("model"), "call-model")
+            self.assertEqual(kwargs.get("override_provider"), "call-provider")
+            self.assertEqual(kwargs.get("override_base_url"), "https://example.test/v1")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
