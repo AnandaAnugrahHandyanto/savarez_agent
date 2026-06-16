@@ -8883,12 +8883,18 @@ class GatewayRunner(
             else str(source.platform)
         )
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
+        _reply_id = getattr(event, "reply_to_message_id", None)
+        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace(
+            "\n", " "
+        )
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r",
+            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
             _platform_name,
             source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown",
             _msg_preview,
+            _reply_id,
+            _reply_txt,
         )
 
         # Get or create session
@@ -15890,6 +15896,7 @@ class GatewayRunner(
                 _interim_assistant_cb if _want_interim_messages else None
             )
             agent.status_callback = _status_callback_sync
+
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
             # standalone push: render to a single plaintext line and deliver via
