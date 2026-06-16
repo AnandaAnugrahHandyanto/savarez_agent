@@ -151,7 +151,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s|(^\s*\|)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(^\s*\|)",
     re.MULTILINE,
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -1845,7 +1845,17 @@ class FeishuAdapter(BasePlatformAdapter):
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+                logger.warning("[Feishu] Invalid post update rejected by API; falling back to send-as-continuation")
+                # Instead of stripping to plain text (which destroys table formatting),
+                # send the content as a NEW post message so the table renders correctly.
+                fallback_result = await self.send(
+                    chat_id=chat_id,
+                    content=content,
+                    metadata={"hermes_stream_fallback": True, "reply_to": message_id},
+                )
+                if fallback_result.success:
+                    return fallback_result
+                # Last resort: plain text update (rare)
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
