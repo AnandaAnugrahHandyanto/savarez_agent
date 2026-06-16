@@ -7845,6 +7845,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         self._goal_manager = mgr
+        # Expose to the goal_manage tool so the agent can self-signal completion.
+        try:
+            from tools.goal_manage_tool import set_goal_manager
+            set_goal_manager(mgr)
+        except Exception:
+            pass
         return mgr
 
 
