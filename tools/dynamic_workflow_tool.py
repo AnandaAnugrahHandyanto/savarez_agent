@@ -38,6 +38,7 @@ _MAX_TEXT_CHARS = 16_000
 
 _workflows_lock = threading.RLock()
 _workflows: Dict[str, Dict[str, Any]] = {}
+_reconciled_async_delegations: set[str] = set()
 
 
 def _now() -> float:
@@ -262,7 +263,8 @@ def _reconcile_async_delegations(workflow: Dict[str, Any]) -> List[str]:
 
     updated: List[str] = []
     for record in records:
-        node = dispatched.get(record.get("delegation_id"))
+        delegation_id = record.get("delegation_id")
+        node = dispatched.get(delegation_id)
         if not node:
             continue
         next_status = _node_status_from_async(record.get("status"))
@@ -285,12 +287,44 @@ def _reconcile_async_delegations(workflow: Dict[str, Any]) -> List[str]:
         ):
             if key in record and record.get(key) is not None:
                 node[key] = record.get(key)
+        node["async_completion_reconciled"] = True
         node["updated_at"] = _now()
+        if delegation_id:
+            _reconciled_async_delegations.add(str(delegation_id))
         updated.append(node["node_id"])
 
     if updated:
         workflow["updated_at"] = _now()
     return updated
+
+
+def is_async_completion_reconciled(
+    delegation_id: Any,
+    *,
+    workflow_id: Any = None,
+    node_id: Any = None,
+) -> bool:
+    """Return true when a workflow already consumed an async completion."""
+    deleg_id = str(delegation_id or "").strip()
+    if not deleg_id:
+        return False
+
+    with _workflows_lock:
+        if deleg_id in _reconciled_async_delegations:
+            return True
+        for workflow in _workflows.values():
+            if workflow_id and workflow.get("workflow_id") != workflow_id:
+                continue
+            for node in workflow["nodes"].values():
+                if node_id and node.get("node_id") != node_id:
+                    continue
+                if (
+                    node.get("delegation_id") == deleg_id
+                    and node.get("async_completion_reconciled") is True
+                ):
+                    _reconciled_async_delegations.add(deleg_id)
+                    return True
+    return False
 
 
 def _public_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
@@ -601,6 +635,7 @@ def handle_dynamic_workflow(args: Dict[str, Any], parent_agent: Any = None) -> s
 def _reset_for_tests() -> None:
     with _workflows_lock:
         _workflows.clear()
+        _reconciled_async_delegations.clear()
 
 
 DYNAMIC_WORKFLOW_SCHEMA = {

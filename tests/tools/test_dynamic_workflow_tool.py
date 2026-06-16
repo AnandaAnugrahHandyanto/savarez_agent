@@ -255,6 +255,13 @@ def test_status_reconciles_completed_async_workflow_node(monkeypatch):
     assert node["reasoning_tokens"] == 10
     assert node["cost_usd"] == 0.01
     assert node["model"] == "test-model"
+    assert node["async_completion_reconciled"] is True
+    assert (
+        dwt.is_async_completion_reconciled(
+            "deleg_done", workflow_id="wf_reconcile", node_id="worker"
+        )
+        is True
+    )
 
 
 def test_dispatch_ready_unlocks_dependents_after_async_reconcile(monkeypatch):
