@@ -1620,7 +1620,7 @@ async def get_status():
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=50)
+            sessions = db.list_sessions_rich(limit=50, compact_rows=True)
             now = time.time()
             active_sessions = sum(
                 1 for s in sessions
@@ -2607,6 +2607,7 @@ async def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                compact_rows=True,
             )
             total = db.session_count(
                 source=source or None,
@@ -2718,6 +2719,7 @@ async def get_profiles_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                compact_rows=True,
             )
             profile_total = db.session_count(
                 source=source_filter,
