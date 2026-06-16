@@ -176,9 +176,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     "Never expose this route to the public internet.",
                     name,
                 )
-                route = dict(route)
-                route["secret"] = _INSECURE_NO_AUTH
-                self._routes[name] = route
+                # Do NOT inject sentinel here — _reload_dynamic_routes()
+                # rebuilds self._routes from _static_routes and would drop
+                # the sentinel on the next reload. Instead, auth is handled
+                # at request time via the allow_insecure key directly.
                 continue
 
             if not secret:
@@ -458,12 +459,18 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature FIRST (skip only for the explicit local-test
-        # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
-        # not only during connect(), so direct handler reuse cannot turn a
-        # network webhook route into an unauthenticated agent-dispatch surface.
+        # Validate HMAC signature FIRST. Skip only when allow_insecure: true
+        # is set in config.yaml (loopback-only opt-in) or the legacy
+        # INSECURE_NO_AUTH sentinel is present. Missing/empty secrets must
+        # fail closed here so network routes cannot become unauthenticated.
+        # Note: we check allow_insecure directly from route_config (not via
+        # sentinel) so dynamic-route reloads that rebuild self._routes from
+        # _static_routes cannot silently drop the opt-in state.
+        allow_insecure = bool(route_config.get("allow_insecure", False))
         secret = route_config.get("secret", self._global_secret)
-        if not secret:
+        if allow_insecure and _is_loopback_host(self._host):
+            pass  # explicit config.yaml opt-in — skip HMAC validation
+        elif not secret:
             logger.error(
                 "[webhook] Route %s has no HMAC secret; refusing request",
                 route_name,
@@ -472,7 +479,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Webhook route is missing an HMAC secret"},
                 status=403,
             )
-        if secret != _INSECURE_NO_AUTH:
+        elif secret == _INSECURE_NO_AUTH:
+            pass  # legacy opt-in — skip HMAC validation
+        if not (allow_insecure and _is_loopback_host(self._host)) and secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
