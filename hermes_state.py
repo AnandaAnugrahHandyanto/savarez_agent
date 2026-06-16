@@ -772,7 +772,10 @@ class SessionDB:
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
         err = str(exc).lower()
-        return "no such module" in err and "fts5" in err
+        return (
+            ("no such module" in err and "fts5" in err)
+            or "no such tokenizer" in err
+        )
 
     def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
         self._fts_enabled = False
