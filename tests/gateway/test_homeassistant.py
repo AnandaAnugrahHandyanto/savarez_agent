@@ -233,6 +233,7 @@ class TestAdapterInit:
 
     def test_defaults_when_no_extra(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "tok")
+        monkeypatch.delenv("HASS_SSL_VERIFY", raising=False)
         config = PlatformConfig(enabled=True, token="***")
         adapter = HomeAssistantAdapter(config)
         assert adapter._watch_domains == set()
@@ -240,6 +241,22 @@ class TestAdapterInit:
         assert adapter._ignore_entities == set()
         assert adapter._watch_all is False
         assert adapter._cooldown_seconds == 30
+        assert adapter._ssl_verify is True
+
+    def test_ssl_verify_parsed_from_extra(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"ssl_verify": False},
+        )
+        adapter = HomeAssistantAdapter(config)
+        assert adapter._ssl_verify is False
+
+    def test_ssl_verify_parsed_from_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_SSL_VERIFY", "false")
+        config = PlatformConfig(enabled=True, token="***")
+        adapter = HomeAssistantAdapter(config)
+        assert adapter._ssl_verify is False
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +454,20 @@ class TestConfigIntegration:
         assert ha.token == "env-token"
         assert ha.extra["url"] == "http://10.0.0.5:8123"
 
+    def test_env_ssl_verify_override_creates_ha_platform(self, monkeypatch):
+        monkeypatch.setenv("HASS_TOKEN", "env-token")
+        monkeypatch.setenv("HASS_URL", "https://ha.home")
+        monkeypatch.setenv("HASS_SSL_VERIFY", "false")
+        for v in ["TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN"]:
+            monkeypatch.delenv(v, raising=False)
+
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+
+        ha = config.platforms[Platform.HOMEASSISTANT]
+        assert ha.extra["url"] == "https://ha.home"
+        assert ha.extra["ssl_verify"] is False
+
     def test_no_env_no_platform(self, monkeypatch):
         for v in ["HASS_TOKEN", "HASS_URL", "TELEGRAM_BOT_TOKEN",
                    "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN"]:
@@ -587,3 +618,38 @@ class TestWsUrlConstruction:
         adapter = HomeAssistantAdapter(config)
         ws_url = adapter._hass_url.replace("http://", "ws://").replace("https://", "wss://")
         assert ws_url == "wss://ha.example.com"
+
+
+class TestSslVerify:
+    @pytest.mark.asyncio
+    async def test_ws_connect_disables_ssl_verification_when_configured(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="t",
+            extra={"url": "https://ha.example.com", "ssl_verify": False},
+        )
+        adapter = HomeAssistantAdapter(config)
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(side_effect=[
+            {"type": "auth_required"},
+            {"type": "auth_ok"},
+            {"success": True},
+        ])
+        mock_session = MagicMock()
+        mock_session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+            mock_aiohttp.ClientTimeout = lambda total: total
+            mock_aiohttp.TCPConnector = MagicMock(return_value="connector")
+
+            assert await adapter._ws_connect() is True
+
+        mock_aiohttp.TCPConnector.assert_called_once_with(ssl=False)
+        mock_aiohttp.ClientSession.assert_called_once_with(timeout=30, connector="connector")
+        mock_session.ws_connect.assert_awaited_once_with(
+            "wss://ha.example.com/api/websocket",
+            heartbeat=30,
+            timeout=30,
+            ssl=False,
+        )

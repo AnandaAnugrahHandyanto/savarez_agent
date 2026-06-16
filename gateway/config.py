@@ -1521,6 +1521,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         hass_url = os.getenv("HASS_URL")
         if hass_url:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+        hass_ssl_verify = os.getenv("HASS_SSL_VERIFY")
+        if hass_ssl_verify is not None:
+            config.platforms[Platform.HOMEASSISTANT].extra["ssl_verify"] = _coerce_bool(
+                hass_ssl_verify,
+                default=True,
+            )
 
     # Email
     email_addr = os.getenv("EMAIL_ADDRESS")

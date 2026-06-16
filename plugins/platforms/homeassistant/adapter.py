@@ -39,6 +39,28 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce common bool-like config values."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _client_session_kwargs(total: int, ssl_verify: bool) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {"timeout": aiohttp.ClientTimeout(total=total)}
+    if not ssl_verify:
+        kwargs["connector"] = aiohttp.TCPConnector(ssl=False)
+    return kwargs
+
+
 def check_ha_requirements() -> bool:
     """Check if Home Assistant dependencies are available and configured."""
     if not AIOHTTP_AVAILABLE:
@@ -78,6 +100,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         url = extra.get("url") or os.getenv("HASS_URL", "http://homeassistant.local:8123")
         self._hass_url: str = url.rstrip("/")
         self._hass_token: str = token
+        self._ssl_verify: bool = _coerce_bool(
+            extra.get("ssl_verify", os.getenv("HASS_SSL_VERIFY")),
+            default=True,
+        )
 
         # Event filtering
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
@@ -115,7 +141,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
             # Dedicated REST session for send() calls
             self._rest_session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=30)
+                **_client_session_kwargs(30, self._ssl_verify)
             )
 
             # Warn if no event filters are configured
@@ -143,9 +169,12 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         ws_url = f"{ws_url}/api/websocket"
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            **_client_session_kwargs(30, self._ssl_verify)
         )
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        ws_kwargs: Dict[str, Any] = {"heartbeat": 30, "timeout": 30}
+        if not self._ssl_verify:
+            ws_kwargs["ssl"] = False
+        self._ws = await self._session.ws_connect(ws_url, **ws_kwargs)
 
         # Step 1: Receive auth_required
         msg = await self._ws.receive_json()
@@ -419,7 +448,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                         body = await resp.text()
                         return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
             else:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(**_client_session_kwargs(30, self._ssl_verify)) as session:
                     async with session.post(
                         url,
                         headers=headers,
@@ -486,6 +515,7 @@ async def _standalone_send(
 
     extra = getattr(pconfig, "extra", {}) or {}
     hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
+    ssl_verify = _coerce_bool(extra.get("ssl_verify", os.getenv("HASS_SSL_VERIFY")), default=True)
     token = (getattr(pconfig, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
     if not hass_url or not token:
         return {
@@ -504,7 +534,7 @@ async def _standalone_send(
 
     try:
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            **_client_session_kwargs(30, ssl_verify)
         ) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status not in {200, 201}:
