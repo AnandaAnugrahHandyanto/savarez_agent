@@ -6599,6 +6599,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured")
                 return None
             return BlueBubblesAdapter(config)
+        
+        elif platform == Platform.SESSION:
+            from gateway.platforms.session import SessionAdapter, check_session_requirements
+            if not check_session_requirements():
+                logger.warning("Session: SESSION_BOT_ID not set or Node.js not available")
+                return None
+            return SessionAdapter(config)
 
         elif platform == Platform.QQBOT:
             from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
@@ -11423,7 +11430,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # honored via the registry fallback at ``_handle_update_command`` below.
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
         Platform.TELEGRAM, Platform.SLACK, Platform.WHATSAPP,
-        Platform.SIGNAL, Platform.MATRIX,
+        Platform.SIGNAL, Platform.MATRIX, Platform.SESSION,
         Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
         Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
@@ -16707,7 +16714,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_thread.start()
     
     # Wait for shutdown
-    await runner.wait_for_shutdown()
+    try:
+        await runner.wait_for_shutdown()
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        # Windows: loop.add_signal_handler is not supported, so Ctrl+C cancels
+        # the task directly without invoking signal_handler(). Call stop() here
+        # so adapters disconnect and background processes are cleaned up.
+        await runner.stop()
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:
