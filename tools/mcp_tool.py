@@ -236,6 +236,19 @@ except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
 
+# ---------------------------------------------------------------------------
+# Graceful import -- LUMEN protocol is an optional dependency
+# ---------------------------------------------------------------------------
+
+_MCP_LUMEN_AVAILABLE = False
+try:
+    from lumen import LumenStdioTransport  # noqa: F401
+    _MCP_LUMEN_AVAILABLE = True
+except ImportError:
+    pass
+
+
+
 def _check_message_handler_support() -> bool:
     """Check if ClientSession accepts ``message_handler`` kwarg.
 
@@ -1145,6 +1158,159 @@ class SamplingHandler:
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# LUMEN transport bridge — wraps LumenStdioTransport into anyio streams
+# compatible with ``ClientSession``.
+# ---------------------------------------------------------------------------
+
+
+class _LumenSession:
+    """Minimal MCP session wrapper around LumenStdioTransport.
+
+    Implements the subset of ``ClientSession`` used by ``MCPServerTask``:
+    initialize(), list_tools(), call_tool(), list_resources(),
+    read_resource(), list_prompts(), get_prompt(), send_ping().
+    """
+
+    def __init__(self, transport: "LumenStdioTransport") -> None:
+        self._transport = transport
+        self._next_id = 0
+        self._pending: "dict[int, asyncio.Future]" = {}
+        transport.onmessage = self._on_message
+
+    def _on_message(self, msg: dict) -> None:
+        msg_id = msg.get("id")
+        if msg_id is not None and msg_id in self._pending:
+            self._pending[msg_id].set_result(msg)
+
+    async def _rpc(self, method: str, params: dict | None = None) -> dict:
+        self._next_id += 1
+        msg_id = self._next_id
+        msg: dict = {"jsonrpc": "2.0", "id": msg_id, "method": method}
+        if params:
+            msg["params"] = params
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending[msg_id] = future
+
+        await self._transport.send(msg)
+
+        try:
+            resp = await asyncio.wait_for(future, timeout=120)
+            del self._pending[msg_id]
+            return resp
+        except asyncio.TimeoutError:
+            del self._pending[msg_id]
+            raise
+
+    async def initialize(self) -> "Any":
+        resp = await self._rpc("initialize", {
+            "protocolVersion": LATEST_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "hermes-agent", "version": "1.0"},
+        })
+        r = resp.get("result", {})
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            serverInfo=SimpleNamespace(
+                name=r.get("serverInfo", {}).get("name", ""),
+                version=r.get("serverInfo", {}).get("version", ""),
+            ),
+            capabilities=SimpleNamespace(
+                tools=r.get("capabilities", {}).get("tools"),
+            ),
+        )
+
+    async def list_tools(self) -> "Any":
+        resp = await self._rpc("tools/list")
+        from types import SimpleNamespace
+        tools = []
+        for t in resp.get("result", {}).get("tools", []):
+            tools.append(SimpleNamespace(
+                name=t["name"],
+                description=t.get("description", ""),
+                inputSchema=t.get("inputSchema", {}),
+            ))
+        return SimpleNamespace(tools=tools)
+
+    async def call_tool(self, name: str, arguments: dict | None = None) -> "Any":
+        resp = await self._rpc("tools/call", {
+            "name": name,
+            "arguments": arguments or {},
+        })
+        r = resp.get("result", {})
+        from types import SimpleNamespace
+        content = []
+        for c in r.get("content", []):
+            content.append(SimpleNamespace(
+                type=c.get("type", "text"),
+                text=c.get("text", ""),
+            ))
+        return SimpleNamespace(
+            content=content,
+            isError=r.get("isError", False),
+        )
+
+    async def list_resources(self) -> "Any":
+        resp = await self._rpc("resources/list")
+        from types import SimpleNamespace
+        resources = []
+        for r in resp.get("result", {}).get("resources", []):
+            resources.append(SimpleNamespace(
+                uri=r.get("uri", ""),
+                name=r.get("name", ""),
+                description=r.get("description", ""),
+                mimeType=r.get("mimeType", ""),
+            ))
+        return SimpleNamespace(resources=resources)
+
+    async def read_resource(self, uri: str) -> "Any":
+        resp = await self._rpc("resources/read", {"uri": uri})
+        r = resp.get("result", {})
+        from types import SimpleNamespace
+        contents = []
+        for c in r.get("contents", []):
+            contents.append(SimpleNamespace(
+                uri=c.get("uri", ""),
+                mimeType=c.get("mimeType", ""),
+                text=c.get("text", ""),
+            ))
+        return SimpleNamespace(contents=contents)
+
+    async def list_prompts(self) -> "Any":
+        resp = await self._rpc("prompts/list")
+        from types import SimpleNamespace
+        prompts = []
+        for p in resp.get("result", {}).get("prompts", []):
+            prompts.append(SimpleNamespace(
+                name=p.get("name", ""),
+                description=p.get("description", ""),
+            ))
+        return SimpleNamespace(prompts=prompts)
+
+    async def get_prompt(self, name: str, arguments: dict | None = None) -> "Any":
+        resp = await self._rpc("prompts/get", {
+            "name": name,
+            "arguments": arguments or {},
+        })
+        r = resp.get("result", {})
+        from types import SimpleNamespace
+        messages = []
+        for m in r.get("messages", []):
+            messages.append(SimpleNamespace(
+                role=m.get("role", ""),
+                content=m.get("content", ""),
+            ))
+        return SimpleNamespace(messages=messages)
+
+    async def send_ping(self) -> None:
+        """Send a ping request (used as keepalive fallback)."""
+        await self._rpc("ping")
+
+
+
 class MCPServerTask:
     """Manages a single MCP server connection in a dedicated asyncio Task.
 
@@ -1475,41 +1641,66 @@ class MCPServerTask:
         # ~/.hermes/logs/mcp-stderr.log.
         _write_stderr_log_header(self.name)
         _errlog = _get_mcp_stderr_log()
+
+        use_lumen = (
+            _MCP_LUMEN_AVAILABLE
+            and config.get("transport") == "lumen"
+        )
+
         try:
-            async with stdio_client(server_params, errlog=_errlog) as (
-                read_stream,
-                write_stream,
-            ):
-                # Capture the newly spawned subprocess PID for force-kill cleanup.
-                new_pids = _snapshot_child_pids() - pids_before
-                if new_pids:
-                    # Capture pgid while the child is alive — once it exits we
-                    # can no longer call ``os.getpgid`` on it, and the cleanup
-                    # sweep needs the pgid to reach any reparented descendants
-                    # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
-                    new_pgids: Dict[int, int] = {}
-                    for _pid in new_pids:
-                        try:
-                            new_pgids[_pid] = os.getpgid(_pid)
-                        except (AttributeError, ProcessLookupError, OSError):
-                            # AttributeError: Windows (os.getpgid is POSIX-only)
-                            # ProcessLookupError: child raced and already exited
-                            pass
-                    with _lock:
-                        for _pid in new_pids:
-                            _stdio_pids[_pid] = self.name
-                        _stdio_pgids.update(new_pgids)
-                async with ClientSession(
-                    read_stream, write_stream, **sampling_kwargs
-                ) as session:
+            if use_lumen:
+                # ── LUMEN binary transport ──────────────────────────
+                _lumen_transport = LumenStdioTransport(
+                    command=command,
+                    args=args,
+                    env=safe_env if safe_env else None,
+                    probe_timeout_ms=config.get(
+                        "lumen_probe_timeout_ms", 500
+                    ),
+                    force_json_rpc=config.get(
+                        "lumen_force_json_rpc", False
+                    ),
+                )
+                await _lumen_transport.start()
+                try:
+                    session = _LumenSession(_lumen_transport)
                     self.initialize_result = await session.initialize()
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
-                    # stdio transport does not use OAuth, but we still honor
-                    # _reconnect_event (e.g. future manual /mcp refresh) for
-                    # consistency with _run_http.
                     await self._wait_for_lifecycle_event()
+                finally:
+                    await _lumen_transport.close()
+            else:
+                # ── Standard MCP stdio transport ────────────────────
+                async with stdio_client(server_params, errlog=_errlog) as (
+                    read_stream,
+                    write_stream,
+                ):
+                    # Capture the newly spawned subprocess PID for force-kill cleanup.
+                    new_pids = _snapshot_child_pids() - pids_before
+                    if new_pids:
+                        new_pgids: Dict[int, int] = {}
+                        for _pid in new_pids:
+                            try:
+                                new_pgids[_pid] = os.getpgid(_pid)
+                            except (AttributeError, ProcessLookupError, OSError):
+                                pass
+                        with _lock:
+                            for _pid in new_pids:
+                                _stdio_pids[_pid] = self.name
+                            _stdio_pgids.update(new_pgids)
+                    async with ClientSession(
+                        read_stream, write_stream, **sampling_kwargs
+                    ) as session:
+                        self.initialize_result = await session.initialize()
+                        self.session = session
+                        await self._discover_tools()
+                        self._ready.set()
+                        # stdio transport does not use OAuth, but we still honor
+                        # _reconnect_event (e.g. future manual /mcp refresh) for
+                        # consistency with _run_http.
+                        await self._wait_for_lifecycle_event()
         finally:
             # Runs on clean exit, exceptions, AND asyncio cancellation.
             # If any of the spawned PIDs are still alive, the SDK's
