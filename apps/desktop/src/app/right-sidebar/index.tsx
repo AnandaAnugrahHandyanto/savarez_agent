@@ -158,7 +158,7 @@ function FilesystemTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <RightSidebarSectionHeader>
-        <div className="peer/project-label flex min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1">
           <button
             className="flex w-full min-w-0 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
             onClick={() => void onChangeFolder()}
@@ -216,7 +216,7 @@ function FilesystemTab({
 }
 
 export function RightSidebarSectionHeader({ children }: { children: ReactNode }) {
-  return <div className="flex h-7 shrink-0 items-center px-2.5">{children}</div>
+  return <div className="group/project-header flex h-7 shrink-0 items-center px-2.5">{children}</div>
 }
 
 interface FileTreeBodyProps {

@@ -134,6 +134,7 @@
   },
   "build": {
     "electronVersion": "40.9.3",
+    "electronDist": "../../node_modules/electron/dist",
     "appId": "com.nousresearch.hermes",
     "productName": "Hermes",
     "executableName": "Hermes",
