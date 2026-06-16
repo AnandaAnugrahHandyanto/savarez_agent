@@ -529,13 +529,13 @@ async def test_rich_draft_oversized_uses_legacy():
 
 
 # ----------------------------------------------------------------------
-# prefers_fresh_final_streaming: Telegram keeps streamed finals on the edit
-# path, even when rich messages are enabled, so users do not briefly see two
-# copies of the answer while the preview cleanup delete races the fresh send.
+# Streaming + rich finalization: Telegram should use Hermes' existing
+# fresh-final path when rich final delivery is available, instead of keeping
+# the streamed preview on the edit-finalize path.
 # ----------------------------------------------------------------------
-def test_prefers_fresh_final_streaming_stays_disabled_when_rich_enabled():
+def test_prefers_fresh_final_streaming_when_rich_enabled():
     adapter = _make_adapter()
-    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is False
+    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is True
 
 
 def test_prefers_fresh_final_streaming_honors_rich_opt_out():
