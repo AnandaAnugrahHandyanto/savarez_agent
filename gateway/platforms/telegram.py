@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 import html as _html
 import re
 from datetime import datetime, timezone
@@ -513,6 +514,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Polling-liveness watchdog.
+        # _last_successful_poll_at is updated on every inbound update (text,
+        # command, callback, media) — the only observable proof that the
+        # getUpdates loop is alive.  Set to None at init so the watchdog
+        # starts the clock only after connect() succeeds.
+        self._last_successful_poll_at: Optional[float] = None
+        self._poll_liveness_watchdog_task: Optional[asyncio.Task] = None
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1406,6 +1414,87 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, exc_info=True,
             )
 
+    def _refresh_poll_liveness(self) -> None:
+        """Record that the getUpdates poll loop delivered an update right now.
+
+        Call this at the top of every inbound-update handler (text, command,
+        callback query, media).  Each call is observable proof that the long-poll
+        loop made a successful round trip — the watchdog uses this timestamp to
+        detect the "process alive, loop dead" failure mode.
+        """
+        self._last_successful_poll_at = time.monotonic()
+
+    async def _start_poll_liveness_watchdog(self) -> None:
+        """Background task: force a full poller reconnect when liveness expires.
+
+        Reads ``HERMES_POLL_LIVENESS_TIMEOUT`` (bridged from config.yaml
+        ``agent.gateway_poll_liveness_timeout``; default 300s; 0 = disabled).
+
+        If no inbound update arrives within the timeout window AND
+        ``Updater.running`` is True (the poller claims to be alive), we treat
+        the poller as wedged and force a full teardown + reconnect via
+        ``_handle_polling_network_error`` — the same path used for real network
+        errors.  This is intentionally NOT a soft resume; the whole point is
+        to close the stale httpx slot and re-open it.
+
+        The watchdog sleeps in a tight-ish loop (checking every POLL_INTERVAL
+        seconds) so it reacts quickly without busy-spinning.
+        """
+        try:
+            timeout = float(os.getenv("HERMES_POLL_LIVENESS_TIMEOUT", "300") or "300")
+        except (TypeError, ValueError):
+            timeout = 300.0
+        if timeout <= 0:
+            logger.debug("[%s] Poll-liveness watchdog disabled (timeout=0)", self.name)
+            return
+
+        POLL_INTERVAL = 30.0  # how often the watchdog checks the timestamp
+
+        logger.debug(
+            "[%s] Poll-liveness watchdog started (timeout=%.0fs, check_interval=%.0fs)",
+            self.name, timeout, POLL_INTERVAL,
+        )
+        # Seed the timestamp so we don't fire immediately at startup before
+        # the first message has had a chance to arrive.
+        self._last_successful_poll_at = time.monotonic()
+
+        while True:
+            await asyncio.sleep(POLL_INTERVAL)
+
+            if self.has_fatal_error:
+                # Adapter is shutting down — don't add noise.
+                return
+
+            # Only watchdog in polling mode; webhooks don't use getUpdates.
+            if self._webhook_mode:
+                return
+
+            # If the updater isn't running there's already a reconnect in flight
+            # (error callback fired) — let it handle it.
+            if not (self._app and self._app.updater and self._app.updater.running):
+                continue
+
+            last = self._last_successful_poll_at
+            if last is None:
+                continue
+            age = time.monotonic() - last
+            if age < timeout:
+                continue
+
+            # Liveness expired — the poller claims to be running but no update
+            # has been delivered in `timeout` seconds.  Force a full reconnect.
+            logger.warning(
+                "[%s] Poll liveness timeout: no update received for %.0fs "
+                "(threshold %.0fs) — forcing full poller reconnect",
+                self.name, age, timeout,
+            )
+            # Reset the timestamp so we don't immediately re-fire while the
+            # reconnect is in progress.
+            self._last_successful_poll_at = time.monotonic()
+            await self._handle_polling_network_error(
+                RuntimeError(f"Poll liveness timeout ({age:.0f}s > {timeout:.0f}s)")
+            )
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -1461,7 +1550,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 error_callback=self._polling_error_callback_ref,
             )
             logger.info(
-                "[%s] Telegram polling resumed after network error (attempt %d)",
+                "[%s] Telegram polling reconnect initiated (attempt %d) — "
+                "awaiting first getUpdates cycle to confirm liveness",
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
@@ -1525,6 +1615,10 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
             self._send_path_degraded = False
+            logger.info(
+                "[%s] Telegram polling confirmed alive %ds after reconnect (getMe() OK)",
+                self.name, HEARTBEAT_PROBE_DELAY,
+            )
         except Exception as probe_err:
             logger.warning(
                 "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
@@ -1588,7 +1682,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     error_callback=self._polling_error_callback_ref,
                 )
                 logger.info(
-                    "[%s] Telegram polling resumed after conflict retry %d/%d",
+                    "[%s] Telegram polling reconnect initiated after conflict retry %d/%d — "
+                    "awaiting first getUpdates cycle to confirm liveness",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 )
                 self._polling_conflict_count = 0  # reset counter on success
@@ -2189,6 +2284,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
+                # Start the polling-liveness watchdog as a background asyncio
+                # task.  It detects the "process alive, poller dead" failure
+                # mode and forces a full reconnect when the getUpdates loop
+                # silently stops delivering updates.
+                watchdog = asyncio.ensure_future(self._start_poll_liveness_watchdog())
+                self._poll_liveness_watchdog_task = watchdog
+                self._background_tasks.add(watchdog)
+                watchdog.add_done_callback(self._background_tasks.discard)
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
@@ -2259,6 +2362,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Cancel the polling-liveness watchdog so it doesn't fire during shutdown.
+        if self._poll_liveness_watchdog_task and not self._poll_liveness_watchdog_task.done():
+            self._poll_liveness_watchdog_task.cancel()
+            try:
+                await self._poll_liveness_watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._poll_liveness_watchdog_task = None
+
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()
@@ -3869,6 +3981,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
         """Handle inline keyboard button clicks."""
+        self._refresh_poll_liveness()
         query = update.callback_query
         if not query or not query.data:
             return
@@ -5896,6 +6009,7 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        self._refresh_poll_liveness()
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -5913,6 +6027,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        self._refresh_poll_liveness()
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -5928,6 +6043,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
+        self._refresh_poll_liveness()
         msg = self._effective_update_message(update)
         if not msg:
             return
@@ -6111,6 +6227,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
+        self._refresh_poll_liveness()
         if not update.message:
             return
         if not self._should_process_message(update.message):

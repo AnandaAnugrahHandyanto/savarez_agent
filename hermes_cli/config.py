@@ -930,6 +930,21 @@ DEFAULT_CONFIG = {
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Polling-liveness watchdog: if no successful getUpdates cycle completes
+        # within this window (seconds), the watchdog forces a full poller
+        # teardown + fresh reconnect (not a soft resume).  0 = disabled.
+        # Default 300s (5 min) — chosen to be generous enough to avoid false
+        # positives during normal long-poll timeouts (Telegram's timeout is 10s
+        # but a healthy cycle is ~10-30s), but tight enough to catch the
+        # "process alive, loop dead" failure mode before it runs for hours.
+        "gateway_poll_liveness_timeout": 300,
+        # Event-loop liveness watchdog: the cron ticker periodically submits a
+        # no-op coroutine to the asyncio loop and waits for it to complete.  If
+        # it doesn't complete within this window (seconds), the loop is
+        # considered stalled and the gateway logs a hard WARNING.  If the stall
+        # persists for 2x this timeout the process exits with code 1 so the
+        # service manager can restart it.  0 = disabled.
+        "gateway_loop_liveness_timeout": 600,
     },
     
     "terminal": {
