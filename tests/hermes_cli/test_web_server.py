@@ -198,6 +198,7 @@ class TestWebServerEndpoints:
         assert "aiops.grafana.base_url" in schema
         assert "aiops.grafana.dashboard_uid" in schema
         assert "aiops.grafana.variable_map.service" in schema
+        assert schema["aiops.grafana.panels"]["type"] == "json"
         assert not any(
             key.startswith("aiops.grafana.") and ("token" in key or "secret" in key or "password" in key)
             for key in schema
@@ -218,6 +219,76 @@ class TestWebServerEndpoints:
         assert grafana["base_url"] == ""
         assert "panels" in grafana
         assert not any(key in grafana for key in ("token", "api_key", "secret", "password"))
+
+    def test_get_aiops_grafana_returns_allowlist_only(self):
+        from hermes_cli.config import save_config
+
+        save_config({
+            "aiops": {
+                "grafana": {
+                    "enabled": True,
+                    "base_url": "https://grafana.example.com",
+                    "dashboard_uid": "service-overview",
+                    "dashboard_slug": "service-overview",
+                    "org_id": "1",
+                    "theme": "dark",
+                    "kiosk": True,
+                    "default_from": "now-3h",
+                    "default_to": "now",
+                    "timezone": "browser",
+                    "variable_map": {
+                        "service": "svc",
+                        "namespace": "ns",
+                        "workload": "workload",
+                        "incident_id": "incident",
+                    },
+                    "panels": [
+                        {"id": 12, "title": "Latency", "description": "p95", "height": 320, "span": 6}
+                    ],
+                    "fallback_text": "Open in Grafana",
+                    "token": "do-not-leak",
+                    "api_key": "do-not-leak",
+                    "secret": "do-not-leak",
+                    "password": "do-not-leak",
+                }
+            },
+            "providers": {
+                "custom": {
+                    "api_key": "provider-secret",
+                    "base_url": "https://llm.example.com",
+                }
+            },
+        })
+
+        resp = self.client.get("/api/aiops/grafana")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {
+            "enabled": True,
+            "base_url": "https://grafana.example.com",
+            "dashboard_uid": "service-overview",
+            "dashboard_slug": "service-overview",
+            "org_id": "1",
+            "theme": "dark",
+            "kiosk": True,
+            "default_from": "now-3h",
+            "default_to": "now",
+            "timezone": "browser",
+            "variable_map": {
+                "service": "svc",
+                "namespace": "ns",
+                "workload": "workload",
+                "incident_id": "incident",
+            },
+            "panels": [
+                {"id": "12", "title": "Latency", "description": "p95", "height": 320, "span": 6}
+            ],
+            "fallback_text": "Open in Grafana",
+        }
+        serialized = json.dumps(data).lower()
+        for forbidden in ("token", "api_key", "secret", "password", "provider-secret", "do-not-leak"):
+            assert forbidden not in serialized
 
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")
@@ -483,6 +554,26 @@ class TestConfigRoundTrip:
         web_config["agent"]["max_turns"] = original_turns
         self.client.put("/api/config", json={"config": web_config})
 
+    def test_grafana_panels_round_trip_as_object_array(self):
+        """Grafana panel objects should survive Web Config GET → PUT unchanged."""
+        from hermes_cli.config import load_config
+
+        web_config = self.client.get("/api/config").json()
+        web_config.setdefault("aiops", {}).setdefault("grafana", {})
+        web_config["aiops"]["grafana"]["panels"] = [
+            {"id": 12, "title": "Latency", "description": "p95", "height": 320, "span": 6},
+            {"id": 18, "title": "Errors", "description": "5xx", "height": 280, "span": 6},
+        ]
+
+        resp = self.client.put("/api/config", json={"config": web_config})
+
+        assert resp.status_code == 200
+        panels = load_config()["aiops"]["grafana"]["panels"]
+        assert len(panels) == 2
+        assert panels[0]["id"] == 12
+        assert panels[1]["title"] == "Errors"
+        assert all(isinstance(panel, dict) for panel in panels)
+
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()
@@ -512,6 +603,8 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected bool, got {type(val).__name__}")
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
+            elif expected == "json" and not isinstance(val, (dict, list)):
+                mismatches.append(f"{key}: expected JSON object/list, got {type(val).__name__}")
         assert not mismatches, f"Type mismatches:\n" + "\n".join(mismatches)
 
 

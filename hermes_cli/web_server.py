@@ -281,6 +281,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "string",
         "description": "Fallback message shown when Grafana cannot be embedded",
     },
+    "aiops.grafana.panels": {
+        "type": "json",
+        "description": "Grafana panel allowlist as a JSON array of objects",
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -639,6 +643,67 @@ async def get_defaults():
 @app.get("/api/config/schema")
 async def get_schema():
     return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+
+
+def _grafana_embed_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only non-secret Grafana embed coordinates for the browser."""
+    aiops = config.get("aiops") if isinstance(config.get("aiops"), dict) else {}
+    grafana = aiops.get("grafana") if isinstance(aiops.get("grafana"), dict) else {}
+    variable_map = grafana.get("variable_map") if isinstance(grafana.get("variable_map"), dict) else {}
+    panels = grafana.get("panels") if isinstance(grafana.get("panels"), list) else []
+
+    def _text(value: Any, default: str = "") -> str:
+        if isinstance(value, (str, int, float, bool)):
+            return str(value)
+        return default
+
+    def _number(value: Any, default: int) -> int:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        return default
+
+    return {
+        "enabled": bool(grafana.get("enabled", False)),
+        "base_url": _text(grafana.get("base_url")),
+        "dashboard_uid": _text(grafana.get("dashboard_uid")),
+        "dashboard_slug": _text(grafana.get("dashboard_slug")),
+        "org_id": _text(grafana.get("org_id")),
+        "theme": _text(grafana.get("theme")),
+        "kiosk": bool(grafana.get("kiosk", False)),
+        "default_from": _text(grafana.get("default_from"), "now-6h"),
+        "default_to": _text(grafana.get("default_to"), "now"),
+        "timezone": _text(grafana.get("timezone"), "browser"),
+        "variable_map": {
+            "service": _text(variable_map.get("service"), "service"),
+            "namespace": _text(variable_map.get("namespace"), "namespace"),
+            "workload": _text(variable_map.get("workload"), "workload"),
+            "incident_id": _text(variable_map.get("incident_id"), "incident_id"),
+        },
+        "panels": [
+            {
+                "id": _text(panel.get("id")),
+                "title": _text(panel.get("title")),
+                "description": _text(panel.get("description")),
+                "height": _number(panel.get("height"), 320),
+                "span": _number(panel.get("span"), 6),
+            }
+            for panel in panels
+            if isinstance(panel, dict)
+        ],
+        "fallback_text": _text(grafana.get("fallback_text")),
+    }
+
+
+@app.get("/api/aiops/grafana")
+async def get_aiops_grafana():
+    return _grafana_embed_config(load_config())
 
 
 _EMPTY_MODEL_INFO: dict = {

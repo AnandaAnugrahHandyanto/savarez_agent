@@ -56,7 +56,7 @@ export const api = {
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getGrafanaConfig: async () => {
-    const config = await fetchJSON<Record<string, unknown>>("/api/config");
+    const config = await fetchJSON<Record<string, unknown>>("/api/aiops/grafana");
     return readGrafanaConfig(config);
   },
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
@@ -488,24 +488,22 @@ export interface GrafanaConfig {
 }
 
 function readGrafanaConfig(config: Record<string, unknown>): GrafanaConfig {
-  const aiops = asRecord(config.aiops);
-  const grafana = asRecord(aiops.grafana);
-  const variableMap = asRecord(grafana.variable_map);
-  const panels = Array.isArray(grafana.panels)
-    ? grafana.panels.filter((panel): panel is GrafanaPanelConfig => Boolean(panel && typeof panel === "object"))
+  const variableMap = asRecord(config.variable_map);
+  const panels = Array.isArray(config.panels)
+    ? config.panels.filter((panel): panel is GrafanaPanelConfig => Boolean(panel && typeof panel === "object"))
     : [];
 
   return {
-    enabled: Boolean(grafana.enabled),
-    base_url: asString(grafana.base_url),
-    dashboard_uid: asString(grafana.dashboard_uid),
-    dashboard_slug: asString(grafana.dashboard_slug),
-    org_id: asString(grafana.org_id),
-    theme: asString(grafana.theme),
-    kiosk: Boolean(grafana.kiosk),
-    default_from: asString(grafana.default_from) || "now-6h",
-    default_to: asString(grafana.default_to) || "now",
-    timezone: asString(grafana.timezone) || "browser",
+    enabled: Boolean(config.enabled),
+    base_url: asString(config.base_url),
+    dashboard_uid: asString(config.dashboard_uid),
+    dashboard_slug: asString(config.dashboard_slug),
+    org_id: asString(config.org_id),
+    theme: asString(config.theme),
+    kiosk: Boolean(config.kiosk),
+    default_from: asString(config.default_from) || "now-6h",
+    default_to: asString(config.default_to) || "now",
+    timezone: asString(config.timezone) || "browser",
     variable_map: {
       service: asString(variableMap.service) || "service",
       namespace: asString(variableMap.namespace) || "namespace",
@@ -513,7 +511,7 @@ function readGrafanaConfig(config: Record<string, unknown>): GrafanaConfig {
       incident_id: asString(variableMap.incident_id) || "incident_id",
     },
     panels,
-    fallback_text: asString(grafana.fallback_text),
+    fallback_text: asString(config.fallback_text),
   };
 }
 

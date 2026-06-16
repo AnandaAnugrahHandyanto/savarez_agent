@@ -2,6 +2,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectOption } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useState } from "react";
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
@@ -93,6 +94,18 @@ export function AutoField({
     );
   }
 
+  if (schema.type === "json") {
+    return (
+      <JsonField
+        label={label}
+        schema={schema}
+        schemaKey={schemaKey}
+        value={value}
+        onChange={onChange}
+      />
+    );
+  }
+
   if (schema.type === "list") {
     return (
       <div className="grid gap-1.5">
@@ -143,9 +156,46 @@ export function AutoField({
   );
 }
 
+function JsonField({ label, schema, schemaKey, value, onChange }: JsonFieldProps) {
+  const [jsonText, setJsonText] = useState(() => JSON.stringify(value ?? null, null, 2));
+  const [jsonError, setJsonError] = useState("");
+
+  return (
+    <div className="grid gap-1.5">
+      <Label className="text-sm">{label}</Label>
+      <FieldHint schema={schema} schemaKey={schemaKey} />
+      <textarea
+        className={`flex min-h-[180px] w-full border bg-transparent px-3 py-2 font-mono-ui text-xs leading-relaxed shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 ${
+          jsonError ? "border-destructive focus-visible:ring-destructive" : "border-input focus-visible:ring-ring"
+        }`}
+        value={jsonText}
+        onChange={(e) => {
+          const next = e.target.value;
+          setJsonText(next);
+          try {
+            const parsed = JSON.parse(next);
+            setJsonError("");
+            onChange(parsed);
+          } catch (error) {
+            setJsonError(error instanceof Error ? error.message : "Invalid JSON");
+          }
+        }}
+        spellCheck={false}
+      />
+      {jsonError && (
+        <span className="text-xs text-destructive">{jsonError}</span>
+      )}
+    </div>
+  );
+}
+
 interface AutoFieldProps {
   schemaKey: string;
   schema: Record<string, unknown>;
   value: unknown;
   onChange: (v: unknown) => void;
+}
+
+interface JsonFieldProps extends AutoFieldProps {
+  label: string;
 }
