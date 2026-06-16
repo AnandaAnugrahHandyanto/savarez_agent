@@ -826,6 +826,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
+from tools.environments.ssh_pwsh import SSHPwshEnvironment as _SSHPwshEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
@@ -1125,7 +1126,7 @@ def _get_env_config() -> Dict[str, Any]:
     # root-like cwd.
     if env_type == "local":
         default_cwd = _safe_getcwd()
-    elif env_type == "ssh":
+    elif env_type in ("ssh", "ssh_pwsh"):
         default_cwd = "~"
     else:
         default_cwd = "/root"
@@ -1365,10 +1366,22 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             timeout=timeout,
         )
 
+    elif env_type == "ssh_pwsh":
+        if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
+            raise ValueError("ssh_pwsh requires ssh_host and ssh_user to be configured")
+        return _SSHPwshEnvironment(
+            host=ssh_config["host"],
+            user=ssh_config["user"],
+            port=ssh_config.get("port", 22),
+            key_path=ssh_config.get("key", ""),
+            cwd=cwd,
+            timeout=timeout,
+        )
+
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'ssh', or 'ssh_pwsh'"
         )
 
 
@@ -2000,7 +2013,7 @@ def terminal_tool(
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
                     try:
                         ssh_config = None
-                        if env_type == "ssh":
+                        if env_type in ("ssh", "ssh_pwsh"):
                             ssh_config = {
                                 "host": config.get("ssh_host", ""),
                                 "user": config.get("ssh_user", ""),
@@ -2490,7 +2503,7 @@ def check_terminal_requirements() -> bool:
                 return result.returncode == 0
             return False
 
-        elif env_type == "ssh":
+        elif env_type in ("ssh", "ssh_pwsh"):
             if not config.get("ssh_host") or not config.get("ssh_user"):
                 logger.error(
                     "SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER "
