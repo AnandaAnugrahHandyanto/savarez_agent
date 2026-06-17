@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from plugins.dgx._dgx_config import (
     DEFAULT_FORMATIONS,
     DEFAULTS,
+    DGXNotConfigured,
     ENDPOINT_LABELS,
     NIM_CATALOG,
     apply_endpoint,
@@ -170,6 +171,23 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 # ---------------------------------------------------------------------------
 
 def dgx_command(args: argparse.Namespace) -> int:
+    """Entry point for ``hermes dgx``.
+
+    The URL helpers (ollama_base/vllm_base) raise DGXNotConfigured when no host
+    is set, and several subcommands (status, doctor, models, use, route --check)
+    call them. Catch it here — one shared point — so an unconfigured install
+    prints the "run hermes dgx setup" guidance and exits 1, rather than dumping
+    an uncaught traceback (doctor is the worst case: it's the very command users
+    run to diagnose an unconfigured box).
+    """
+    try:
+        return _dgx_dispatch(args)
+    except DGXNotConfigured as e:
+        print(e)
+        return 1
+
+
+def _dgx_dispatch(args: argparse.Namespace) -> int:
     sub = getattr(args, "dgx_command", None)
     if not sub:
         print("usage: hermes dgx {setup,status,models,use,endpoint,pull,rm,ps}")

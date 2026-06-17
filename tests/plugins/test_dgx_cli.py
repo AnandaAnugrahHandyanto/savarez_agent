@@ -370,6 +370,50 @@ class TestDgxCommandDispatch:
 
 
 # ---------------------------------------------------------------------------
+# Unconfigured-DGX dispatch (C5)
+# ---------------------------------------------------------------------------
+
+class TestUnconfiguredDispatch:
+    """Regression (C5): on an unconfigured install (host=None), commands that
+    call the URL helpers must surface the "run hermes dgx setup" guidance and
+    exit 1 — NOT raise an uncaught DGXNotConfigured traceback. dgx_command
+    catches it at one shared point.
+    """
+
+    @pytest.fixture
+    def unconfigured(self, monkeypatch):
+        from plugins.dgx._dgx_config import DEFAULTS
+        d = dict(DEFAULTS)  # host is None — the unconfigured default
+        monkeypatch.setattr("plugins.dgx.cli.load_dgx_config", lambda: dict(d))
+        # Never spawn real ssh / http; the point under test is the raise path.
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", lambda *a, **k: (False, "no host"))
+        monkeypatch.setattr("plugins.dgx.cli._get_json", lambda *a, **k: (None, "no host"))
+
+    def test_status_unconfigured_returns_1_with_setup_hint(self, unconfigured, capsys):
+        from plugins.dgx.cli import dgx_command
+        ret = dgx_command(SimpleNamespace(dgx_command="status"))
+        out = capsys.readouterr().out
+        assert ret == 1
+        assert "hermes dgx setup" in out
+
+    def test_doctor_unconfigured_returns_1_with_setup_hint(self, unconfigured, capsys):
+        from plugins.dgx.cli import dgx_command
+        ret = dgx_command(SimpleNamespace(dgx_command="doctor"))
+        out = capsys.readouterr().out
+        assert ret == 1
+        assert "hermes dgx setup" in out
+
+    def test_models_unconfigured_returns_1_with_setup_hint(self, unconfigured, capsys):
+        from plugins.dgx.cli import dgx_command
+        ret = dgx_command(SimpleNamespace(dgx_command="models", models_subcommand=None,
+                                          models_arg=None, port=None, gpu_mem=0.85,
+                                          force=False, models_all=False))
+        out = capsys.readouterr().out
+        assert ret == 1
+        assert "hermes dgx setup" in out
+
+
+# ---------------------------------------------------------------------------
 # _cmd_setup — HF cache scan (new behaviour)
 # ---------------------------------------------------------------------------
 
