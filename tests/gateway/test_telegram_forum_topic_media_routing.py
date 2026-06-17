@@ -305,6 +305,26 @@ def test_uncaptioned_media_processed_when_topic_has_active_session():
     assert adapter._session_store.ensure_loaded_called is True
 
 
+def test_active_session_accepts_every_media_shape():
+    """The gate is media-type agnostic: once the topic has a session, a photo
+    with a plain caption (no mention), an uncaptioned photo, and a document all
+    pass. Without a session each is still dropped under require_mention."""
+    active = _make_adapter(require_mention=True)
+    active._session_store = _FakeSessionStore({_topic_session_key()})
+
+    captioned_photo = _forum_message(caption="here is the screenshot")
+    uncaptioned_photo = _forum_message(caption=None)
+    document = _forum_message(caption=None)  # a file is gated identically
+
+    assert active._should_process_message(captioned_photo) is True
+    assert active._should_process_message(uncaptioned_photo) is True
+    assert active._should_process_message(document) is True
+
+    idle = _make_adapter(require_mention=True, session_keys=())
+    assert idle._should_process_message(_forum_message(caption="here is the screenshot")) is False
+    assert idle._should_process_message(_forum_message(caption=None)) is False
+
+
 def test_active_session_bypass_is_scoped_to_the_matching_topic():
     adapter = _make_adapter(require_mention=True)
     # Only TOPIC_ID has an active session.
@@ -420,6 +440,40 @@ async def test_uncaptioned_topic_photo_reaches_pipeline_when_session_active():
     assert captured, "uncaptioned photo in an active-session topic must not be dropped"
     _key, event = captured[0]
     assert event.media_urls == ["/cache/user-photo.jpg"]
+    assert event.source.thread_id == str(TOPIC_ID)
+
+
+@pytest.mark.asyncio
+async def test_uncaptioned_topic_document_reaches_pipeline_when_session_active():
+    adapter = _make_adapter(require_mention=True)
+    adapter._session_store = _FakeSessionStore({_topic_session_key()})
+    adapter.handle_message = AsyncMock()
+
+    file_obj = AsyncMock()
+    file_obj.download_as_bytearray = AsyncMock(return_value=bytearray(b"%PDF-1.4 ..."))
+    file_obj.file_path = "documents/report.pdf"
+    document = MagicMock()
+    document.file_name = "report.pdf"
+    document.mime_type = "application/pdf"
+    document.file_size = 2048
+    document.get_file = AsyncMock(return_value=file_obj)
+
+    msg = _forum_message(caption=None)
+    msg.photo = msg.video = msg.audio = msg.voice = msg.sticker = None
+    msg.document = document
+    msg.media_group_id = None
+    update = SimpleNamespace(message=msg, update_id=3)
+
+    with patch(
+        "gateway.platforms.telegram.cache_document_from_bytes",
+        return_value="/cache/report.pdf",
+    ):
+        await adapter._handle_media_message(update, None)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.media_urls == ["/cache/report.pdf"]
+    assert event.media_types == ["application/pdf"]
     assert event.source.thread_id == str(TOPIC_ID)
 
 
