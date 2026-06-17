@@ -152,6 +152,25 @@ class TestRecommend:
         assert r.tier == "fast"
         assert r.formation == "fast"
 
+    def test_no_formation_when_all_endpoints_fail_probe(self, monkeypatch):
+        # Regression: when --check probes fail for every candidate, the
+        # fallback must NOT poison `formation` with an endpoint name
+        # (ollama/vllm/...). formation is None; model/endpoint come from the
+        # active-endpoint default.
+        from plugins.dgx.router import recommend
+        from plugins.dgx._dgx_config import DEFAULTS
+        dgx = dict(DEFAULTS)
+        dgx["host"] = "10.0.0.1"
+        dgx["default_model"] = "fallback-model:latest"
+        dgx["active_endpoint"] = "ollama"
+        monkeypatch.setattr("plugins.dgx._dgx_config.load_dgx_config", lambda: dgx)
+        monkeypatch.setattr("plugins.dgx.router._probe_formation", lambda *a, **k: False)
+        r = recommend("refactor everything across all services", check_endpoints=True)
+        assert r.formation is None
+        assert r.formation not in ("ollama", "vllm", "vllm-32b", "litellm")
+        assert r.model == "fallback-model:latest"
+        assert r.endpoint == "ollama"
+
 
 # ---------------------------------------------------------------------------
 # hermes dgx route subcommand
@@ -212,3 +231,31 @@ class TestRouteSubcommand:
 
         _cmd_route("refactor auth module", apply=True)
         assert len(applied) == 1  # formation was applied
+
+    def test_cmd_route_apply_no_formation_uses_cmd_use_not_formation(self, monkeypatch, capsys):
+        # Regression: with --check failing all endpoints there is no named
+        # formation; apply must route through _cmd_use(model, endpoint), NOT
+        # _cmd_formation(endpoint_name) (which would print "Unknown formation").
+        from plugins.dgx.cli import _cmd_route
+        from plugins.dgx._dgx_config import DEFAULTS
+        dgx = dict(DEFAULTS)
+        dgx["host"] = "10.0.0.1"
+        dgx["default_model"] = "fb:latest"
+        dgx["active_endpoint"] = "ollama"
+        monkeypatch.setattr("plugins.dgx._dgx_config.load_dgx_config", lambda: dgx)
+        monkeypatch.setattr("plugins.dgx.cli.load_dgx_config", lambda: dgx)
+        monkeypatch.setattr("plugins.dgx.router._probe_formation", lambda *a, **k: False)
+        used = []
+        monkeypatch.setattr("plugins.dgx.cli._cmd_use",
+                            lambda model, endpoint=None: used.append((model, endpoint)) or 0)
+        monkeypatch.setattr(
+            "plugins.dgx.cli._cmd_formation",
+            lambda name: (_ for _ in ()).throw(
+                AssertionError(f"_cmd_formation should not be called (got {name!r})")),
+        )
+        ret = _cmd_route("refactor everything across all services",
+                         apply=True, check_endpoints=True)
+        out = capsys.readouterr().out
+        assert ret == 0
+        assert "Unknown formation" not in out
+        assert used and used[0] == ("fb:latest", "ollama")

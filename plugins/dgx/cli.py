@@ -948,7 +948,7 @@ def _cmd_route(task: str, apply: bool = False, check_endpoints: bool = False) ->
     print(f"  Input      : {task}")
     print(f"  Complexity : {tier_label}")
     print()
-    print(f"  Formation  : {result.formation}")
+    print(f"  Formation  : {result.formation or '(active endpoint default)'}")
     print(f"  Model      : {result.model}")
     print(f"  Endpoint   : {result.endpoint}  ({ENDPOINT_LABELS.get(result.endpoint, result.endpoint)})")
     if result.fallback:
@@ -964,9 +964,16 @@ def _cmd_route(task: str, apply: bool = False, check_endpoints: bool = False) ->
     print()
 
     if apply:
+        if result.formation is None:
+            # No named formation matched — apply the active-endpoint default
+            # (model + endpoint) directly instead of looking up a formation.
+            return _cmd_use(result.model, endpoint=result.endpoint)
         return _cmd_formation(result.formation)
 
-    print(f"  Apply now  : hermes dgx formation {result.formation}")
+    if result.formation is None:
+        print(f"  Apply now  : hermes dgx use {result.model} --endpoint {result.endpoint}")
+    else:
+        print(f"  Apply now  : hermes dgx formation {result.formation}")
     print(f"  Or         : hermes dgx route '{task}' --apply")
     return 0
 

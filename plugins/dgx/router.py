@@ -122,7 +122,7 @@ _TIER_REASONING: Dict[str, str] = {
 @dataclass
 class RouteResult:
     tier: str
-    formation: str
+    formation: Optional[str]   # named formation, or None when none matched
     model: str
     endpoint: str
     reason: str
@@ -173,15 +173,22 @@ def recommend(
             fallback = name
 
     if chosen is None:
-        # Nothing matched — fall back to active endpoint's default model
-        chosen = dgx.get("active_endpoint", "ollama")
-        spec = {"model": dgx.get("default_model", "unknown"), "endpoint": chosen}
+        # Nothing matched (e.g. every candidate endpoint failed a --check
+        # probe). Synthesize a spec from the active endpoint's default model.
+        # There is NO named formation here, so `formation` stays None — an
+        # endpoint name (ollama/vllm/...) must not leak into the formation
+        # field, or the apply path calls _cmd_formation("ollama") and prints
+        # a bogus "Unknown formation 'ollama'".
+        spec = {
+            "model": dgx.get("default_model", "unknown"),
+            "endpoint": dgx.get("active_endpoint", "ollama"),
+        }
     else:
         spec = all_formations[chosen]
 
     return RouteResult(
         tier=tier,
-        formation=chosen,
+        formation=chosen,   # None when no named formation matched
         model=spec.get("model", "unknown"),
         endpoint=spec.get("endpoint", "ollama"),
         reason=_TIER_REASONING.get(tier, ""),
