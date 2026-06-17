@@ -6,8 +6,7 @@ author: Suede Labs AI
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
-  commands: [python3, uv]
-  pip: [suede-ai]
+  commands: [uv]
 metadata:
   hermes:
     tags: [music, promotion, ai-music, stem-separation, mastering, lyrics, creator, content, web3, usdc]
@@ -29,12 +28,7 @@ Music promotion and AI media production from Suede Labs AI. Two fulfillment trac
 
 ## Prerequisites
 
-```bash
-uv pip install --system suede-ai    # install system-wide (no venv needed)
-# inside a Hermes session, uv pip install suede-ai works without --system
-```
-
-Authentication uses a funded Ethereum wallet — no API keys or subscriptions. Set your private key as an environment variable:
+No pip install needed — use `uv run --with suede-ai` to inject the dependency inline for any script. No venv management required.
 
 ```bash
 export SUEDE_WALLET_KEY="0x..."   # Base mainnet wallet with USDC balance
@@ -42,12 +36,14 @@ export SUEDE_WALLET_KEY="0x..."   # Base mainnet wallet with USDC balance
 
 Check your available endpoints and pricing:
 
-```python
+```bash
+uv run --with suede-ai python3 - <<'EOF'
 from suede_ai import SuedeClient
 import os
 
 with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
     print(suede.manifest())   # free — lists all 17 endpoints with prices
+EOF
 ```
 
 ---
@@ -80,7 +76,8 @@ All calls settle pay-per-use in USDC on Base. Prices shown per call.
 
 ### Usage pattern
 
-```python
+```bash
+uv run --with suede-ai python3 - <<'EOF'
 from suede_ai import SuedeClient
 import os
 
@@ -102,14 +99,19 @@ with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
     # Master the final mix
     master = suede.wav_master()
     print(master["assetUrl"])
+EOF
 ```
 
 ### Direct endpoint access
 
 For endpoints not yet exposed as named methods:
 
-```python
-result = suede.request("POST", "/v1/style-coach", json={"tags": "lofi, rainy"})
+```bash
+uv run --with suede-ai python3 -c "
+from suede_ai import SuedeClient; import os
+with SuedeClient(wallet_private_key=os.environ['SUEDE_WALLET_KEY']) as suede:
+    print(suede.request('POST', '/v1/style-coach', json={'tags': 'lofi, rainy'}))
+"
 ```
 
 ### Response structure
@@ -165,36 +167,50 @@ Revisions: 1 round
 
 ### Release campaign (both tracks combined)
 
-```python
+```bash
+uv run --with suede-ai python3 - <<'EOF'
+from suede_ai import SuedeClient
+import os
+
 # Step 1: Generate the track (Suede service)
 with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
     track = suede.create_music(prompt="upbeat indie pop, summer, 120 BPM", duration_seconds=90)
     lyrics = suede.lyrics()
     master = suede.wav_master()
     stems = suede.stems_basic()   # for remixers
+    print(track["assetUrl"])
 
 # Step 2: Create a social clip brief (Creator job)
 # Hand the track["assetUrl"] to a clipping creator job on Suede Promo
+EOF
 ```
 
 ### Rights verification before licensing
 
-```python
-import hashlib
+```bash
+uv run --with suede-ai python3 - <<'EOF'
+from suede_ai import SuedeClient
+import hashlib, os
 
 with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
     asset_hash = "0x" + hashlib.sha256(open("track.wav", "rb").read()).hexdigest()
     rights = suede.rights_lookup(asset_hash)
     print(rights)   # ownership, license type, attestation timestamp
+EOF
 ```
 
 ### Style analysis before a contest brief
 
-```python
+```bash
+uv run --with suede-ai python3 - <<'EOF'
+from suede_ai import SuedeClient
+import os
+
 with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
     analysis = suede.analyze()    # BPM, key, energy, genre signals
     coach = suede.style_coach()   # genre tags and feedback
-    # Use coach output to write the contest creative direction
+    print(coach)   # use output to write the contest creative direction
+EOF
 ```
 
 ---
