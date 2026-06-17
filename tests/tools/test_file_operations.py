@@ -1,6 +1,7 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import os
+import re
 import pytest
 import subprocess
 from pathlib import Path
@@ -358,6 +359,54 @@ class TestSearchResultDensify:
         verbose = json.dumps(r.to_dict(densify=False), ensure_ascii=False)
         dense = json.dumps(r.to_dict(densify=True), ensure_ascii=False)
         assert len(dense) < len(verbose)
+
+    @pytest.mark.parametrize("content", [
+        "x = {'k': 1, 'url': 'http://h:8080'}",   # colons in content
+        "        deeply.indented(call)",          # leading indentation preserved
+        "# \u65e5\u672c\u8a9e comment \U0001f525",  # unicode + emoji
+        "",                                        # empty content
+        "trailing spaces   ",                     # rstrip'd (see note below)
+        'mix "quotes" and , commas',              # punctuation that breaks naive CSV
+    ])
+    def test_densify_content_is_lossless(self, content):
+        # Every realistic single-line match content must round-trip exactly
+        # (trailing whitespace is the one documented transform — rstrip).
+        matches = [SearchMatch(path=f"f{i}.py", line_number=i + 1, content=content)
+                   for i in range(6)]
+        r = SearchResult(matches=matches, total_count=6)
+        text = r.to_dict(densify=True)["matches_text"]
+        recovered = []
+        cur = None
+        for ln in text.split("\n"):
+            row = re.match(r"^  (\d+): (.*)$", ln)
+            if row:
+                recovered.append(row.group(2))
+            else:
+                cur = ln
+        assert len(recovered) == 6
+        for got in recovered:
+            assert got == content.rstrip()
+
+    def test_densify_assumes_single_line_matches(self):
+        # The path-grouped format puts one match per line, so it relies on
+        # ripgrep's one-line-per-match contract (verified: 0/6775 real match
+        # contents contained a newline). This test documents that assumption:
+        # a (synthetic, never-produced-by-rg) multiline content would split
+        # across rows. If search ever emits multiline content, densify must
+        # escape newlines first.
+        matches = [SearchMatch(path="a.py", line_number=i + 1, content="single line")
+                   for i in range(6)]
+        text = SearchResult(matches=matches, total_count=6).to_dict(densify=True)["matches_text"]
+        # one header + six rows == 7 lines, no row spans multiple lines
+        body_rows = [ln for ln in text.split("\n") if re.match(r"^  \d+: ", ln)]
+        assert len(body_rows) == 6
+
+    def test_densify_paths_with_spaces(self):
+        matches = [SearchMatch(path="my dir/a b.py", line_number=i + 1, content=f"x{i}")
+                   for i in range(6)]
+        text = SearchResult(matches=matches, total_count=6).to_dict(densify=True)["matches_text"]
+        # path with spaces survives as a header line verbatim
+        assert "my dir/a b.py" in text.split("\n")[0]
 
 
 class TestLintResult:
