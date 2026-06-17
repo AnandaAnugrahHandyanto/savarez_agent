@@ -987,6 +987,11 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not candidate:
         return None
 
+    # Convert MSYS/Git Bash paths (e.g. /c/Users/...) to Windows paths
+    # so pathlib can resolve them on Windows.
+    if os.name == "nt" and len(candidate) >= 3 and candidate[0] == "/" and candidate[2] == "/":
+        _drive = candidate[1].upper()
+        candidate = _drive + ":" + candidate[2:]
     expanded = Path(os.path.expanduser(candidate))
     if not expanded.is_absolute():
         return None
