@@ -1113,6 +1113,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
+                if "reaction_feedback" in telegram_cfg and not os.getenv("TELEGRAM_REACTION_FEEDBACK"):
+                    os.environ["TELEGRAM_REACTION_FEEDBACK"] = str(telegram_cfg["reaction_feedback"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
                     os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
                 # reply_to_mode: top-level preferred, falls back to extra.reply_to_mode
@@ -1140,7 +1142,7 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(group_allowed_chats, list):
                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-                for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+                for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "reaction_feedback"):
                     if _telegram_extra_key in telegram_cfg:
                         plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
                         if not isinstance(plat_data, dict):

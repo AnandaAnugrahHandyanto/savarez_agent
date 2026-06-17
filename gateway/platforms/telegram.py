@@ -35,6 +35,10 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import MessageReactionHandler
+    except ImportError:
+        MessageReactionHandler = None
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -50,6 +54,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    MessageReactionHandler = None
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -120,7 +125,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
-    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
+    global MessageReactionHandler, ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -141,6 +146,10 @@ def check_telegram_requirements() -> bool:
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import MessageReactionHandler as _MRH
+        except ImportError:
+            _MRH = None
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:
@@ -155,6 +164,7 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    MessageReactionHandler = _MRH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -914,6 +924,67 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         return bool(value)
 
+    def _record_reaction_feedback_target(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        thread_id: Optional[str] = None,
+    ) -> None:
+        """Best-effort index of Hermes-sent messages for later reactions."""
+        if not self._reaction_feedback_enabled():
+            return
+        try:
+            from gateway import reaction_feedback
+
+            reaction_feedback.record_sent_message(
+                platform="telegram",
+                chat_id=chat_id,
+                message_id=message_id,
+                thread_id=thread_id,
+                content=content,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.debug("[%s] Failed to record reaction feedback target", self.name, exc_info=True)
+
+    @staticmethod
+    def _reaction_emoji_values(reactions: Any) -> List[str]:
+        values: List[str] = []
+        for reaction in reactions or []:
+            emoji = getattr(reaction, "emoji", None)
+            if emoji:
+                values.append(str(emoji))
+        return values
+
+    @staticmethod
+    def _normalize_reaction_chat_type(chat_type: Any, thread_id: Optional[str]) -> str:
+        value = getattr(chat_type, "value", chat_type)
+        normalized = str(value or "").strip().lower()
+        if normalized == "private":
+            return "dm"
+        if normalized == "supergroup" and thread_id is not None:
+            return "forum"
+        if normalized == "supergroup":
+            return "group"
+        return normalized or "group"
+
+    def _reaction_actor_is_bot(self, user: Any) -> bool:
+        if getattr(user, "is_bot", False):
+            return True
+        user_id = getattr(user, "id", None)
+        bot_id = getattr(getattr(self, "_bot", None), "id", None)
+        return user_id is not None and bot_id is not None and str(user_id) == str(bot_id)
+
+    def _reaction_feedback_enabled(self) -> bool:
+        """Check if inbound Telegram reaction feedback capture is enabled."""
+        raw = os.getenv("TELEGRAM_REACTION_FEEDBACK")
+        if raw is not None and raw.strip() != "":
+            return raw.strip().lower() in {"true", "1", "yes", "on"}
+        return self._coerce_bool_extra("reaction_feedback", False)
+
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
             return {}
@@ -1249,6 +1320,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 rich_sent_store.record(str(chat_id), str(message_id), content)
             except Exception:
                 pass
+            self._record_reaction_feedback_target(
+                str(chat_id),
+                str(message_id),
+                content,
+                metadata,
+                thread_id=self._metadata_thread_id(metadata),
+            )
         return SendResult(
             success=True,
             message_id=str(message_id) if message_id is not None else None,
@@ -1259,6 +1337,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[SendResult]:
         """Edit an existing message in place as a rich message (Bot API 10.1).
 
@@ -1293,6 +1372,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # rich message; treat as a successful no-op so the caller does
                 # not fall through to a redundant legacy edit.
                 if "not modified" in str(exc).lower():
+                    self._record_reaction_feedback_target(
+                        str(chat_id),
+                        str(message_id),
+                        content,
+                        metadata,
+                        thread_id=self._metadata_thread_id(metadata),
+                    )
                     return SendResult(success=True, message_id=message_id)
                 logger.debug(
                     "[%s] rich editMessageText rejected (%s) — falling back to MarkdownV2 edit",
@@ -1300,6 +1386,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return None
             if "not modified" in str(exc).lower():
+                self._record_reaction_feedback_target(
+                    str(chat_id),
+                    str(message_id),
+                    content,
+                    metadata,
+                    thread_id=self._metadata_thread_id(metadata),
+                )
                 return SendResult(success=True, message_id=message_id)
             err_str = str(exc).lower()
             try:
@@ -1317,6 +1410,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 error=str(exc),
                 retryable=(is_connect_timeout or not is_timeout),
             )
+        self._record_reaction_feedback_target(
+            str(chat_id),
+            str(message_id),
+            content,
+            metadata,
+            thread_id=self._metadata_thread_id(metadata),
+        )
         return SendResult(success=True, message_id=message_id)
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
@@ -2098,6 +2198,18 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Optional inbound reaction feedback. This is separate from the
+            # bot-set processing lifecycle reactions above; it captures user
+            # reactions to Hermes messages as reviewable feedback events.
+            if self._reaction_feedback_enabled():
+                if MessageReactionHandler is not None:
+                    self._app.add_handler(MessageReactionHandler(self._handle_message_reaction))
+                else:
+                    logger.warning(
+                        "[%s] TELEGRAM_REACTION_FEEDBACK is enabled, but this "
+                        "python-telegram-bot version has no MessageReactionHandler",
+                        self.name,
+                    )
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -2567,7 +2679,17 @@ class TelegramAdapter(BasePlatformAdapter):
                                 await asyncio.sleep(wait)
                                 continue
                         raise
-                message_ids.append(str(msg.message_id))
+                sent_message_id = str(msg.message_id)
+                message_ids.append(sent_message_id)
+                self._record_reaction_feedback_target(
+                    str(chat_id),
+                    sent_message_id,
+                    chunk,
+                    metadata,
+                    thread_id=str(thread_id) if thread_id is not None else (
+                        str(effective_thread_id) if effective_thread_id is not None else None
+                    ),
+                )
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -2678,7 +2800,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
         if finalize and self._rich_eligible(content):
-            rich_result = await self._try_edit_rich(chat_id, message_id, content)
+            rich_result = await self._try_edit_rich(
+                chat_id,
+                message_id,
+                content,
+                metadata=metadata,
+            )
             if rich_result is not None:
                 return rich_result
 
@@ -2689,6 +2816,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id, message_id, content, finalize=finalize, metadata=metadata,
             )
 
+        def _record_feedback_edit_target() -> None:
+            self._record_reaction_feedback_target(
+                str(chat_id),
+                str(message_id),
+                content,
+                metadata,
+                thread_id=self._metadata_thread_id(metadata),
+            )
+
         try:
             if not finalize:
                 await self._bot.edit_message_text(
@@ -2696,6 +2832,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=content,
                 )
+                _record_feedback_edit_target()
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
@@ -2709,6 +2846,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
+                    _record_feedback_edit_target()
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 logger.warning(
@@ -2722,11 +2860,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=_plain,
                 )
+            _record_feedback_edit_target()
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
+                _record_feedback_edit_target()
                 return SendResult(success=True, message_id=message_id)
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
@@ -2758,6 +2898,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=content,
                     )
+                    _record_feedback_edit_target()
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     logger.error(
@@ -2832,6 +2973,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # if truncate_message returned a single chunk just edit normally.
             chunks = [content]
 
+        thread_id = self._metadata_thread_id(metadata)
+
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
         try:
@@ -2877,6 +3020,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=False, error=str(e))
 
+        self._record_reaction_feedback_target(
+            str(chat_id),
+            str(message_id),
+            first_chunk,
+            metadata,
+            thread_id=str(thread_id) if thread_id is not None else None,
+        )
+
         # Step 2 — send each remaining chunk as a continuation message,
         # threaded as a reply to the previous so the user sees them as a
         # contiguous block.  We call self._bot.send_message directly so the
@@ -2886,7 +3037,6 @@ class TelegramAdapter(BasePlatformAdapter):
         continuation_ids: list[str] = []
         delivered_chunks = [first_chunk]
         prev_id = message_id
-        thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
             sent_msg = None
             reply_to_id = int(prev_id) if prev_id else None
@@ -2984,6 +3134,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     continuation_message_ids=tuple(continuation_ids),
                 )
             new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
+            self._record_reaction_feedback_target(
+                str(chat_id),
+                str(new_id),
+                chunk,
+                metadata,
+                thread_id=str(thread_id) if thread_id is not None else None,
+            )
             continuation_ids.append(new_id)
             delivered_chunks.append(chunk)
             prev_id = new_id
@@ -6744,6 +6901,82 @@ class TelegramAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
+
+    # ── Inbound user reaction feedback ───────────────────────────────────
+
+    async def _handle_message_reaction(
+        self,
+        update: "Update",
+        context: "ContextTypes.DEFAULT_TYPE",
+    ) -> None:
+        """Capture authorized user reactions as normalized feedback events.
+
+        This is intentionally write-only local telemetry. It never sends a reply
+        and never mutates memory/skills/prompts directly.
+        """
+        if not self._reaction_feedback_enabled():
+            return
+
+        reaction_update = getattr(update, "message_reaction", None)
+        if reaction_update is None:
+            return
+
+        user = getattr(reaction_update, "user", None)
+        if user is None or self._reaction_actor_is_bot(user):
+            return
+
+        chat = getattr(reaction_update, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        message_id = getattr(reaction_update, "message_id", None)
+        if chat_id is None or message_id is None:
+            return
+
+        try:
+            from gateway import reaction_feedback
+        except Exception:
+            logger.debug("[%s] reaction_feedback module unavailable", self.name, exc_info=True)
+            return
+
+        target = reaction_feedback.lookup_sent_message("telegram", chat_id, message_id)
+        if target is None:
+            return
+        target_thread_id = target.get("thread_id")
+        chat_type = self._normalize_reaction_chat_type(
+            getattr(chat, "type", None),
+            str(target_thread_id) if target_thread_id is not None else None,
+        )
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return
+
+        if not self._is_callback_user_authorized(
+            str(user_id),
+            chat_id=str(chat_id),
+            chat_type=chat_type,
+            thread_id=str(target_thread_id) if target_thread_id is not None else None,
+            user_name=getattr(user, "first_name", None),
+        ):
+            logger.debug("[%s] Ignoring reaction feedback from unauthorized user %s", self.name, user_id)
+            return
+
+        new_emojis = self._reaction_emoji_values(getattr(reaction_update, "new_reaction", []))
+        old_emojis = self._reaction_emoji_values(getattr(reaction_update, "old_reaction", []))
+        if not new_emojis and not old_emojis:
+            return
+
+        try:
+            reaction_feedback.record_feedback(
+                platform="telegram",
+                chat_id=str(chat_id),
+                message_id=str(message_id),
+                thread_id=str(target_thread_id) if target_thread_id is not None else None,
+                actor_user_id=str(user_id),
+                old_emojis=old_emojis,
+                new_emojis=new_emojis,
+                update_id=getattr(update, "update_id", None),
+            )
+        except Exception:
+            logger.debug("[%s] Failed to record Telegram reaction feedback", self.name, exc_info=True)
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

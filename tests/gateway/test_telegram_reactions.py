@@ -10,13 +10,15 @@ from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource
 
 
-def _make_adapter(**extra_env):
+def _make_adapter(**extra_config):
     from gateway.platforms.telegram import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
-    adapter.config = PlatformConfig(enabled=True, token="fake-token")
+    adapter.config = PlatformConfig(enabled=True, token="fake-token", extra=extra_config)
+    adapter._message_handler = None
     adapter._bot = AsyncMock()
+    adapter._bot.id = 999
     adapter._bot.set_message_reaction = AsyncMock()
     return adapter
 
@@ -33,6 +35,33 @@ def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
             user_name="TestUser",
         ),
         message_id=message_id,
+    )
+
+
+def _reaction_obj(emoji: str):
+    return SimpleNamespace(emoji=emoji)
+
+
+def _make_reaction_update(
+    *,
+    user_id: int = 42,
+    is_bot: bool = False,
+    chat_id: int = -1001,
+    chat_type: str = "supergroup",
+    message_id: int = 456,
+    old_reaction=None,
+    new_reaction=None,
+    update_id: int = 9999,
+):
+    return SimpleNamespace(
+        update_id=update_id,
+        message_reaction=SimpleNamespace(
+            user=SimpleNamespace(id=user_id, is_bot=is_bot, first_name="Tester"),
+            chat=SimpleNamespace(id=chat_id, type=chat_type),
+            message_id=message_id,
+            old_reaction=[_reaction_obj(e) for e in (old_reaction or [])],
+            new_reaction=[_reaction_obj(e) for e in (new_reaction or [])],
+        ),
     )
 
 
@@ -274,6 +303,140 @@ async def test_clear_reactions_returns_false_without_bot(monkeypatch):
     assert result is False
 
 
+# ── inbound user reaction feedback ───────────────────────────────────
+
+
+def test_reaction_feedback_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_REACTION_FEEDBACK", raising=False)
+    adapter = _make_adapter()
+    assert adapter._reaction_feedback_enabled() is False
+
+
+def test_reaction_feedback_enabled_when_set_true(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_REACTION_FEEDBACK", "true")
+    adapter = _make_adapter()
+    assert adapter._reaction_feedback_enabled() is True
+
+
+def test_reaction_feedback_env_takes_precedence_over_extra(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_REACTION_FEEDBACK", "false")
+    adapter = _make_adapter(reaction_feedback=True)
+    assert adapter._reaction_feedback_enabled() is False
+
+
+def test_reaction_feedback_can_be_enabled_from_extra(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_REACTION_FEEDBACK", raising=False)
+    adapter = _make_adapter(reaction_feedback=True)
+    assert adapter._reaction_feedback_enabled() is True
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reaction_records_authorized_feedback(monkeypatch, tmp_path):
+    """Authorized reactions to known Hermes-sent messages become feedback events."""
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_REACTION_FEEDBACK", "true")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+    from gateway import reaction_feedback
+
+    reaction_feedback.record_sent_message(
+        platform="telegram",
+        chat_id="-1001",
+        thread_id="777",
+        message_id="456",
+        content="assistant text",
+        metadata={"session_id": "sess-1", "session_key": "telegram:-1001:777"},
+    )
+    adapter = _make_adapter()
+
+    await adapter._handle_message_reaction(
+        _make_reaction_update(new_reaction=["👍"]),
+        SimpleNamespace(),
+    )
+
+    events = [
+        json.loads(line)
+        for line in reaction_feedback.events_path().read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert len(events) == 1
+    assert events[0]["route"] == {"chat_id": "-1001", "thread_id": "777", "message_id": "456"}
+    assert events[0]["reaction"]["semantic"] == "useful"
+    assert events[0]["target"]["known"] is True
+    assert events[0]["target"]["session_id"] == "sess-1"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reaction_ignores_unknown_target(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_REACTION_FEEDBACK", "true")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+    from gateway import reaction_feedback
+
+    adapter = _make_adapter()
+
+    await adapter._handle_message_reaction(
+        _make_reaction_update(user_id=42, new_reaction=["👎"]),
+        SimpleNamespace(),
+    )
+
+    assert not reaction_feedback.events_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reaction_ignores_unauthorized_user(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_REACTION_FEEDBACK", "true")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "777")
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+    from gateway import reaction_feedback
+
+    reaction_feedback.record_sent_message(
+        platform="telegram",
+        chat_id="-1001",
+        message_id="456",
+        content="assistant text",
+    )
+    adapter = _make_adapter()
+
+    await adapter._handle_message_reaction(
+        _make_reaction_update(user_id=42, new_reaction=["👎"]),
+        SimpleNamespace(),
+    )
+
+    assert not reaction_feedback.events_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_handle_message_reaction_ignores_bot_actor(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_REACTION_FEEDBACK", "true")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
+
+    from gateway import reaction_feedback
+
+    reaction_feedback.record_sent_message(
+        platform="telegram",
+        chat_id="-1001",
+        message_id="456",
+        content="assistant text",
+    )
+    adapter = _make_adapter()
+
+    await adapter._handle_message_reaction(
+        _make_reaction_update(user_id=42, is_bot=True, new_reaction=["👎"]),
+        SimpleNamespace(),
+    )
+
+    assert not reaction_feedback.events_path().exists()
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 
@@ -315,3 +478,41 @@ def test_config_reactions_env_takes_precedence(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "false"
+
+
+def test_config_bridges_telegram_reaction_feedback(monkeypatch, tmp_path):
+    """gateway/config.py bridges telegram.reaction_feedback to TELEGRAM_REACTION_FEEDBACK."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "telegram": {
+            "reaction_feedback": True,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_REACTION_FEEDBACK", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("TELEGRAM_REACTION_FEEDBACK") == "true"
+
+
+def test_config_reaction_feedback_env_takes_precedence(monkeypatch, tmp_path):
+    """Env var should take precedence over config.yaml for reaction feedback."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "telegram": {
+            "reaction_feedback": True,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_REACTION_FEEDBACK", "false")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("TELEGRAM_REACTION_FEEDBACK") == "false"
