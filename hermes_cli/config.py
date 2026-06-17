@@ -1539,6 +1539,17 @@ DEFAULT_CONFIG = {
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 
+    "background_review": {
+        # Optional dotted-path callback invoked after each background_review
+        # tool call that mutated memory or skill state. Receives one
+        # improvement_record dict (see agent/background_review.py for
+        # schema). Callback failures are swallowed; the review never
+        # crashes due to a misbehaving callback. Default null = no hook.
+        "callback": None,
+        # Per-invocation timeout in seconds. Hung callbacks are aborted.
+        "callback_timeout_seconds": 5,
+    },
+
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
