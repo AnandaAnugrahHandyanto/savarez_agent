@@ -88,9 +88,12 @@ class TestDgxOllamaProviderRemoved:
     reachable via the working custom path, so the dead provider is removed.
     """
 
-    def test_provider_plugin_dir_removed(self):
+    def test_provider_plugin_source_removed(self):
+        # Assert the source module is gone (robust against a stray __pycache__,
+        # which Python 3 won't import without the .py anyway).
         provider_dir = Path(__file__).parents[2] / "plugins" / "model-providers" / "dgx-ollama"
-        assert not provider_dir.exists()
+        assert not (provider_dir / "__init__.py").exists()
+        assert not (provider_dir / "plugin.yaml").exists()
 
     def test_dgx_endpoint_resolves_to_a_runnable_provider(self):
         # apply_endpoint(ollama) writes model.provider="ollama"; vllm/litellm
