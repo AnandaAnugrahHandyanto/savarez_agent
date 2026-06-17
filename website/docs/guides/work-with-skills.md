@@ -105,6 +105,24 @@ What happens:
 2. It appears in your `skills_list` output
 3. It becomes available as a slash command
 
+Some skills also ship a setup helper for runtime dependencies (for example,
+installing a companion CLI or checking external commands like `ffmpeg`). Run it
+by skill name instead of hunting for `scripts/setup.sh` manually:
+
+```bash
+# Show declared prerequisites and whether a setup helper exists
+hermes skills setup hyperframes --check
+
+# Run the installed skill's scripts/setup.sh after confirmation
+hermes skills setup hyperframes
+
+# Non-interactive / scripted use
+hermes skills setup hyperframes --yes
+```
+
+If a skill has no setup script, the command reports its declared prerequisite
+commands and environment variables, then exits without running anything.
+
 :::tip
 Installed skills take effect in new sessions. If you want it available in the current session, use `/reset` to start fresh, or add `--now` to invalidate the prompt cache immediately (costs more tokens on the next turn).
 :::

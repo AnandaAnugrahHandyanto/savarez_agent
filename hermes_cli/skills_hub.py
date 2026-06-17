@@ -11,8 +11,10 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1023,6 +1025,170 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
 
+def _normalize_skill_lookup_name(name: str) -> str:
+    return str(name or "").strip().strip("/")
+
+
+def _declared_prerequisites(frontmatter: Dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Return (commands, env vars) declared by a skill's frontmatter."""
+    prereqs = frontmatter.get("prerequisites")
+    commands: list[str] = []
+    env_vars: list[str] = []
+    if isinstance(prereqs, dict):
+        raw_commands = prereqs.get("commands") or []
+        raw_env = prereqs.get("env_vars") or []
+        if isinstance(raw_commands, str):
+            raw_commands = [raw_commands]
+        if isinstance(raw_env, str):
+            raw_env = [raw_env]
+        commands.extend(str(item).strip() for item in raw_commands if str(item).strip())
+        env_vars.extend(str(item).strip() for item in raw_env if str(item).strip())
+
+    required = frontmatter.get("required_environment_variables") or []
+    if isinstance(required, (str, dict)):
+        required = [required]
+    if isinstance(required, list):
+        for item in required:
+            if isinstance(item, str) and item.strip():
+                env_vars.append(item.strip())
+            elif isinstance(item, dict):
+                env_name = str(item.get("name") or item.get("env_var") or "").strip()
+                if env_name:
+                    env_vars.append(env_name)
+
+    return sorted(set(commands)), sorted(set(env_vars))
+
+
+def _find_installed_skill(
+    name: str,
+) -> tuple[Optional[Path], Optional[Dict[str, Any]], list[tuple[str, str, Path]]]:
+    """Find an installed skill by frontmatter name, directory name, or category/name."""
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        iter_skill_index_files,
+        parse_frontmatter,
+    )
+    from tools.skills_hub import SKILLS_DIR
+
+    query = _normalize_skill_lookup_name(name)
+    query_lower = query.lower()
+    matches: list[tuple[str, str, Path, Dict[str, Any]]] = []
+    dirs_to_scan: list[Path] = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(get_external_skills_dirs())
+
+    for scan_dir in dirs_to_scan:
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            try:
+                rel = skill_md.parent.relative_to(scan_dir).as_posix()
+            except ValueError:
+                rel = skill_md.parent.name
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:4000]
+                frontmatter, _body = parse_frontmatter(content)
+            except Exception:
+                frontmatter = {}
+            skill_name = str(frontmatter.get("name") or skill_md.parent.name).strip()
+            candidates = {skill_name.lower(), skill_md.parent.name.lower(), rel.lower()}
+            if query_lower in candidates:
+                matches.append((skill_name, rel, skill_md.parent, frontmatter))
+
+    if len(matches) == 1:
+        _skill_name, _rel, skill_dir, frontmatter = matches[0]
+        return skill_dir, frontmatter, []
+    return None, None, [(skill_name, rel, skill_dir) for skill_name, rel, skill_dir, _fm in matches]
+
+
+def do_setup(name: str, console: Optional[Console] = None,
+             check_only: bool = False, skip_confirm: bool = False) -> None:
+    """Run an installed skill's setup helper, or report its prerequisites."""
+    c = console or _console
+    skill_dir, frontmatter, matches = _find_installed_skill(name)
+    if matches:
+        c.print(
+            f"[bold red]Error:[/] Multiple installed skills match '{name}'. "
+            "Use category/name:\n"
+        )
+        table = Table()
+        table.add_column("Name", style="bold cyan")
+        table.add_column("Path", style="dim")
+        for skill_name, rel, _path in matches:
+            table.add_row(skill_name, rel)
+        c.print(table)
+        c.print()
+        return
+    if skill_dir is None or frontmatter is None:
+        c.print(f"[bold red]Error:[/] Installed skill '{name}' not found.\n")
+        c.print(
+            "[dim]Install it first with `hermes skills install ...`, then run "
+            "`hermes skills setup <name>`.[/]\n"
+        )
+        return
+
+    skill_name = str(frontmatter.get("name") or skill_dir.name)
+    setup_script = skill_dir / "scripts" / "setup.sh"
+    commands, env_vars = _declared_prerequisites(frontmatter)
+
+    c.print(f"[bold]Skill:[/] {skill_name}")
+    c.print(f"[bold]Path:[/] {skill_dir}")
+    if commands:
+        missing_commands = [cmd for cmd in commands if shutil.which(cmd) is None]
+        if missing_commands:
+            status = f"[yellow]missing: {', '.join(missing_commands)}[/]"
+        else:
+            status = "[green]ok[/]"
+        c.print(f"[bold]Declared commands:[/] {', '.join(commands)} ({status})")
+    if env_vars:
+        missing_env = [var for var in env_vars if not os.getenv(var)]
+        if missing_env:
+            status = f"[yellow]missing: {', '.join(missing_env)}[/]"
+        else:
+            status = "[green]ok[/]"
+        c.print(f"[bold]Declared env vars:[/] {', '.join(env_vars)} ({status})")
+
+    if not setup_script.exists():
+        c.print("[yellow]No setup script found.[/]")
+        if not commands and not env_vars:
+            c.print("[dim]This skill does not declare setup requirements.[/]")
+        c.print()
+        return
+
+    c.print(f"[bold]Setup script:[/] {setup_script}")
+    if check_only:
+        c.print("[dim]Check only; not running setup script.[/]\n")
+        return
+
+    if not skip_confirm:
+        c.print(f"\n[bold]Run setup for '{skill_name}'?[/]")
+        c.print(f"[dim]Command: bash {setup_script}[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in {"y", "yes"}:
+            c.print("[dim]Cancelled.[/]\n")
+            return
+
+    c.print(f"\n[bold]Running setup for '{skill_name}'...[/]\n")
+    result = subprocess.run(
+        ["bash", str(setup_script)],
+        cwd=str(skill_dir),
+        text=True,
+        capture_output=True,
+    )
+    if result.stdout:
+        c.print(result.stdout.rstrip())
+    if result.stderr:
+        c.print(result.stderr.rstrip(), style="red" if result.returncode else "yellow")
+    if result.returncode == 0:
+        c.print(f"\n[bold green]Setup complete for '{skill_name}'.[/]\n")
+    else:
+        c.print(f"\n[bold red]Setup failed for '{skill_name}' with exit code {result.returncode}.[/]\n")
+
+
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
              deep: bool = False) -> None:
     """Re-run security scan on installed hub skills.
@@ -1605,6 +1771,9 @@ def skills_command(args) -> None:
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False),
                    name_override=getattr(args, "name", "") or "")
+    elif action == "setup":
+        do_setup(args.name, check_only=getattr(args, "check", False),
+                 skip_confirm=getattr(args, "yes", False))
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -1654,7 +1823,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|setup|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1775,6 +1944,13 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                    skip_confirm=skip_confirm, invalidate_cache=invalidate_cache,
                    name_override=name_override, console=c)
 
+    elif action == "setup":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills setup <name-or-category/name> [--check]\n")
+            return
+        do_setup(args[0], console=c, check_only="--check" in args,
+                 skip_confirm=True)
+
     elif action == "inspect":
         if not args:
             c.print("[bold red]Usage:[/] /skills inspect <identifier>\n")
@@ -1876,6 +2052,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
+        "  [cyan]setup[/] <name> [--check]      Run an installed skill's setup script\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"

@@ -69,7 +69,13 @@ Full CLI reference: [references/cli.md](https://github.com/NousResearch/hermes-a
 ## Setup (one-time)
 
 ```bash
-bash "$(dirname "$(find ~/.hermes/skills -path '*/hyperframes/SKILL.md' 2>/dev/null | head -1)")/scripts/setup.sh"
+hermes skills setup hyperframes
+```
+
+For a dry run that only reports the setup script and declared prerequisites:
+
+```bash
+hermes skills setup hyperframes --check
 ```
 
 The script:
