@@ -7531,8 +7531,8 @@ class GatewayRunner:
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
             try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
+                from hermes_cli.plugins import invoke_hook as _invoke_hook, invoke_hook_async as _invoke_hook_async
+                _hook_results = await _invoke_hook_async(
                     "pre_gateway_dispatch",
                     event=event,
                     gateway=self,
@@ -7560,6 +7560,34 @@ class GatewayRunner:
                         event = dataclasses.replace(event, text=_new_text)
                         source = event.source
                     break
+                # ── NEW: reply action ───────────────────────────────────
+                if _action == "reply":
+                    _reply_text = _result.get("text")
+                    if isinstance(_reply_text, str) and _reply_text.strip():
+                        adapter = self.adapters.get(source.platform)
+                        if adapter is not None:
+                            try:
+                                await adapter.send(
+                                    source.chat_id,
+                                    _reply_text,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "pre_gateway_dispatch reply send failed: "
+                                    "platform=%s chat=%s",
+                                    source.platform.value if source.platform else "?",
+                                    source.chat_id,
+                                    exc_info=True,
+                                )
+                        else:
+                            logger.warning(
+                                "pre_gateway_dispatch reply: no adapter for "
+                                "platform=%s chat=%s",
+                                source.platform.value if source.platform else "?",
+                                source.chat_id,
+                            )
+                    return None  # message handled — terminate dispatch
+                # ────────────────────────────────────────────────────────
                 if _action == "allow":
                     break
 

@@ -150,6 +150,7 @@ VALID_HOOKS: Set[str] = {
     # dispatch. Plugins may return a dict to influence flow:
     #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
     #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
+    #   {"action": "reply",   "text": "..."}    -> send text as reply, terminate
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
@@ -1608,6 +1609,48 @@ class PluginManager:
                 )
         return results
 
+    async def invoke_hook_async(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Invoke all registered callbacks for a hook (async-safe).
+
+        Behaves identically to ``invoke_hook``, but runs in an async context
+        so that both sync and async callbacks work correctly:
+
+        - If a callback returns an awaitable (coroutine, Future, Task), it is
+          ``await``-ed and the resolved value is used.
+        - If a callback returns a plain value, it is used as-is.
+        - Each callback is wrapped in its own try/except; a single failing
+          callback does not prevent remaining callbacks from running.
+
+        Parameters
+        ----------
+        hook_name : str
+            Name of the hook to invoke (e.g. ``"pre_gateway_dispatch"``).
+        **kwargs : Any
+            Keyword arguments forwarded to every registered callback.
+
+        Returns
+        -------
+        List[Any]
+            Non-None return values from each callback, in registration order.
+        """
+        callbacks = self._hooks.get(hook_name, [])
+        results: List[Any] = []
+        for cb in callbacks:
+            try:
+                ret = cb(**kwargs)
+                if ret is not None:
+                    # Detect coroutine and await it; sync return value is used as-is.
+                    if inspect.isawaitable(ret):
+                        ret = await ret
+                if ret is not None:
+                    results.append(ret)
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s",
+                    hook_name, getattr(cb, "__name__", repr(cb)), exc,
+                )
+        return results
+
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
@@ -1718,6 +1761,15 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+async def invoke_hook_async(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Async-safe module-level wrapper around PluginManager.invoke_hook_async.
+
+    Convenience function so callers (e.g. gateway/run.py) don't need to
+    fetch the plugin manager themselves.
+    """
+    return await get_plugin_manager().invoke_hook_async(hook_name, **kwargs)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

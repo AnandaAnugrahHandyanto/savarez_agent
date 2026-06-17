@@ -1,0 +1,6 @@
+name: pharma_compliance
+version: "1.0.0"
+description: "Pharma compliance tracking bot for QQ platform"
+kind: standalone
+provides_hooks:
+  - pre_gateway_dispatch
