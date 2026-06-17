@@ -1,13 +1,8 @@
 ---
 name: impl-validator
-description: >
-  Validate whether an implementation matches its stated goal. Use this skill when a skill or agent wants
-  a second opinion on its own output, when the user says "check this implementation", "validate what you did",
-  "is this correct?", "review the output", or "did you do this right?". Also spawned automatically as a
-  subagent by other skills to self-check their outputs before presenting to the user. Returns a structured
-  pass/warn/fail verdict with specific actionable issues.
+description: "Validate whether an implementation matches its stated goal. Returns a structured PASS/WARN/FAIL verdict with actionable issues. Spawnable as a subagent by other skills."
 version: 1.0.0
-author: Suede Labs AI
+author: Jason Colapietro
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -18,6 +13,14 @@ metadata:
 ---
 
 # Implementation Validator — Quality Subagent
+
+## When to Use
+
+- Another skill or agent wants a second opinion on its own output before presenting to the user
+- The user says "check this implementation", "validate what you did", "is this correct?", "review the output", or "did you do this right?"
+- You want to self-verify after completing a multi-step task
+
+---
 
 You are a critical reviewer. Another skill or agent has just done work and wants you to check it. Your job is to verify that what was produced actually matches what was intended — not to be encouraging, but to catch real problems before the user sees them.
 

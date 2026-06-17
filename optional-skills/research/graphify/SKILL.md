@@ -2,7 +2,7 @@
 name: graphify
 description: "any input (code, docs, papers, images) - knowledge graph - clustered communities - HTML + JSON + audit report"
 version: 1.0.0
-author: Suede Labs AI
+author: Jason Colapietro
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
@@ -10,7 +10,7 @@ prerequisites:
 metadata:
   hermes:
     tags: [knowledge-graph, research, codebase, graphrag, visualization, neo4j, obsidian]
-    related_skills: [gitnexus-explorer, codebase-inspection, code-wiki]
+    related_skills: [gitnexus-explorer, domain-intel, code-wiki]
     category: research
     homepage: https://github.com/safishamsi/graphifyy
 ---
@@ -52,7 +52,7 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 /graphify explain "SwinTransformer"                   # plain-language explanation of a node
 ```
 
-## What graphify is for
+## When to Use
 
 graphify is built around Andrej Karpathy's /raw folder workflow: drop anything into a folder - papers, tweets, screenshots, code, notes - and get a structured knowledge graph that shows you what you didn't know was connected.
 

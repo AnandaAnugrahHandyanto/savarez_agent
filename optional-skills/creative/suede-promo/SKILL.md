@@ -2,7 +2,7 @@
 name: suede-promo
 description: "Music promotion and AI media production via Suede Labs AI. Two tracks: Creator jobs (social content, clipping, performance posts, contests, landing pages) and Suede services (AI music generation, stems, mastering, vocals, MIDI, lyrics, rights — 22 pay-per-call endpoints, no subscription required)."
 version: 1.0.0
-author: Suede Labs AI
+author: Jason Colapietro
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
@@ -16,6 +16,17 @@ metadata:
 ---
 
 # Suede Promo
+
+## When to Use
+
+- Generate AI music tracks, covers, or extensions from a text prompt
+- Split stems, isolate vocals, transcribe MIDI, or master audio programmatically
+- Write or sync lyrics to a track
+- Look up on-chain rights or provenance for an audio asset
+- Analyze guitar signal chains or get rig recommendations
+- Brief human creators for social content, video clipping, contest design, or landing pages
+
+---
 
 Music promotion and AI media production from Suede Labs AI. Two fulfillment tracks — choose based on the task:
 
@@ -57,23 +68,23 @@ All calls settle pay-per-use in USDC on Base. Prices shown per call.
 | Method | What it does | Price |
 |--------|-------------|-------|
 | `create_music(prompt, duration_seconds)` | Generate an original track | $0.20 |
-| `agent_generate()` | Agent-mode music generation | $0.20 |
-| `agent_video()` | AI music video | $1.50 |
-| `extend()` | Extend an existing track | $0.40 |
-| `cover()` | Cover version of a track | $0.40 |
-| `voice_cover()` | Voice cover / vocal swap | $0.40 |
-| `continue_track()` | Continue from a clip | $0.40 |
-| `stems_pro()` | 4-stem split (drums, bass, melody, vocals) | $0.40 |
-| `stems_basic()` | 2-stem split (vocals + instrumental) | $0.20 |
-| `vox()` | Vocal isolation / acapella | $0.20 |
-| `midi()` | Audio → MIDI transcription | $0.10 |
-| `wav_master()` | Loudness + EQ mastering | $0.10 |
-| `lyric_sync()` | Lyrics synchronized to audio | $0.10 |
-| `lyrics()` | Generate lyrics from a prompt | $0.04 |
-| `style_coach()` | Expand style tags into a richer prompt brief | $0.02 |
+| `agent_generate(prompt, duration_seconds)` | Agent-mode music generation | $0.20 |
+| `agent_video(prompt, duration_seconds)` | AI music video | $1.50 |
+| `extend(source_clip_id)` | Extend an existing track | $0.40 |
+| `cover(source_clip_id)` | Cover version of a track | $0.40 |
+| `voice_cover(audio_url)` | Voice cover / vocal swap | $0.40 |
+| `continue_track(audio_url)` | Continue from a clip | $0.40 |
+| `stems_pro(audio_url)` | 4-stem split (drums, bass, melody, vocals) | $0.40 |
+| `stems_basic(audio_url)` | 2-stem split (vocals + instrumental) | $0.20 |
+| `vox(audio_url)` | Vocal isolation / acapella | $0.20 |
+| `midi(audio_url)` | Audio → MIDI transcription | $0.10 |
+| `wav_master(audio_url)` | Loudness + EQ mastering | $0.10 |
+| `lyric_sync(audio_url)` | Lyrics synchronized to audio | $0.10 |
+| `lyrics(prompt)` | Generate lyrics from a prompt | $0.04 |
+| `style_coach(tags)` | Expand style tags into a richer prompt brief | $0.02 |
 | `rights_lookup(assetHash)` | On-chain rights/provenance check | $0.005 |
-| `analyze()` | Audio analysis (BPM, key, energy, danceability) | $0.003 |
-| `prompt_analyze()` | Extract genre, mood, instrumentation from a prompt | $0.003 |
+| `analyze(audio_url)` | Audio analysis (BPM, key, energy, danceability) | $0.003 |
+| `prompt_analyze(prompt)` | Extract genre, mood, instrumentation from a prompt | $0.003 |
 | `chain_chat(question, assetHash)` | Plain-language Q&A about on-chain rights/royalties | $0.02 |
 | `rig_analyze(audioUrl)` | Infer guitar signal chain from audio (pedal order, drive, FX) | $0.10 |
 | `rig_oracle(goal, genre, budgetUsd)` | Recommend a full guitar rig for a target tone | $0.10 |
@@ -94,15 +105,15 @@ with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
     print(track["provenance"])     # on-chain attestation / fingerprint
 
     # Split stems
-    stems = suede.stems_pro()
+    stems = suede.stems_pro(audio_url=track["assetUrl"])
     # stems["drums"], stems["bass"], stems["melody"], stems["vocals"]
 
     # Write and sync lyrics
-    lyrics = suede.lyrics()
-    synced = suede.lyric_sync()
+    lyrics = suede.lyrics(prompt="lo-fi hip hop, rainy day, introspective")
+    synced = suede.lyric_sync(audio_url=track["assetUrl"])
 
     # Master the final mix
-    master = suede.wav_master()
+    master = suede.wav_master(audio_url=track["assetUrl"])
     print(master["assetUrl"])
 EOF
 ```
@@ -121,9 +132,11 @@ with SuedeClient(wallet_private_key=os.environ['SUEDE_WALLET_KEY']) as suede:
 
 ### Response structure
 
-Every response includes:
+Audio and video generation endpoints (`create_music`, `agent_generate`, `agent_video`, `extend`, `cover`, `voice_cover`, `continue_track`, `stems_pro`, `stems_basic`, `vox`, `midi`, `wav_master`, `lyric_sync`) return:
 - `assetUrl` — CDN URL to the generated asset
 - `provenance` — on-chain fingerprint/attestation via Suede's IP registry
+
+Text and analysis endpoints (`lyrics`, `style_coach`, `analyze`, `prompt_analyze`, `chain_chat`, `rig_analyze`, `rig_oracle`, `rig_roast`, `rights_lookup`) return structured data specific to each endpoint — no `assetUrl`.
 
 ---
 
@@ -180,9 +193,9 @@ import os
 # Step 1: Generate the track (Suede service)
 with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
     track = suede.create_music(prompt="upbeat indie pop, summer, 120 BPM", duration_seconds=90)
-    lyrics = suede.lyrics()
-    master = suede.wav_master()
-    stems = suede.stems_basic()   # for remixers
+    lyrics = suede.lyrics(prompt="upbeat indie pop, summer, optimistic")
+    master = suede.wav_master(audio_url=track["assetUrl"])
+    stems = suede.stems_basic(audio_url=track["assetUrl"])   # for remixers
     print(track["assetUrl"])
 
 # Step 2: Create a social clip brief (Creator job)
@@ -212,8 +225,8 @@ from suede_ai import SuedeClient
 import os
 
 with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
-    analysis = suede.analyze()    # BPM, key, energy, genre signals
-    coach = suede.style_coach()   # genre tags and feedback
+    analysis = suede.analyze(audio_url="track.wav")   # BPM, key, energy, genre signals
+    coach = suede.style_coach(tags="lo-fi, indie, rainy")   # expand tags into a prompt brief
     print(coach)   # use output to write the contest creative direction
 EOF
 ```
