@@ -63,7 +63,11 @@ def _make_cli(tool_progress="all", verbose=_UNSET):
     # Leave the process-wide ``cli`` module backed by the real prompt_toolkit
     # imports. Otherwise later tests that import ``cli`` get MagicMock-backed
     # globals (notably _pt_print), making _cprint silently drop stdout.
-    importlib.reload(mod)
+    # If the helper is the first importer of ``cli`` in this process,
+    # patch.dict restores sys.modules to a state with no ``cli`` entry after
+    # the stubbed import. Reinsert the module object before reloading it.
+    sys.modules["cli"] = mod
+    _cli_mod = importlib.reload(mod)
     return cli_obj
 
 
