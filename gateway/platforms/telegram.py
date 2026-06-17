@@ -522,25 +522,40 @@ class TelegramAdapter(BasePlatformAdapter):
     def _load_button_handlers(self) -> None:
         """Load script-button handlers from platforms.telegram.extra.button_handlers.
 
-        Each entry maps a prefix (used in callback data) to a handler config::
+        ``button_handlers`` is a LIST of handler entries; each entry carries a
+        ``prefix`` (used in callback data), a ``script`` path, and an
+        ``actions`` map of verb → label::
 
             button_handlers:
-              news_action:
+              - prefix: na
                 script: ~/.hermes/scripts/news_action_button_handler.py
-                prefix: na
                 actions:
                   st: Story
-                  x: 𝕏
+                  x: "𝕏"
 
-        On dispatch a callback ``na:st:42`` matches prefix ``na``, looks up
-        handler ``news_action``, extracts verb ``st`` and arg ``42``, and
-        spawns ``script --action st --action-id 42``.
+        On dispatch a callback ``na:st:42`` matches prefix ``na``, extracts
+        verb ``st`` and arg ``42``, and spawns
+        ``script --action st --action-id 42``. Entries without a ``prefix`` are
+        skipped with a warning.
+
+        Built-in callback prefixes take precedence and must be avoided. The
+        bare model-picker tokens ``mb`` and ``mx`` match without a trailing
+        colon, so any prefix starting with ``mb`` or ``mx`` (e.g. ``mboard``)
+        is silently shadowed by the model picker; such entries are skipped
+        with a warning.
         """
         raw: List[Dict[str, Any]] = self.config.extra.get("button_handlers", [])
         for entry in raw:
             prefix = entry.get("prefix")
             if not prefix:
                 logger.warning("[%s] button_handler missing 'prefix', skipping: %s", self.name, entry)
+                continue
+            if prefix.startswith(("mb", "mx")):
+                logger.warning(
+                    "[%s] button_handler prefix %r is shadowed by the built-in "
+                    "model picker (mb/mx), skipping",
+                    self.name, prefix,
+                )
                 continue
             self._button_handlers[prefix] = entry
 
@@ -4005,29 +4020,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 
-        # --- Generic script-button callbacks (<prefix>:<verb>:<arg>) ---
-        for prefix, handler in self._button_handlers.items():
-            if data.startswith(prefix + ":"):
-                parts = data.split(":", 2)
-                if len(parts) == 3:
-                    verb, arg = parts[1], parts[2]
-                    # reply_to and thread from the prompt message that carries
-                    # the button keyboard
-                    prompt_message_id = getattr(query.message, "reply_to_message", None)
-                    prompt_message_id = getattr(prompt_message_id, "message_id", None)
-                    asyncio.create_task(
-                        self._run_script_button(
-                            handler,
-                            verb,
-                            arg,
-                            str(query_chat_id),
-                            reply_to_message_id=str(prompt_message_id) if prompt_message_id is not None else None,
-                            thread_id=str(query_thread_id) if query_thread_id is not None else None,
-                        )
-                    )
-                    await query.answer()
-                return
-
         # --- Gmail-triage callbacks (gt:verb:arg) ---
         if data.startswith("gt:"):
             await self._handle_gmail_triage_callback(
@@ -4314,6 +4306,52 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Generic script-button callbacks (<prefix>:<verb>:<arg>) ---
+        # Placed AFTER all built-in prefix handlers so those always take
+        # precedence — a configured prefix can never shadow gt:/ea:/sc:/cl:/etc.
+        for prefix, handler in self._button_handlers.items():
+            if not data.startswith(prefix + ":"):
+                continue
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                # Malformed callback data: still answer to clear the spinner.
+                await query.answer()
+                return
+            verb, arg = parts[1], parts[2]
+            # Only authorized users may spawn handler scripts.
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to use this action.")
+                return
+            # Verb allow-list: only dispatch verbs the handler declares.
+            if verb not in handler.get("actions", {}):
+                await query.answer(text="Unknown action.")
+                return
+            # reply_to and thread from the prompt message that carries the
+            # button keyboard.
+            prompt_message_id = getattr(query.message, "reply_to_message", None)
+            prompt_message_id = getattr(prompt_message_id, "message_id", None)
+            task = asyncio.create_task(
+                self._run_script_button(
+                    handler,
+                    verb,
+                    arg,
+                    str(query_chat_id),
+                    reply_to_message_id=str(prompt_message_id) if prompt_message_id is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                )
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            await query.answer()
             return
 
         # --- Update prompt callbacks ---
