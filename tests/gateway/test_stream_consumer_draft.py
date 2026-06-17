@@ -167,7 +167,7 @@ class TestDraftStreamingHappyPath:
             else final_call.args[1] if len(final_call.args) > 1 else None
         )
         assert sent_content == "Hello world!"
-        assert final_call.kwargs.get("metadata") == {}
+        assert final_call.kwargs.get("metadata") == {"notify": True}
 
     @pytest.mark.asyncio
     async def test_group_chat_skips_draft_path(self):
