@@ -88,6 +88,28 @@ class _OpenAIProxy:
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
+        api_key = kwargs.get("api_key")
+        base_url = kwargs.get("base_url")
+        if isinstance(base_url, str) and base_url.strip():
+            try:
+                from urllib.parse import urlparse as _urlparse
+                host = _urlparse(base_url.strip()).hostname or ""
+            except Exception:
+                host = ""
+        else:
+            host = "api.openai.com"  # default SDK endpoint when no base_url
+        if host == "api.openai.com":
+            _key = (api_key or "").strip() if isinstance(api_key, str) else ""
+            if not _key or _key == "no-key-required":
+                logger.warning(
+                    "Constructing OpenAI client targeting %s with "
+                    "missing or placeholder api_key (%r). The auxiliary "
+                    "provider fallback chain could not resolve a working "
+                    "provider — this call will likely fail with HTTP 401. "
+                    "Set OPENAI_API_KEY or configure a non-OpenAI provider "
+                    "in config.yaml.",
+                    host, _key[:20],
+                )
         return _load_openai_cls()(*args, **kwargs)
 
     def __instancecheck__(self, obj):

@@ -617,6 +617,26 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        # Record the live runtime for auxiliary client resolution. The agent's
+        # provider/model/base_url/api_key are already set in kwargs but
+        # auxiliary_client._resolve_auto reads them from module-level globals
+        # (set_runtime_main) or from config.yaml via _read_main_provider() —
+        # neither reflects what we just resolved. Without this call, Step 1 of
+        # _resolve_auto (main provider + main model) silently skips the
+        # ACP-resolved provider and the fallback chain may construct a bare
+        # openai.OpenAI() client that leaks to api.openai.com. (#47638)
+        try:
+            from agent.auxiliary_client import set_runtime_main
+            set_runtime_main(
+                getattr(agent, "provider", "") or kwargs.get("provider", ""),
+                getattr(agent, "model", "") or kwargs.get("model", ""),
+                base_url=getattr(agent, "base_url", "") or kwargs.get("base_url", ""),
+                api_key=getattr(agent, "api_key", "") or kwargs.get("api_key", ""),
+                api_mode=getattr(agent, "api_mode", "") or kwargs.get("api_mode", ""),
+            )
+        except Exception:
+            logger.debug("ACP session: set_runtime_main failed", exc_info=True)
+
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print
