@@ -154,6 +154,12 @@ TOOLSETS = {
         "tools": ["terminal", "process"],
         "includes": []
     },
+
+    "claude_code": {
+        "description": "Opt-in Claude Code worker tool for bounded CLI delegation with proof artifacts",
+        "tools": ["ask_claude_code"],
+        "includes": []
+    },
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",
