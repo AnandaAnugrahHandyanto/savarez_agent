@@ -30,6 +30,10 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
+try:
+    from agent.gemma_tool_call_parser import text_contains_gemma_tool_call
+except ImportError:
+    text_contains_gemma_tool_call = None  # type: ignore[assignment]
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -50,6 +54,26 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "send_message",  # no cross-platform side effects
         "execute_code",  # children should reason step-by-step, not write scripts
     ]
+)
+
+# Toolsets a parent may grant to an explicit delegate_task request even when
+# they are not in the parent's own enabled_toolsets snapshot.  The parent's
+# delegate_task call is treated as deliberate authorization; dangerous toolsets
+# (delegation, rl, memory, …) stay off this list.
+DELEGATE_GRANTABLE_TOOLSETS = frozenset(
+    {
+        "web",
+        "search",
+        "browser",
+        "file",
+        "terminal",
+        "vision",
+        "skills",
+        "todo",
+        "tts",
+        "video",
+        "x_search",
+    }
 )
 
 
@@ -109,6 +133,12 @@ def _get_subagent_approval_callback():
     if is_truthy_value(val):
         return _subagent_auto_approve
     return _subagent_auto_deny
+
+
+def _subagent_thread_initializer(approval_cb):
+    """Mark worker threads and install non-interactive approval handling."""
+    _set_subagent_approval_cb(approval_cb)
+    threading.current_thread().hermes_is_subagent = True
 
 # Build a description fragment listing toolsets available for subagents.
 # Excludes toolsets where ALL tools are blocked, composite/platform toolsets
@@ -533,6 +563,48 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _get_grant_requested_toolsets() -> bool:
+    """Whether explicit delegate_task toolsets may grant DELEGATE_GRANTABLE ones."""
+    cfg = _load_config()
+    return is_truthy_value(cfg.get("grant_requested_toolsets"), default=True)
+
+
+def _parent_can_delegate(parent_agent) -> bool:
+    if not parent_agent:
+        return False
+    valid = getattr(parent_agent, "valid_tool_names", None) or set()
+    return "delegate_task" in valid
+
+
+def _resolve_explicit_child_toolsets(
+    requested: List[str],
+    parent_toolsets: set[str],
+    parent_agent,
+) -> List[str]:
+    """Intersect requested toolsets with parent, optionally granting research tools."""
+    expanded_parent = _expand_parent_toolsets(parent_toolsets)
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for toolset_name in requested:
+        if toolset_name not in seen:
+            seen.add(toolset_name)
+            normalized.append(toolset_name)
+
+    scoped = [t for t in normalized if t in expanded_parent]
+
+    if _get_grant_requested_toolsets() and _parent_can_delegate(parent_agent):
+        for toolset_name in normalized:
+            if (
+                toolset_name in DELEGATE_GRANTABLE_TOOLSETS
+                and toolset_name not in scoped
+            ):
+                scoped.append(toolset_name)
+
+    if _get_inherit_mcp_toolsets():
+        scoped = _preserve_parent_mcp_toolsets(scoped, parent_toolsets)
+    return _strip_blocked_tools(scoped)
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -661,6 +733,8 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    granted_toolsets: Optional[List[str]] = None,
+    requested_toolsets: Optional[List[str]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -693,8 +767,35 @@ def _build_child_system_prompt(
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough but concise -- your response is returned to the "
-        "parent agent as a summary."
+        "parent agent as a summary.\n\n"
+        "SKILLS: If your system prompt lists relevant skills, call "
+        "`skill_view(skill_id)` once per skill you need. Do NOT call "
+        "`skills_list` — it wastes tokens.\n"
+        "WEB: Use `web_search` only when it is in your tool list. "
+        "If web tools are unavailable, report that limitation in your summary."
     )
+    granted = set(granted_toolsets or [])
+    requested = list(requested_toolsets or [])
+    has_web = "web_search" in {
+        t
+        for ts in granted
+        for t in (TOOLSETS.get(ts) or {}).get("tools", [])
+    } or "web" in granted or "search" in granted or "browser" in granted
+    if has_web:
+        parts.append(
+            "\nRESEARCH MODE: Start with `web_search` (and `web_extract` if "
+            "needed). Do NOT call `skill_view`, `terminal`, or `skills_list` "
+            "unless a web search already failed and a named skill is required."
+        )
+    elif requested and any(t in {"web", "search", "browser"} for t in requested):
+        missing = [t for t in requested if t not in granted]
+        parts.append(
+            "\nTOOL GAP: The parent requested research toolsets "
+            f"{requested} but you only have {sorted(granted) or ['skills']}. "
+            f"Missing: {missing or requested}. "
+            "Return this blocker in your FIRST response — do not retry "
+            "terminal, web_search, or repeated skill_view calls."
+        )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -1045,16 +1146,11 @@ def _build_child_agent(
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
     if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks.
-        # Expand composite toolsets (e.g. hermes-cli) so that individual
-        # toolset names (e.g. web, terminal) are recognised during intersection.
-        expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
-            child_toolsets = _preserve_parent_mcp_toolsets(
-                child_toolsets, parent_toolsets
-            )
-        child_toolsets = _strip_blocked_tools(child_toolsets)
+        # Intersect with parent enabled toolsets, then optionally grant
+        # explicitly-requested research toolsets when the parent can delegate.
+        child_toolsets = _resolve_explicit_child_toolsets(
+            toolsets, parent_toolsets, parent_agent
+        )
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)
     elif parent_toolsets:
@@ -1070,6 +1166,13 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    if toolsets:
+        logger.info(
+            "Subagent toolsets: requested=%s granted=%s parent=%s",
+            toolsets,
+            child_toolsets,
+            sorted(parent_toolsets),
+        )
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -1077,6 +1180,8 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        granted_toolsets=child_toolsets,
+        requested_toolsets=list(toolsets) if toolsets else None,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1254,6 +1359,8 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    child._delegate_requested_toolsets = list(toolsets) if toolsets else []
+    child._delegate_granted_toolsets = list(child_toolsets)
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
     # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
@@ -1628,7 +1735,7 @@ def _run_single_child(
             # so dangerous-command prompts from the subagent don't fall back to
             # input() and deadlock the parent's prompt_toolkit TUI.
             # Callback (deny vs approve) is governed by delegation.subagent_auto_approve.
-            initializer=_set_subagent_approval_cb,
+            initializer=_subagent_thread_initializer,
             initargs=(_get_subagent_approval_callback(),),
         )
         # Capture the worker thread so the timeout diagnostic can dump its
@@ -1836,6 +1943,11 @@ def _run_single_child(
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
+            "granted_toolsets": list(
+                getattr(child, "_delegate_granted_toolsets", None)
+                or getattr(child, "enabled_toolsets", None)
+                or []
+            ),
             "tokens": {
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0
@@ -1863,6 +1975,40 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        _requested = list(getattr(child, "_delegate_requested_toolsets", None) or [])
+        _granted = set(entry.get("granted_toolsets") or [])
+        _missing = [t for t in _requested if t not in _granted]
+        if _missing:
+            entry["missing_toolsets"] = _missing
+            gap_note = (
+                "[DELEGATION TOOL GAP] Child was denied toolsets: "
+                + ", ".join(_missing)
+                + ". Do NOT re-delegate the same goal; use parent web_search "
+                "or enable delegation.grant_requested_toolsets in Hermes config."
+            )
+            if entry.get("summary"):
+                entry["summary"] = gap_note + "\n\n" + entry["summary"]
+            else:
+                entry["summary"] = gap_note
+            if status == "completed":
+                entry["status"] = "failed"
+                entry["error"] = gap_note
+        if (
+            entry.get("status") == "completed"
+            and not tool_trace
+            and text_contains_gemma_tool_call is not None
+            and text_contains_gemma_tool_call(entry.get("summary") or "")
+        ):
+            leak_note = (
+                "[DELEGATION TOOL LEAK] Subagent returned a Gemma tool-call "
+                "string without executing any tools. Do NOT trust this summary "
+                "or re-delegate the same goal — use parent web_search instead."
+            )
+            entry["summary"] = leak_note + (
+                "\n\n" + entry["summary"] if entry.get("summary") else ""
+            )
+            entry["status"] = "failed"
+            entry["error"] = leak_note
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -2344,7 +2490,11 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-        with ThreadPoolExecutor(max_workers=max_children) as executor:
+        with ThreadPoolExecutor(
+            max_workers=max_children,
+            initializer=_subagent_thread_initializer,
+            initargs=(_get_subagent_approval_callback(),),
+        ) as executor:
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
@@ -2850,7 +3000,9 @@ def _build_top_level_description() -> str:
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
+        "- Parallel independent workstreams (research A and B simultaneously)\n"
+        "- Prefer batch mode: pass both goals in one `tasks` array so they run "
+        "in parallel instead of two sequential delegate_task calls\n\n"
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
@@ -2865,6 +3017,8 @@ def _build_top_level_description() -> str:
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
+        "- Do NOT call web_search at the parent level unless it is in your "
+        "tool list — use delegate_task with toolsets including 'web' instead.\n"
         "- If the user is writing in a non-English language, or asked for "
         "output in a specific language / tone / style, say so in 'context' "
         "(e.g. \"respond in Chinese\", \"return output in Japanese\"). "

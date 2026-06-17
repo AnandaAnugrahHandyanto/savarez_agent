@@ -1199,10 +1199,22 @@ def _skill_should_show(
     return True
 
 
+def _skill_matches_bound_ids(
+    skill_name: str,
+    frontmatter_name: str,
+    bound_skill_ids: "frozenset[str] | set[str] | None",
+) -> bool:
+    """Return True when no bound filter is set or the skill is bound."""
+    if not bound_skill_ids:
+        return True
+    return skill_name in bound_skill_ids or frontmatter_name in bound_skill_ids
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    bound_skill_ids: "frozenset[str] | set[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1248,6 +1260,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        tuple(sorted(str(s) for s in (bound_skill_ids or ()))) ,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1274,6 +1287,10 @@ def build_skills_system_prompt(
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
+            if not _skill_matches_bound_ids(
+                skill_name, frontmatter_name, bound_skill_ids
+            ):
+                continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
                 available_tools,
@@ -1298,6 +1315,10 @@ def build_skills_system_prompt(
                 continue
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                continue
+            if not _skill_matches_bound_ids(
+                skill_name, entry["frontmatter_name"], bound_skill_ids
+            ):
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -1353,6 +1374,10 @@ def build_skills_system_prompt(
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if not _skill_matches_bound_ids(
+                    skill_name, frontmatter_name, bound_skill_ids
+                ):
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),

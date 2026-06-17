@@ -195,7 +195,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-    if has_skills_tools:
+    platform_key = (agent.platform or "").lower().strip()
+    # Research subagents with web_search do not need the full ~120-skill index —
+    # the child prompt already carries task-specific guidance. Skipping the index
+    # saves ~5k prompt tokens per subagent turn on local inference.
+    _skip_skill_index = (
+        platform_key == "subagent"
+        and "web_search" in agent.valid_tool_names
+        and not getattr(agent, "_bound_skill_ids", None)
+    )
+    if has_skills_tools and not _skip_skill_index:
         avail_toolsets = {
             toolset
             for toolset in (
@@ -220,6 +229,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            bound_skill_ids=getattr(agent, "_bound_skill_ids", None) or None,
         )
     else:
         skills_prompt = ""
@@ -318,7 +328,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             f"after explicit direction."
         )
 
-    platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
         stable_parts.append(PLATFORM_HINTS[platform_key])
     elif platform_key:

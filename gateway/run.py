@@ -5110,6 +5110,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "plugin discovery failed at gateway startup", exc_info=True,
             )
 
+        # Warm the skills index cache so the first api_server/subagent turn
+        # does not pay a full filesystem scan + plugin registry walk.
+        try:
+            from agent.prompt_builder import build_skills_system_prompt
+
+            build_skills_system_prompt()
+            logger.debug("Pre-warmed skills system prompt cache at gateway startup")
+        except Exception:
+            logger.debug(
+                "skills prompt pre-warm skipped at gateway startup", exc_info=True,
+            )
+
         # Register declarative shell hooks from cli-config.yaml.  Gateway
         # has no TTY, so consent has to come from one of the three opt-in
         # channels (--accept-hooks on launch, HERMES_ACCEPT_HOOKS env var,
