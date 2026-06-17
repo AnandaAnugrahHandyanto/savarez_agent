@@ -285,12 +285,14 @@ def test_tool_add_resource_sends_git_remote_sources_as_path(url):
     })
 
 
-def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path, monkeypatch):
+def test_viking_client_upload_temp_file_uses_multipart_identity_headers_v041(tmp_path, monkeypatch):
+    """v0.4.1+: api_key mode does not send tenant headers (X-OpenViking-Account/User).
+    Root keys send X-OpenViking-Root-API-Key; all keys send Authorization: Bearer."""
     sample = tmp_path / "sample.md"
     sample.write_text("# Local resource\n", encoding="utf-8")
     client = _VikingClient(
         "https://example.com",
-        api_key="test-key",
+        api_key="ov-root-test-key",
         account="test-account",
         user="test-user",
         agent="test-agent",
@@ -313,10 +315,12 @@ def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path
     assert "files" in captured_kwargs
     assert "json" not in captured_kwargs
     headers = captured_kwargs["headers"]
-    assert headers["X-OpenViking-Account"] == "test-account"
-    assert headers["X-OpenViking-User"] == "test-user"
+    # v0.4.1: tenant headers NOT sent in api_key mode
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
     assert headers["X-OpenViking-Agent"] == "test-agent"
-    assert headers["X-API-Key"] == "test-key"
+    assert headers["X-OpenViking-Root-API-Key"] == "ov-root-test-key"
+    assert headers["Authorization"] == "Bearer ov-root-test-key"
     assert "Content-Type" not in headers
 
 
@@ -340,40 +344,52 @@ def test_viking_client_raises_structured_server_error():
 
 
 def test_viking_client_headers_include_bearer_when_api_key_set():
+    """v0.4.1+: user keys use Authorization: Bearer; no X-API-Key header."""
     client = _VikingClient(
         "https://example.com",
-        api_key="test-key",
+        api_key="user-test-key",
         account="acct",
         user="usr",
         agent="hermes",
     )
     headers = client._headers()
-    assert headers["X-API-Key"] == "test-key"
-    assert headers["Authorization"] == "Bearer test-key"
+    assert "X-API-Key" not in headers
+    assert headers["Authorization"] == "Bearer user-test-key"
 
 
-def test_viking_client_headers_send_tenant_when_default():
-    # account/user set to the literal string "default". OpenViking 0.3.x
-    # requires X-OpenViking-Account and X-OpenViking-User for ROOT API key
-    # requests to tenant-scoped APIs — omitting them causes
-    # INVALID_ARGUMENT errors even when account="default".
+def test_viking_client_headers_root_key_sends_root_header():
+    """v0.4.1+: root keys (ov-root-*) send X-OpenViking-Root-API-Key."""
     client = _VikingClient(
         "https://example.com",
-        api_key="test-key",
+        api_key="ov-root-test-key",
+        account="acct",
+        user="usr",
+        agent="hermes",
+    )
+    headers = client._headers()
+    assert headers["X-OpenViking-Root-API-Key"] == "ov-root-test-key"
+    assert headers["Authorization"] == "Bearer ov-root-test-key"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
+
+
+def test_viking_client_headers_no_tenant_in_api_key_mode():
+    """v0.4.1+: tenant headers are NOT sent when api_key is set (any key type)."""
+    client = _VikingClient(
+        "https://example.com",
+        api_key="any-key",
         account="default",
         user="default",
         agent="hermes",
     )
     headers = client._headers()
-    assert headers["X-OpenViking-Account"] == "default"
-    assert headers["X-OpenViking-User"] == "default"
-    assert headers["X-OpenViking-Agent"] == "hermes"
-    assert headers["Authorization"] == "Bearer test-key"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
+    assert headers["Authorization"] == "Bearer any-key"
 
 
-def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
-    # Empty account/user strings fall back to "default" via the constructor.
-    # Headers are sent even for the default value — ROOT API keys need them.
+def test_viking_client_headers_send_tenant_in_dev_mode():
+    """v0.3.x dev mode (no api_key): tenant headers required."""
     client = _VikingClient(
         "https://example.com",
         api_key="",
@@ -388,10 +404,11 @@ def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
     assert "X-API-Key" not in headers
 
 
-def test_viking_client_headers_sent_with_real_tenant_values():
+def test_viking_client_headers_send_tenant_with_real_values_in_dev_mode():
+    """v0.3.x dev mode: tenant headers sent with real values."""
     client = _VikingClient(
         "https://example.com",
-        api_key="test-key",
+        api_key="",
         account="real-account",
         user="real-user",
         agent="hermes",
@@ -399,12 +416,14 @@ def test_viking_client_headers_sent_with_real_tenant_values():
     headers = client._headers()
     assert headers["X-OpenViking-Account"] == "real-account"
     assert headers["X-OpenViking-User"] == "real-user"
+    assert "Authorization" not in headers
 
 
-def test_viking_client_health_sends_auth_headers(monkeypatch):
+def test_viking_client_health_sends_auth_headers_v041(monkeypatch):
+    """v0.4.1+: health check sends Authorization: Bearer; no tenant headers."""
     client = _VikingClient(
         "https://example.com",
-        api_key="test-key",
+        api_key="user-test-key",
         account="",
         user="",
         agent="hermes",
@@ -419,4 +438,6 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     monkeypatch.setattr(client._httpx, "get", capture_get)
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
-    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["headers"]["Authorization"] == "Bearer user-test-key"
+    assert "X-OpenViking-Account" not in captured["headers"]
+    assert "X-OpenViking-User" not in captured["headers"]

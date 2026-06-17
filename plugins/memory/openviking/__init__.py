@@ -558,7 +558,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 )
                 resp = client.post("/api/v1/search/find", {
                     "query": query,
-                    "top_k": 5,
+                    # v0.4.1+: server rejects top_k as extra input
+                    # "top_k": 5,
                 })
                 result = resp.get("result", {})
                 parts = []

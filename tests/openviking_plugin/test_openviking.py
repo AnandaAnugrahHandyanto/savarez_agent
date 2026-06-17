@@ -148,7 +148,7 @@ class TestOpenVikingSkillQuerySafety:
         assert RecordingVikingClient.calls == [
             (
                 "/api/v1/search/find",
-                {"query": "make a skill for release triage", "top_k": 5},
+                {"query": "make a skill for release triage"},
             )
         ]
 
@@ -178,7 +178,7 @@ class TestOpenVikingSkillQuerySafety:
         assert RecordingVikingClient.calls == [
             (
                 "/api/v1/search/find",
-                {"query": "fix the failing retrieval test", "top_k": 5},
+                {"query": "fix the failing retrieval test"},
             )
         ]
 
