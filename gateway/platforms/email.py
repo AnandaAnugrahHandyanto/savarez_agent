@@ -120,17 +120,34 @@ def _outlook_oauth_env_ready(environ: Optional[Mapping[str, str]] = None) -> boo
     return bool(address and settings["tenant_id"] and settings["client_id"] and settings["client_secret"])
 
 
+def _basic_email_env_ready(environ: Optional[Mapping[str, str]] = None) -> bool:
+    env = environ if environ is not None else os.environ
+    return bool(
+        (env.get("EMAIL_ADDRESS") or "").strip()
+        and (env.get("EMAIL_PASSWORD") or "").strip()
+        and (env.get("EMAIL_IMAP_HOST") or "").strip()
+        and (env.get("EMAIL_SMTP_HOST") or "").strip()
+    )
+
+
 def _determine_email_auth_mode(environ: Optional[Mapping[str, str]] = None) -> str:
     env = environ if environ is not None else os.environ
     explicit = (env.get("EMAIL_AUTH_MODE") or "").strip().lower()
     if explicit:
         return explicit
 
+    if _basic_email_env_ready(env):
+        return "basic"
+
     if _outlook_oauth_env_ready(env):
         token_path = _get_oauth_token_path(env)
         imap_host = env.get("EMAIL_IMAP_HOST") or ""
         smtp_host = env.get("EMAIL_SMTP_HOST") or ""
-        if token_path.exists() or _looks_like_outlook_host(imap_host) or _looks_like_outlook_host(smtp_host):
+        if token_path.exists() and (
+            not (imap_host or smtp_host)
+            or _looks_like_outlook_host(imap_host)
+            or _looks_like_outlook_host(smtp_host)
+        ):
             return "outlook_oauth"
 
     return "basic"
@@ -182,13 +199,9 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
 def check_email_requirements() -> bool:
     """Check if email platform dependencies are available."""
     if _determine_email_auth_mode() == "outlook_oauth":
-        return _outlook_oauth_env_ready()
+        return _outlook_oauth_env_ready() and _get_oauth_token_path().exists()
 
-    addr = os.getenv("EMAIL_ADDRESS")
-    pwd = os.getenv("EMAIL_PASSWORD")
-    imap = os.getenv("EMAIL_IMAP_HOST")
-    smtp = os.getenv("EMAIL_SMTP_HOST")
-    return bool(all([addr, pwd, imap, smtp]))
+    return _basic_email_env_ready()
 
 
 def _decode_header_value(raw: str) -> str:
@@ -384,7 +397,9 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _write_oauth_token_cache(self, payload: Dict[str, Any]) -> None:
         self._oauth_token_path.parent.mkdir(parents=True, exist_ok=True)
-        self._oauth_token_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        tmp_path = self._oauth_token_path.with_suffix(f"{self._oauth_token_path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        tmp_path.replace(self._oauth_token_path)
 
     async def _refresh_outlook_access_token(self, token_payload: Dict[str, Any]) -> Dict[str, Any]:
         refresh_token = str(token_payload.get("refresh_token") or "").strip()
@@ -650,7 +665,22 @@ class EmailAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         messages = await loop.run_in_executor(None, self._fetch_new_messages)
         for msg_data in messages:
-            await self._dispatch_message(msg_data)
+            try:
+                acknowledged = await self._dispatch_message(msg_data)
+            except Exception as e:
+                uid = msg_data.get("uid")
+                if uid in self._seen_uids:
+                    self._seen_uids.discard(uid)
+                logger.error("[Email] Dispatch failed for %s: %s", uid, e)
+                continue
+
+            if self._uses_outlook_oauth() and acknowledged:
+                uid = str(msg_data.get("uid") or "").strip()
+                if uid:
+                    try:
+                        await self._mark_outlook_message_read(uid)
+                    except Exception as e:
+                        logger.error("[Email] Failed to mark Outlook message read %s: %s", uid, e)
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages. Runs in executor thread."""
@@ -763,7 +793,7 @@ class EmailAdapter(BasePlatformAdapter):
             body_obj = item.get("body") or {}
             body = str(body_obj.get("content") or item.get("bodyPreview") or "")
             attachments = []
-            if item.get("hasAttachments"):
+            if item.get("hasAttachments") and not self._skip_attachments:
                 attachments = await self._fetch_outlook_attachments(uid)
 
             results.append({
@@ -777,7 +807,6 @@ class EmailAdapter(BasePlatformAdapter):
                 "attachments": attachments,
                 "date": str(item.get("receivedDateTime") or ""),
             })
-            await self._mark_outlook_message_read(uid)
         return results
 
     async def _mark_outlook_message_read(self, message_id: str) -> None:
@@ -833,18 +862,22 @@ class EmailAdapter(BasePlatformAdapter):
                 })
         return attachments
 
-    async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
-        """Convert a fetched email into a MessageEvent and dispatch it."""
+    async def _dispatch_message(self, msg_data: Dict[str, Any]) -> bool:
+        """Convert a fetched email into a MessageEvent and dispatch it.
+
+        Returns True when the message was handled or intentionally dropped and can
+        be acknowledged upstream.
+        """
         sender_addr = msg_data["sender_addr"]
 
         # Skip self-messages
         if sender_addr == self._address.lower():
-            return
+            return True
 
         # Never reply to automated senders
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
-            return
+            return True
 
         # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
         # from creating a MessageEvent (and thus thread context) for senders
@@ -856,7 +889,7 @@ class EmailAdapter(BasePlatformAdapter):
             allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
             if sender_addr.lower() not in allowed:
                 logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
-                return
+                return True
 
         subject = msg_data["subject"]
         body = msg_data["body"].strip()
@@ -904,6 +937,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
+        return True
 
     async def send(
         self,

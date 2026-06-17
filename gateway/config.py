@@ -1471,13 +1471,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
     email_auth_mode = (os.getenv("EMAIL_AUTH_MODE") or "").strip().lower()
-    email_oauth_ready = bool(
+    email_basic_ready = bool(all([email_addr, email_pwd, email_imap, email_smtp]))
+    email_oauth_creds_ready = bool(
         email_addr
         and (os.getenv("MS_CLIENT_ID") or os.getenv("MSGRAPH_CLIENT_ID"))
         and (os.getenv("MS_CLIENT_SECRET") or os.getenv("MSGRAPH_CLIENT_SECRET"))
         and (os.getenv("MS_TENANT_ID") or os.getenv("MSGRAPH_TENANT_ID"))
     )
-    if all([email_addr, email_pwd, email_imap, email_smtp]) or email_auth_mode == "outlook_oauth" or email_oauth_ready:
+    email_oauth_token_file = Path(os.path.expanduser(os.getenv("EMAIL_OAUTH_TOKEN_FILE", "~/.outlook-mcp-tokens.json")))
+    email_oauth_token_ready = email_oauth_token_file.exists()
+    email_oauth_ready = email_oauth_creds_ready and email_oauth_token_ready
+    email_oauth_auto_ready = (
+        email_oauth_ready
+        and not email_basic_ready
+        and (not (email_imap or email_smtp) or any(host and any(token in host.lower() for token in ("outlook", "office365", "office.com", "exchange", "hotmail", "live.com")) for host in (email_imap, email_smtp)))
+    )
+    if email_basic_ready or (email_auth_mode == "outlook_oauth" and email_oauth_ready) or email_oauth_auto_ready:
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
         config.platforms[Platform.EMAIL].enabled = True

@@ -69,7 +69,8 @@ class TestConfigEnvOverrides(unittest.TestCase):
         "MS_CLIENT_SECRET": "client-secret",
         "MS_TENANT_ID": "tenant-id",
     }, clear=True)
-    def test_email_config_loaded_from_outlook_oauth_env(self):
+    @patch("pathlib.Path.exists", return_value=True)
+    def test_email_config_loaded_from_outlook_oauth_env(self, _mock_exists):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
@@ -77,6 +78,20 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertTrue(config.platforms[Platform.EMAIL].enabled)
         self.assertEqual(config.platforms[Platform.EMAIL].extra["address"], "hermes@test.com")
         self.assertEqual(config.platforms[Platform.EMAIL].extra["auth_mode"], "outlook_oauth")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_AUTH_MODE": "outlook_oauth",
+        "MS_CLIENT_ID": "client-id",
+        "MS_CLIENT_SECRET": "client-secret",
+        "MS_TENANT_ID": "tenant-id",
+    }, clear=True)
+    @patch("pathlib.Path.exists", return_value=False)
+    def test_email_config_not_loaded_from_outlook_oauth_env_without_token_cache(self, _mock_exists):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        self.assertNotIn(Platform.EMAIL, config.platforms)
 
 class TestCheckRequirements(unittest.TestCase):
     """Verify check_email_requirements function."""
@@ -110,9 +125,22 @@ class TestCheckRequirements(unittest.TestCase):
         "MS_CLIENT_SECRET": "client-secret",
         "MS_TENANT_ID": "tenant-id",
     }, clear=True)
-    def test_requirements_met_outlook_oauth(self):
+    @patch("pathlib.Path.exists", return_value=True)
+    def test_requirements_met_outlook_oauth(self, _mock_exists):
         from gateway.platforms.email import check_email_requirements
         self.assertTrue(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_AUTH_MODE": "outlook_oauth",
+        "MS_CLIENT_ID": "client-id",
+        "MS_CLIENT_SECRET": "client-secret",
+        "MS_TENANT_ID": "tenant-id",
+    }, clear=True)
+    @patch("pathlib.Path.exists", return_value=False)
+    def test_requirements_not_met_outlook_oauth_without_token_cache(self, _mock_exists):
+        from gateway.platforms.email import check_email_requirements
+        self.assertFalse(check_email_requirements())
 
 
 class TestOutlookOAuthHelpers(unittest.TestCase):
@@ -129,6 +157,35 @@ class TestOutlookOAuthHelpers(unittest.TestCase):
     def test_determine_email_auth_mode_prefers_outlook_oauth(self, _mock_exists):
         from gateway.platforms.email import _determine_email_auth_mode
         self.assertEqual(_determine_email_auth_mode(), "outlook_oauth")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@outlook.com",
+        "EMAIL_PASSWORD": "pw",
+        "EMAIL_IMAP_HOST": "outlook.office365.com",
+        "EMAIL_SMTP_HOST": "smtp-mail.outlook.com",
+        "MS_CLIENT_ID": "client-id",
+        "MS_CLIENT_SECRET": "client-secret",
+        "MS_TENANT_ID": "tenant-id",
+        "EMAIL_OAUTH_TOKEN_FILE": "/tmp/outlook-token.json",
+    }, clear=True)
+    @patch("pathlib.Path.exists", return_value=True)
+    def test_determine_email_auth_mode_prefers_basic_when_basic_is_fully_configured(self, _mock_exists):
+        from gateway.platforms.email import _determine_email_auth_mode
+        self.assertEqual(_determine_email_auth_mode(), "basic")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@outlook.com",
+        "EMAIL_IMAP_HOST": "outlook.office365.com",
+        "EMAIL_SMTP_HOST": "smtp-mail.outlook.com",
+        "MS_CLIENT_ID": "client-id",
+        "MS_CLIENT_SECRET": "client-secret",
+        "MS_TENANT_ID": "tenant-id",
+        "EMAIL_OAUTH_TOKEN_FILE": "/tmp/outlook-token.json",
+    }, clear=True)
+    @patch("pathlib.Path.exists", return_value=False)
+    def test_determine_email_auth_mode_does_not_auto_select_outlook_oauth_without_token_cache(self, _mock_exists):
+        from gateway.platforms.email import _determine_email_auth_mode
+        self.assertEqual(_determine_email_auth_mode(), "basic")
 
 
 class TestHelperFunctions(unittest.TestCase):
@@ -923,6 +980,31 @@ class TestFetchNewMessages(unittest.TestCase):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
+    def test_fetch_outlook_skips_attachment_download_when_configured(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._auth_mode = "outlook_oauth"
+        adapter._skip_attachments = True
+        adapter._outlook_graph_json = AsyncMock(return_value={
+            "value": [{
+                "id": "msg-1",
+                "subject": "Test",
+                "from": {"emailAddress": {"address": "user@test.com", "name": "User"}},
+                "body": {"content": "hello"},
+                "bodyPreview": "hello",
+                "internetMessageId": "<msg-1@test.com>",
+                "receivedDateTime": "2026-01-01T00:00:00Z",
+                "hasAttachments": True,
+            }]
+        })
+        adapter._fetch_outlook_attachments = AsyncMock(return_value=[{"path": "/tmp/should-not-load", "filename": "x.txt", "type": "document", "media_type": "text/plain"}])
+
+        results = asyncio.run(adapter._fetch_new_messages_outlook_oauth())
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["attachments"], [])
+        adapter._fetch_outlook_attachments.assert_not_awaited()
+
     def test_fetch_skips_seen_uids(self):
         """Already-seen UIDs should not be fetched again."""
         adapter = self._make_adapter()
@@ -1025,6 +1107,7 @@ class TestPollLoop(unittest.TestCase):
 
         async def mock_dispatch(msg_data):
             dispatched.append(msg_data)
+            return True
 
         adapter._dispatch_message = mock_dispatch
 
@@ -1049,6 +1132,33 @@ class TestPollLoop(unittest.TestCase):
 
         self.assertEqual(len(dispatched), 1)
         self.assertEqual(dispatched[0]["subject"], "Inbox Test")
+
+    def test_check_inbox_marks_outlook_messages_read_after_dispatch(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._auth_mode = "outlook_oauth"
+        adapter._fetch_new_messages = MagicMock(return_value=[{"uid": "outlook-1", "subject": "OAuth", "sender_addr": "user@test.com", "sender_name": "User", "message_id": "<oauth1@test.com>", "in_reply_to": "", "body": "hello", "attachments": [], "date": ""}])
+        adapter._dispatch_message = AsyncMock(return_value=True)
+        adapter._mark_outlook_message_read = AsyncMock()
+
+        asyncio.run(adapter._check_inbox())
+
+        adapter._dispatch_message.assert_awaited_once()
+        adapter._mark_outlook_message_read.assert_awaited_once_with("outlook-1")
+
+    def test_check_inbox_dispatch_failure_keeps_outlook_message_unacked_and_retryable(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._auth_mode = "outlook_oauth"
+        adapter._seen_uids = {"outlook-2"}
+        adapter._fetch_new_messages = MagicMock(return_value=[{"uid": "outlook-2", "subject": "OAuth", "sender_addr": "user@test.com", "sender_name": "User", "message_id": "<oauth2@test.com>", "in_reply_to": "", "body": "hello", "attachments": [], "date": ""}])
+        adapter._dispatch_message = AsyncMock(side_effect=RuntimeError("boom"))
+        adapter._mark_outlook_message_read = AsyncMock()
+
+        asyncio.run(adapter._check_inbox())
+
+        adapter._mark_outlook_message_read.assert_not_awaited()
+        self.assertNotIn("outlook-2", adapter._seen_uids)
 
 
 class TestSendEmailStandalone(unittest.TestCase):
