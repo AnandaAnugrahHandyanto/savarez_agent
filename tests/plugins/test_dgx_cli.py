@@ -506,21 +506,31 @@ class TestStatusNvidiaNA:
 # ---------------------------------------------------------------------------
 
 class TestCmdEndpoint:
+    # _cmd_endpoint calls the `apply_endpoint` name imported INTO
+    # plugins.dgx.cli, so the mock must patch the cli namespace. Patching
+    # plugins.dgx._dgx_config.apply_endpoint is a no-op (it doesn't rebind the
+    # already-imported name) — the prior tests did that and silently ran the
+    # real apply_endpoint. Assert the call to lock the isolation in.
     def test_switches_to_ollama(self, mock_config, capsys, monkeypatch):
         from plugins.dgx.cli import _cmd_endpoint
-        import plugins.dgx._dgx_config as cfg_mod
-        monkeypatch.setattr(cfg_mod, "apply_endpoint", lambda dgx, ep: None)
+        import plugins.dgx.cli as cli_mod
+        calls = []
+        monkeypatch.setattr(cli_mod, "apply_endpoint",
+                            lambda dgx, ep=None, **k: calls.append(ep))
         ret = _cmd_endpoint("ollama")
         assert ret == 0
-        out = capsys.readouterr().out
-        assert "ollama" in out.lower()
+        assert calls == ["ollama"]
+        assert "ollama" in capsys.readouterr().out.lower()
 
     def test_switches_to_vllm(self, mock_config, capsys, monkeypatch):
         from plugins.dgx.cli import _cmd_endpoint
-        import plugins.dgx._dgx_config as cfg_mod
-        monkeypatch.setattr(cfg_mod, "apply_endpoint", lambda dgx, ep: None)
+        import plugins.dgx.cli as cli_mod
+        calls = []
+        monkeypatch.setattr(cli_mod, "apply_endpoint",
+                            lambda dgx, ep=None, **k: calls.append(ep))
         ret = _cmd_endpoint("vllm")
         assert ret == 0
+        assert calls == ["vllm"]
 
 
 # ---------------------------------------------------------------------------
