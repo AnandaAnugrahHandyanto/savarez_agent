@@ -564,8 +564,8 @@ export function useSessionActions({
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
-      const isCurrentResume = () =>
-        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
+      const isLatestResume = () => resumeRequestRef.current === requestId
+      const isCurrentResume = () => isLatestResume() && selectedStoredSessionIdRef.current === storedSessionId
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
@@ -600,6 +600,14 @@ export function useSessionActions({
       }
 
       await ensureGatewayProfile(sessionProfile)
+
+      // A slower, older resume can finish its profile switch after a newer
+      // sidebar click already selected a different route. Stop before touching
+      // shared selection/message stores, otherwise the stale resume can reselect
+      // the wrong row and leave the previous transcript painted under it.
+      if (!isLatestResume()) {
+        return
+      }
 
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
