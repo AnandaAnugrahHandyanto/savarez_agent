@@ -1250,13 +1250,21 @@ class TestCmdModelsAdd:
         assert ret == 1
         assert "vllm not found" in capsys.readouterr().out
 
+    @staticmethod
+    def _ssh_launch_ok(ssh_calls, pid="12345"):
+        # Launch (`echo $!`) returns a PID; the liveness probe (`kill -0`)
+        # reports the process is still alive, so the server is persisted.
+        def _ssh(u, h, cmd, **k):
+            ssh_calls.append(cmd)
+            return (True, "alive") if "kill -0" in cmd else (True, pid)
+        return _ssh
+
     def test_hf_model_starts_vllm_serve_command(self, mock_config, monkeypatch):
         from plugins.dgx.cli import _cmd_models_add
         ssh_calls = []
         monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin",
                             lambda *a: "/home/u/.local/bin/vllm")
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
-                            lambda u, h, cmd, **k: ssh_calls.append(cmd) or (True, "12345"))
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", self._ssh_launch_ok(ssh_calls))
         monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
         ret = _cmd_models_add("nvidia/Nemotron-Elastic-12B", port=8900)
         assert ret == 0
@@ -1266,8 +1274,7 @@ class TestCmdModelsAdd:
         from plugins.dgx.cli import _cmd_models_add
         ssh_calls = []
         monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin", lambda *a: "/vllm")
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
-                            lambda u, h, cmd, **k: ssh_calls.append(cmd) or (True, "1"))
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", self._ssh_launch_ok(ssh_calls, "1"))
         monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
         _cmd_models_add("nvidia/foo", port=8900)
         assert any("--trust-remote-code" in c for c in ssh_calls)
@@ -1276,28 +1283,50 @@ class TestCmdModelsAdd:
         from plugins.dgx.cli import _cmd_models_add
         ssh_calls = []
         monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin", lambda *a: "/vllm")
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
-                            lambda u, h, cmd, **k: ssh_calls.append(cmd) or (True, "1"))
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", self._ssh_launch_ok(ssh_calls, "1"))
         monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
         _cmd_models_add("nvidia/foo", port=8900, gpu_mem=0.70)
         assert any("--gpu-memory-utilization 0.70" in c for c in ssh_calls)
 
-    def test_hf_model_persists_to_vllm_servers(self, mock_config, monkeypatch):
+    def test_hf_model_persists_to_vllm_servers_with_pid(self, mock_config, monkeypatch):
         from plugins.dgx.cli import _cmd_models_add
         monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin", lambda *a: "/vllm")
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run", lambda *a, **k: (True, "999"))
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", self._ssh_launch_ok([], "999"))
         _cmd_models_add("nvidia/Nemotron-Elastic-12B", port=8900)
         servers = mock_config.get("dgx", {}).get("vllm_servers", [])
+        # Now persists the PID too, so rm/restart can stop it precisely.
         assert any(s["model"] == "nvidia/Nemotron-Elastic-12B" and s["port"] == 8900
-                   for s in servers)
+                   and s.get("pid") == 999 for s in servers)
+
+    def test_not_persisted_when_process_dies_immediately(self, monkeypatch, dgx_defaults):
+        # Regression: `echo $!` returns a PID before vLLM binds the port, so a
+        # fast crash (e.g. port already in use) must NOT be reported as success
+        # nor persisted as a "running" server.
+        from plugins.dgx.cli import _cmd_models_add
+        dgx = dict(dgx_defaults); dgx["vllm_servers"] = []
+        saved = {}
+        monkeypatch.setattr("plugins.dgx.cli.load_dgx_config", lambda: dict(dgx))
+        monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin", lambda *a: "/vllm")
+        monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda d: saved.update(d))
+
+        def _ssh(u, h, cmd, **k):
+            if "kill -0" in cmd:
+                return (True, "dead")     # process gone moments after launch
+            if "echo $!" in cmd:
+                return (True, "12345")    # forked, returned a PID
+            return (True, "")
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", _ssh)
+        ret = _cmd_models_add("nvidia/Foo", port=8900)
+        assert ret == 1
+        assert "vllm_servers" not in saved   # nothing persisted
 
     def test_restart_shows_restarting_message(self, monkeypatch, dgx_defaults, capsys):
         from plugins.dgx.cli import _cmd_models_add
         dgx = dict(dgx_defaults)
-        dgx["vllm_servers"] = [{"model": "nvidia/foo", "port": 8900}]
+        dgx["vllm_servers"] = [{"model": "nvidia/foo", "port": 8900, "pid": 7}]
         monkeypatch.setattr("plugins.dgx.cli.load_dgx_config", lambda: dict(dgx))
         monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin", lambda *a: "/vllm")
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run", lambda *a, **k: (True, "999"))
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", self._ssh_launch_ok([], "999"))
         monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
         _cmd_models_add("nvidia/foo")
         assert "Restarting" in capsys.readouterr().out
@@ -1305,12 +1334,11 @@ class TestCmdModelsAdd:
     def test_restart_reuses_existing_port(self, monkeypatch, dgx_defaults, capsys):
         from plugins.dgx.cli import _cmd_models_add
         dgx = dict(dgx_defaults)
-        dgx["vllm_servers"] = [{"model": "nvidia/foo", "port": 8999}]
+        dgx["vllm_servers"] = [{"model": "nvidia/foo", "port": 8999, "pid": 7}]
         monkeypatch.setattr("plugins.dgx.cli.load_dgx_config", lambda: dict(dgx))
         monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin", lambda *a: "/vllm")
         ssh_calls = []
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
-                            lambda u, h, cmd, **k: ssh_calls.append(cmd) or (True, "1"))
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", self._ssh_launch_ok(ssh_calls, "1"))
         monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
         _cmd_models_add("nvidia/foo")
         assert any("--port 8999" in c for c in ssh_calls)
@@ -1401,6 +1429,43 @@ class TestCmdModelsRm:
         ret = _cmd_models_rm("old-model:latest", force=True)
         assert ret == 0
         assert "old-model:latest" in calls
+
+    def test_rm_stops_by_pid_and_port_not_pkill_substring(self, monkeypatch, dgx_defaults):
+        # Regression: stop precisely by recorded PID + `fuser -k <port>/tcp`.
+        # NEVER `pkill -f 'vllm serve <model>'` — its substring match would also
+        # kill prefix-sibling servers (nvidia/Foo would take down
+        # nvidia/Foo-Instruct).
+        from plugins.dgx.cli import _cmd_models_rm
+        dgx = dict(dgx_defaults)
+        dgx["vllm_servers"] = [{"model": "nvidia/Foo", "port": 8900, "pid": 4242}]
+        monkeypatch.setattr("plugins.dgx.cli.load_dgx_config", lambda: dict(dgx))
+        monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
+        calls = []
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
+                            lambda u, h, cmd, **k: calls.append(cmd) or (True, "done"))
+        ret = _cmd_models_rm("nvidia/Foo", force=True)
+        assert ret == 0
+        joined = " ".join(calls)
+        assert "kill 4242" in joined            # precise PID kill
+        assert "fuser -k 8900/tcp" in joined    # port-scoped fallback
+        assert "pkill -f" not in joined         # never substring-match
+
+    def test_rm_all_uses_per_server_kill_not_blanket_pkill(self, monkeypatch, dgx_defaults):
+        from plugins.dgx.cli import _cmd_models_rm
+        dgx = dict(dgx_defaults)
+        dgx["vllm_servers"] = [
+            {"model": "nvidia/a", "port": 8900, "pid": 11},
+            {"model": "nvidia/b", "port": 8901, "pid": 22},
+        ]
+        monkeypatch.setattr("plugins.dgx.cli.load_dgx_config", lambda: dict(dgx))
+        monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
+        calls = []
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
+                            lambda u, h, cmd, **k: calls.append(cmd) or (True, "done"))
+        assert _cmd_models_rm(None, all_servers=True, force=True) == 0
+        joined = " ".join(calls)
+        assert "kill 11" in joined and "kill 22" in joined
+        assert "pkill -f" not in joined         # no blanket `pkill -f 'vllm serve'`
 
 
 # ---------------------------------------------------------------------------

@@ -743,6 +743,27 @@ def _cmd_models() -> int:
     return 0 if found_any else 1
 
 
+def _stop_vllm_server(dgx: Dict[str, Any], entry: Dict[str, Any]) -> None:
+    """Stop ONE tracked vLLM server precisely.
+
+    Kills the recorded PID (if any) and frees the port with ``fuser -k
+    <port>/tcp`` (port-scoped). Deliberately avoids ``pkill -f 'vllm serve
+    <model>'``: ``pkill -f`` matches a substring of the whole command line, so
+    it would also kill prefix-sibling servers (stopping ``nvidia/Foo`` would
+    take down ``nvidia/Foo-Instruct``) and — for the blanket ``pkill -f 'vllm
+    serve'`` — any unrelated process whose argv merely contains that text.
+    """
+    parts: List[str] = []
+    pid = entry.get("pid")
+    port = entry.get("port")
+    if pid:
+        parts.append(f"kill {int(pid)} 2>/dev/null")
+    if port:
+        parts.append(f"fuser -k {int(port)}/tcp 2>/dev/null")
+    parts.append("true")
+    _ssh_run(dgx["ssh_user"], dgx["host"], "; ".join(parts), timeout=10)
+
+
 def _cmd_models_add(model: Optional[str], port: Optional[int] = None,
                     gpu_mem: float = 0.85) -> int:
     """Pull to Ollama (short names) or start vLLM server (HF org/model IDs)."""
@@ -773,9 +794,7 @@ def _cmd_models_add(model: Optional[str], port: Optional[int] = None,
     if existing:
         old_port = existing["port"]
         print(f"Restarting vLLM for {model} (was port {old_port}) ...")
-        _ssh_run(dgx["ssh_user"], dgx["host"],
-                 f"fuser -k {old_port}/tcp 2>/dev/null; pkill -f 'vllm serve {model}' 2>/dev/null; true",
-                 timeout=8)
+        _stop_vllm_server(dgx, existing)
         use_port = old_port  # keep same port on restart
         log_file = f"/tmp/vllm-{use_port}.log"
     else:
@@ -787,21 +806,43 @@ def _cmd_models_add(model: Optional[str], port: Optional[int] = None,
         f"> {log_file} 2>&1 & echo $!"
     )
     ok, pid = _ssh_run(dgx["ssh_user"], dgx["host"], cmd, timeout=12)
-    if not ok or not (pid or "").strip().isdigit():
+    pid = (pid or "").strip()
+    if not ok or not pid.isdigit():
         print(f"Failed to start vLLM: {pid}")
         return 1
 
-    # Persist to config
+    # `echo $!` only proves the shell forked the process — not that vLLM bound
+    # the port or even survived. A fast failure (port already in use, CUDA or
+    # import error) would otherwise be reported as success and persisted as a
+    # "running" server pointing at a dead port, which `use` then routes traffic
+    # to. Confirm the process is still alive a moment later. We do NOT wait for
+    # the model to finish loading (30-120 s) — only that it didn't immediately
+    # exit.
+    _, alive = _ssh_run(
+        dgx["ssh_user"], dgx["host"],
+        f"sleep 2; kill -0 {pid} 2>/dev/null && echo alive || echo dead",
+        timeout=10,
+    )
+    if "alive" not in (alive or ""):
+        _, tail = _ssh_run(dgx["ssh_user"], dgx["host"],
+                           f"tail -n 5 {log_file} 2>/dev/null", timeout=6)
+        print(f"vLLM exited immediately — not persisting (is port {use_port} "
+              f"already in use? see {log_file} on the DGX):")
+        if tail:
+            print(tail)
+        return 1
+
+    # Persist (model, port, pid) — the PID lets rm/restart stop it precisely.
     servers = [s for s in servers if s.get("model") != model]
-    servers.append({"model": model, "port": use_port})
+    servers.append({"model": model, "port": use_port, "pid": int(pid)})
     dgx["vllm_servers"] = servers
     save_dgx_config(dgx)
 
-    print(f"  PID    : {pid.strip()}")
+    print(f"  PID    : {pid}")
     print(f"  Port   : {use_port}")
     print(f"  Log    : {log_file}")
     print()
-    print(f"  Watch  : hermes dgx run \"tail -f {log_file}\"")
+    print(f"  Watch  : tail -f {log_file}  (on the DGX)")
     print(f"  Use it : hermes dgx use {model} --endpoint vllm")
     print(f"  (Model loading typically takes 30-120 s)")
     return 0
@@ -826,11 +867,11 @@ def _cmd_models_rm(model: Optional[str], force: bool = False,
             if ans not in ("y", "yes"):
                 print("aborted")
                 return 0
-        _ssh_run(dgx["ssh_user"], dgx["host"],
-                 "pkill -f 'vllm serve' 2>/dev/null; echo done", timeout=10)
+        for entry in servers:
+            _stop_vllm_server(dgx, entry)
         dgx["vllm_servers"] = []
         save_dgx_config(dgx)
-        print(f"Stopped all vLLM servers. GPU memory freed.")
+        print("Stopped all vLLM servers. GPU memory freed.")
         return 0
 
     if not model:
@@ -852,9 +893,7 @@ def _cmd_models_rm(model: Optional[str], force: bool = False,
             if ans not in ("y", "yes"):
                 print("aborted")
                 return 0
-        _ssh_run(dgx["ssh_user"], dgx["host"],
-                 f"fuser -k {port}/tcp 2>/dev/null; pkill -f 'vllm serve {model}' 2>/dev/null; true",
-                 timeout=10)
+        _stop_vllm_server(dgx, entry)
         dgx["vllm_servers"] = [s for s in servers if s.get("model") != model]
         save_dgx_config(dgx)
         print(f"Stopped vLLM for {model} (port {port}). GPU memory freed.")
