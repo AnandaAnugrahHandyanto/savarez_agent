@@ -30,8 +30,8 @@ Music promotion and AI media production from Suede Labs AI. Two fulfillment trac
 ## Prerequisites
 
 ```bash
-uv pip install suede-ai       # preferred — works inside Hermes' uv-managed env
-# or: pip3 install suede-ai --break-system-packages  (macOS Homebrew fallback)
+uv pip install --system suede-ai    # install system-wide (no venv needed)
+# inside a Hermes session, uv pip install suede-ai works without --system
 ```
 
 Authentication uses a funded Ethereum wallet — no API keys or subscriptions. Set your private key as an environment variable:
