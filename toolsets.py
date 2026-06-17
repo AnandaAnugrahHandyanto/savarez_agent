@@ -61,6 +61,13 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Discord server introspection + thread/channel management. Both tools are
+    # gated on DISCORD_BOT_TOKEN via check_fn, so they're invisible on CLI/cron
+    # sessions without a bot token. They live in core (rather than only in the
+    # `hermes-discord` toolset) so the model can always reach for them when
+    # the bot is present — otherwise tool_search defers them out of the
+    # model-facing tools list and the model thinks Discord ops aren't possible.
+    "discord", "discord_admin",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is

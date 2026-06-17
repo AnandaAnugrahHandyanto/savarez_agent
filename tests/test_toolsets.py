@@ -214,9 +214,12 @@ class TestToolsetConsistency:
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets share the same core tools.
 
-        Platform-specific additions (e.g. ``discord`` / ``discord_admin``
-        on hermes-discord, gated on DISCORD_BOT_TOKEN) are allowed on top —
-        the invariant is that the core set is identical across platforms.
+        ``discord`` / ``discord_admin`` now live in ``_HERMES_CORE_TOOLS``
+        (gated by check_fn on ``DISCORD_BOT_TOKEN``), so they're part of the
+        shared set — invisible to CLI/cron sessions without a bot, but
+        available to the model on every hermes-* platform when the bot
+        token is present. Other platform-specific extras would still be
+        allowed on top via subset semantics here.
         """
         platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
         tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
@@ -225,6 +228,11 @@ class TestToolsetConsistency:
         core = set.intersection(*tool_sets)
         for name, ts in zip(platforms, tool_sets):
             assert core.issubset(ts), f"{name} is missing core tools: {core - ts}"
+        # Discord tools are now part of the shared core because they live
+        # in _HERMES_CORE_TOOLS — check_fn makes them invisible on platforms
+        # without a bot token, but the toolset always lists them.
+        assert "discord" in core
+        assert "discord_admin" in core
         # Sanity: the shared core must be non-trivial (i.e. we didn't
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"

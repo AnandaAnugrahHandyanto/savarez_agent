@@ -623,22 +623,33 @@ class TestToolsetInclusion:
         assert "discord" in TOOLSETS["hermes-discord"]["tools"]
         assert "discord_admin" in TOOLSETS["hermes-discord"]["tools"]
 
-    def test_discord_tools_not_in_core_tools(self):
-        from toolsets import _HERMES_CORE_TOOLS
-        assert "discord" not in _HERMES_CORE_TOOLS
-        assert "discord_admin" not in _HERMES_CORE_TOOLS
+    def test_discord_tools_in_core_tools(self):
+        """``discord`` and ``discord_admin`` are part of _HERMES_CORE_TOOLS.
 
-    def test_discord_tools_not_in_other_toolsets(self):
+        check_fn gates visibility on DISCORD_BOT_TOKEN, so CLI/cron sessions
+        without a bot don't see them anyway — but putting them in core means
+        the model on any hermes-* platform can reach for them when a bot is
+        present, instead of having tool_search defer them out of sight.
+        """
+        from toolsets import _HERMES_CORE_TOOLS
+        assert "discord" in _HERMES_CORE_TOOLS
+        assert "discord_admin" in _HERMES_CORE_TOOLS
+
+    def test_discord_tools_only_in_hermes_platform_toolsets(self):
+        """Non-platform toolsets (web, search, cron, etc.) must NOT bundle
+        the Discord tools — only the hermes-* platform toolsets do, via
+        their inclusion of _HERMES_CORE_TOOLS.
+        """
         from toolsets import TOOLSETS
         for name, ts in TOOLSETS.items():
-            if name in {"hermes-discord", "hermes-gateway", "discord", "discord_admin"}:
+            if name.startswith("hermes-") or name in {"discord", "discord_admin"}:
                 continue
             tools = ts.get("tools", [])
-            assert "discord" not in tools or name == "discord", (
-                f"discord tool should not be in toolset '{name}'"
+            assert "discord" not in tools, (
+                f"discord tool should not be in non-platform toolset '{name}'"
             )
-            assert "discord_admin" not in tools or name == "discord_admin", (
-                f"discord_admin tool should not be in toolset '{name}'"
+            assert "discord_admin" not in tools, (
+                f"discord_admin tool should not be in non-platform toolset '{name}'"
             )
 
 
