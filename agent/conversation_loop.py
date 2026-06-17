@@ -525,6 +525,7 @@ def run_conversation(
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
+    background_review_baseline = list(conversation_history) if conversation_history else []
     conversation_history = _ctx.conversation_history
     active_system_prompt = _ctx.active_system_prompt
     effective_task_id = _ctx.effective_task_id
@@ -534,7 +535,6 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
-    # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None
     interrupted = False
@@ -4436,6 +4436,7 @@ def run_conversation(
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
+    agent._background_review_baseline_snapshot = background_review_baseline + list(messages)
     from agent.turn_finalizer import finalize_turn
     return finalize_turn(
         agent,
@@ -4452,7 +4453,6 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
     )
-
 
 
 __all__ = ["run_conversation"]
