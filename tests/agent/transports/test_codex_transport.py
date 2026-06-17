@@ -453,3 +453,47 @@ class TestCodexNormalizeResponse:
         tc = nr.tool_calls[0]
         assert tc.name == "terminal"
         assert '"command"' in tc.arguments
+
+    def test_empty_output_with_broken_output_text_accessor(self, transport):
+        """A broken SDK output_text property should not mask the real empty output error."""
+
+        class BrokenOutputText:
+            output = []
+            status = "completed"
+            incomplete_details = None
+            usage = SimpleNamespace(
+                input_tokens=1,
+                output_tokens=0,
+                input_tokens_details=None,
+                output_tokens_details=None,
+            )
+
+            @property
+            def output_text(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        with pytest.raises(RuntimeError, match="no output items"):
+            transport.normalize_response(BrokenOutputText())
+
+    def test_reasoning_only_text_marks_incomplete(self, transport):
+        """Reasoning-only responses need another turn, even without encrypted_content."""
+        r = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    status="in_progress",
+                    summary=[SimpleNamespace(type="summary_text", text="Thinking...")],
+                ),
+            ],
+            status="in_progress",
+            incomplete_details=None,
+            usage=SimpleNamespace(
+                input_tokens=10,
+                output_tokens=5,
+                input_tokens_details=None,
+                output_tokens_details=None,
+            ),
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "incomplete"
+        assert nr.content == ""

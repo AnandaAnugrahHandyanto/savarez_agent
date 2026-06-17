@@ -4220,14 +4220,15 @@ class GatewayRunner:
             return "default"
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
-        """Poll ``kanban_notify_subs`` and deliver terminal events to users.
+        """Poll ``kanban_notify_subs`` and deliver task status events to users.
 
         For each subscription row, fetches ``task_events`` newer than the
-        stored cursor with kind in the terminal set (``completed``,
-        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
-        message per new event to ``(platform, chat_id, thread_id)``,
-        then advances the cursor. When a task reaches a terminal state
-        (``completed`` / ``archived``), the subscription is removed.
+        stored cursor with kind in the report set (``created``, ``promoted``,
+        ``claimed``, ``spawned``, ``completed``, ``blocked``, ``gave_up``,
+        ``crashed``, ``timed_out``). Sends one message per new event to
+        ``(platform, chat_id, thread_id)``, then advances the cursor. When a
+        task reaches a terminal state (``completed`` / ``archived``), the
+        subscription is removed.
 
         Runs in the gateway event loop; all SQLite work is pushed to a
         thread via ``asyncio.to_thread`` so the loop never blocks on the
@@ -4245,7 +4246,10 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        REPORT_KINDS = (
+            "created", "promoted", "claimed", "spawned",
+            "completed", "blocked", "gave_up", "crashed", "timed_out",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4353,7 +4357,7 @@ class GatewayRunner:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
+                                    kinds=REPORT_KINDS,
                                 )
                                 if not events:
                                     continue
@@ -4406,12 +4410,49 @@ class GatewayRunner:
                     title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
                         kind = ev.kind
-                        # Identity prefix: attribute terminal pings to the
-                        # worker that did the work. Makes fleets (where one
-                        # chat subscribes to many tasks) legible at a glance.
+                        # Identity prefix: mention the original requester (when
+                        # the gateway captured a source user) and attribute the
+                        # terminal ping to the worker that did the work. The
+                        # requester mention is what brings the human back into
+                        # the originating thread for review.
+                        user_id = str(sub.get("user_id") or "").strip()
+                        requester_tag = ""
+                        if user_id:
+                            if platform_str == "discord":
+                                requester_tag = f"<@{user_id}> "
+                            else:
+                                requester_tag = f"@{user_id} "
                         who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
-                        if kind == "completed":
+                        tag = f"{requester_tag}@{who} " if who else requester_tag
+                        assignee = task.assignee if task and task.assignee else None
+                        if kind == "created":
+                            status = ""
+                            assignee_hint = ""
+                            if ev.payload:
+                                if ev.payload.get("status"):
+                                    status = f" status={ev.payload['status']}"
+                                if ev.payload.get("assignee"):
+                                    assignee_hint = f" assignee={ev.payload['assignee']}"
+                            msg = (
+                                f"🆕 {tag}Kanban {sub['task_id']} created"
+                                f" — {title}{assignee_hint}{status}; next: dispatcher"
+                            )
+                        elif kind == "promoted":
+                            msg = (
+                                f"↗ {tag}Kanban {sub['task_id']} ready"
+                                f" — dependencies complete; next: dispatcher"
+                            )
+                        elif kind == "claimed":
+                            msg = (
+                                f"▶ {tag}Kanban {sub['task_id']} running"
+                                f" — assignee={assignee or 'unknown'}; next: worker"
+                            )
+                        elif kind == "spawned":
+                            msg = (
+                                f"🚀 {tag}Kanban {sub['task_id']} dispatched"
+                                f" — assignee={assignee or 'unknown'}; next: status update"
+                            )
+                        elif kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried
                             # in the event payload), then fall back to
@@ -4513,12 +4554,12 @@ class GatewayRunner:
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
                         # Unsubscribe only when the task has reached a truly
-                        # final status (done / archived). For blocked /
+                        # created / promoted / claimed / spawned / blocked /
                         # gave_up / crashed / timed_out the subscription is
                         # kept alive so the user gets notified again if the
                         # dispatcher respawns the task and it cycles into the
-                        # same state. See the longer comment on TERMINAL_KINDS
-                        # above for the failure mode this prevents.
+                        # same state. See the longer comment on REPORT_KINDS
+
                         task_terminal = task and task.status in {"done", "archived"}
                         if task_terminal:
                             await asyncio.to_thread(
@@ -6905,6 +6946,10 @@ class GatewayRunner:
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        frontdoor_result = await self._maybe_handle_frontdoor_pm_routing(event)
+        if frontdoor_result is not None:
+            return frontdoor_result
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -7008,13 +7053,27 @@ class GatewayRunner:
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
         if event.media_urls:
+            import mimetypes as _mimetypes
+
             image_paths = []
             audio_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
+                if not mtype or mtype == "application/octet-stream":
+                    guessed, _ = _mimetypes.guess_type(path)
+                    if guessed:
+                        mtype = guessed
+
+                # Route native image inputs per attachment, not by the message-level
+                # type. Mixed Discord messages can be classified as PHOTO when the
+                # first attachment is an image; using that broad event type here
+                # would incorrectly send ZIP/PDF/etc. files to vision models.
+                if mtype.startswith("image/"):
                     image_paths.append(path)
-                if mtype.startswith("audio/") or event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
+                if mtype.startswith("audio/") or (
+                    event.message_type in {MessageType.VOICE, MessageType.AUDIO}
+                    and len(event.media_urls) == 1
+                ):
                     audio_paths.append(path)
 
             if image_paths:
@@ -7076,7 +7135,7 @@ class GatewayRunner:
                         except Exception:
                             pass
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if event.media_urls:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
@@ -8169,6 +8228,14 @@ class GatewayRunner:
             logger.exception("Agent error in session %s", session_key)
             error_type = type(e).__name__
             error_detail = str(e)[:300] if str(e) else "no details available"
+            if (
+                "_pool_may_recover_from_rate_limit" in error_detail
+                or "No Codex credentials" in error_detail
+            ):
+                return (
+                    "Codex 사용량 한도를 초과해서 발생한 오류입니다. "
+                    "잠시 후 다시 시도하거나 다른 모델/세션으로 재시도해주세요."
+                )
             status_hint = ""
             status_code = getattr(e, "status_code", None)
             _hist_len = len(history) if 'history' in locals() else 0
@@ -8599,6 +8666,208 @@ class GatewayRunner:
         )
 
 
+    @staticmethod
+    def _frontdoor_pm_config(config: Any) -> dict[str, Any]:
+        """Return the optional frontdoor PM routing config block."""
+        try:
+            block = cfg_get(config, "kanban", "frontdoor_pm_routing", default={})
+        except Exception:
+            block = {}
+        return block if isinstance(block, dict) else {}
+
+    @staticmethod
+    def _frontdoor_origin_payload(event: MessageEvent, session_id: Optional[str]) -> dict[str, Any]:
+        source = event.source
+        platform = getattr(source, "platform", None)
+        platform_str = (getattr(platform, "value", None) or str(platform or "")).lower()
+        return {
+            "platform": platform_str,
+            "chat_id": str(getattr(source, "chat_id", "") or ""),
+            "chat_name": str(getattr(source, "chat_name", "") or "") or None,
+            "chat_type": str(getattr(source, "chat_type", "") or "") or None,
+            "thread_id": str(getattr(source, "thread_id", "") or "") or None,
+            "parent_chat_id": str(getattr(source, "parent_chat_id", "") or "") or None,
+            "guild_id": str(getattr(source, "guild_id", "") or "") or None,
+            "message_id": str(getattr(source, "message_id", "") or getattr(event, "message_id", "") or "") or None,
+            "user_id": str(getattr(source, "user_id", "") or "") or None,
+            "user_name": str(getattr(source, "user_name", "") or "") or None,
+            "source_session_id": session_id,
+        }
+
+    @staticmethod
+    def _classify_frontdoor_pm_request(text: str) -> dict[str, Any]:
+        """Small deterministic classifier for proposal-first PM routing."""
+        normalized = " ".join((text or "").split())
+        lowered = normalized.lower()
+        safety_terms = [
+            "credential", "credentials", "secret", "token", "password", "auth",
+            "deploy", "publish", "billing", "production data", "customer data",
+            "prod db", "raw export", "delete", "archive", "destructive",
+        ]
+        matched_safety = [term for term in safety_terms if term in lowered]
+        if matched_safety:
+            return {
+                "classification": "approval-required",
+                "confidence": "high",
+                "reason": "safety/approval-gated term detected",
+                "safety": {"requires_approval": True, "matched_terms": matched_safety},
+            }
+
+        governance_terms = [
+            "agents.md", "kanban", "pm", "hemogry", "해먹으리", "gateway", "harness",
+            "document-router", "frontdoor", "specialist", "graph", "wiki", "docs/wiki",
+        ]
+        action_terms = [
+            "implement", "route", "routing", "create", "fix", "build", "wire",
+            "구현", "수정", "진행", "만들", "연결", "분해", "라우팅", "작업", "검토",
+        ]
+        governance_hits = [term for term in governance_terms if term in lowered]
+        action_hits = [term for term in action_terms if term in lowered]
+        if len(normalized) >= 24 and governance_hits and action_hits:
+            return {
+                "classification": "pm-kanban-routing",
+                "confidence": "high" if len(governance_hits) >= 2 else "medium",
+                "reason": "AGENTS.md/project governance and concrete work signals detected",
+                "safety": {"requires_approval": False, "matched_terms": []},
+                "signals": {"governance": governance_hits, "actions": action_hits},
+            }
+        return {
+            "classification": "no-op",
+            "confidence": "low",
+            "reason": "casual or low-confidence text; keep normal agent response path",
+            "safety": {"requires_approval": False, "matched_terms": []},
+        }
+
+    async def _maybe_handle_frontdoor_pm_routing(self, event: MessageEvent) -> Optional[str]:
+        """Proposal-first Hemogry-style frontdoor routing into PM Kanban.
+
+        Disabled by default. When enabled and allowlisted, high-confidence
+        non-trivial project-governance requests become hemogrypm triage cards
+        with origin notification metadata; no-op messages fall through to the
+        normal agent path. Safety-gated requests return an approval notice and
+        do not create executable cards.
+        """
+        source = event.source
+        if source is None or bool(getattr(event, "internal", False)):
+            return None
+        if getattr(event, "message_type", None) not in (None, MessageType.TEXT):
+            return None
+        if event.is_command():
+            return None
+
+        cfg = self._frontdoor_pm_config(getattr(self, "config", {}))
+        if not cfg.get("enabled"):
+            return None
+        platform = getattr(source, "platform", None)
+        platform_str = (getattr(platform, "value", None) or str(platform or "")).lower()
+        if platform_str != "discord":
+            return None
+
+        allowed_channels = {str(v) for v in (cfg.get("channel_ids") or []) if str(v)}
+        allowed_threads = {str(v) for v in (cfg.get("thread_ids") or []) if str(v)}
+        allowed_users = {str(v) for v in (cfg.get("user_ids") or []) if str(v)}
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        parent_chat_id = str(getattr(source, "parent_chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "")
+        user_id = str(getattr(source, "user_id", "") or "")
+        if allowed_channels and chat_id not in allowed_channels and parent_chat_id not in allowed_channels:
+            return None
+        if allowed_threads and thread_id not in allowed_threads:
+            return None
+        if allowed_users and user_id not in allowed_users:
+            return None
+        if not allowed_channels and not allowed_threads:
+            logger.info("frontdoor PM routing enabled but no channel/thread allowlist configured; skipping")
+            return None
+
+        decision = self._classify_frontdoor_pm_request(event.text or "")
+        classification = decision.get("classification")
+        if classification == "no-op":
+            return None
+        if classification == "approval-required":
+            return (
+                "Frontdoor routing decision: approval required. "
+                "Safety-gated terms were detected, so no Kanban execution card was created. "
+                "Please approve/scope this explicitly before routing."
+            )
+
+        board = str(cfg.get("board") or "default")
+        assignee = str(cfg.get("assignee") or "hemogrypm")
+        input_summary = " ".join((event.text or "").split())[:220]
+        title = f"frontdoor: {input_summary[:72]}".rstrip()
+
+        session_id = None
+        try:
+            session_id = getattr(self.session_store.get_or_create_session(source), "session_id", None)
+        except Exception:
+            session_id = None
+        origin_payload = self._frontdoor_origin_payload(event, session_id)
+        event_payload = {
+            "source": {k: v for k, v in origin_payload.items() if v},
+            "input_summary": input_summary,
+            "classification": classification,
+            "confidence": decision.get("confidence"),
+            "reason": decision.get("reason"),
+            "safety": decision.get("safety", {}),
+            "target": {"board": board, "assignee": assignee, "status": "triage"},
+            "required_approvals": [],
+            "related_docs": ["AGENTS.md", "docs/wiki/AGENTS.md"],
+        }
+        body = (
+            "Frontdoor PM routing proposal generated from Discord text.\n\n"
+            f"Input summary: {input_summary}\n\n"
+            "Policy: AGENTS.md-governed non-trivial Hemogry work should be scoped by PM "
+            "before specialist execution. PM should decompose into registry-visible skills/profile tasks.\n\n"
+            f"Routing decision:\n```json\n{json.dumps(event_payload, ensure_ascii=False, indent=2)}\n```\n"
+        )
+
+        def _create_and_subscribe() -> dict[str, Any]:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=board)
+            try:
+                task_id = _kb.create_task(
+                    conn,
+                    title=title,
+                    body=body,
+                    assignee=assignee,
+                    created_by="frontdoor",
+                    tenant="hemogry" if board == "hemogry" else None,
+                    triage=True,
+                )
+                platform_value = origin_payload.get("platform")
+                chat_value = origin_payload.get("chat_id")
+                if platform_value and chat_value:
+                    _kb.add_notify_sub(
+                        conn,
+                        task_id=task_id,
+                        platform=str(platform_value),
+                        chat_id=str(chat_value),
+                        thread_id=origin_payload.get("thread_id"),
+                        user_id=origin_payload.get("user_id"),
+                        notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                    )
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, task_id, "origin_recorded", {"origin": {k: v for k, v in origin_payload.items() if v}})
+                    _kb._append_event(conn, task_id, "frontdoor_routing_decision", event_payload)
+                return {
+                    "task_id": task_id,
+                    "spawned": 0,
+                    "promoted": 0,
+                }
+            finally:
+                conn.close()
+
+        try:
+            result = await asyncio.to_thread(_create_and_subscribe)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("frontdoor PM routing failed: %s", exc)
+            return None
+        return (
+            f"Frontdoor routing decision: created Kanban PM triage card {result['task_id']} "
+            f"on board {board} for {assignee}.\n"
+            f"Kanban dispatcher tick: spawned={result.get('spawned', 0)} promoted={result.get('promoted', 0)}"
+        )
+
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.
 
@@ -8668,6 +8937,26 @@ class GatewayRunner:
                     chat_id = str(getattr(source, "chat_id", "") or "")
                     thread_id = str(getattr(source, "thread_id", "") or "")
                     user_id = str(getattr(source, "user_id", "") or "") or None
+                    origin_payload = {
+                        "platform": platform_str,
+                        "chat_id": chat_id,
+                        "chat_name": str(getattr(source, "chat_name", "") or "") or None,
+                        "chat_type": str(getattr(source, "chat_type", "") or "") or None,
+                        "thread_id": thread_id or None,
+                        "parent_chat_id": str(getattr(source, "parent_chat_id", "") or "") or None,
+                        "guild_id": str(getattr(source, "guild_id", "") or "") or None,
+                        "user_id": user_id,
+                        "user_name": str(getattr(source, "user_name", "") or "") or None,
+                        "source_session_id": (
+                            getattr(
+                                self.session_store.get_or_create_session(source),
+                                "session_id",
+                                None,
+                            )
+                            if getattr(self, "session_store", None) is not None
+                            else None
+                        ),
+                    }
                     if platform_str and chat_id:
                         def _sub():
                             from hermes_cli import kanban_db as _kb
@@ -8680,13 +8969,28 @@ class GatewayRunner:
                                     user_id=user_id,
                                     notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
                                 )
+                                with _kb.write_txn(conn):
+                                    _kb._append_event(
+                                        conn,
+                                        task_id,
+                                        "origin_recorded",
+                                        {"origin": {k: v for k, v in origin_payload.items() if v}},
+                                    )
+                                return {"spawned": 0, "promoted": 0}
                             finally:
                                 conn.close()
-                        await asyncio.to_thread(_sub)
+                        dispatch_info = await asyncio.to_thread(_sub)
+                        dispatcher_suffix = ""
+                        if dispatch_info:
+                            dispatcher_suffix = (
+                                f"\nKanban dispatcher tick: spawned={dispatch_info.get('spawned', 0)} "
+                                f"promoted={dispatch_info.get('promoted', 0)}"
+                            )
                         output = (
                             output.rstrip()
                             + "\n"
                             + t("gateway.kanban.subscribed_suffix", task_id=task_id)
+                            + dispatcher_suffix
                         )
                 except Exception as exc:
                     logger.warning("kanban create auto-subscribe failed: %s", exc)
@@ -15238,8 +15542,16 @@ class GatewayRunner:
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
             except Exception as exc:
+                exc_detail = str(exc)
+                if "No Codex credentials" in exc_detail:
+                    final_response = (
+                        "Codex 사용량 한도를 초과해서 발생한 오류입니다. "
+                        "잠시 후 다시 시도하거나 다른 모델/세션으로 재시도해주세요."
+                    )
+                else:
+                    final_response = f"⚠️ Provider authentication failed: {exc}"
                 return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "final_response": final_response,
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],

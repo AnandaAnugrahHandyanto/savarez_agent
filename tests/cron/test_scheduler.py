@@ -544,6 +544,55 @@ class TestDeliverResultWrapping:
         # Media files should be forwarded separately
         assert kwargs["media_files"] == [("/tmp/test-voice.ogg", False)]
 
+    def test_live_adapter_creates_discord_thread_when_job_requests_threaded_delivery(self):
+        """Discord cron delivery can create a fresh parent-channel thread per run."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        adapter = AsyncMock()
+        adapter.create_handoff_thread.return_value = "thread-456"
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_schedule(coro, _loop):
+            future = Future()
+            future.set_result("thread-456")
+            coro.close()
+            return future
+
+        job = {
+            "id": "review-job",
+            "deliver": "discord:parent-123",
+            "delivery_thread_name": "Hermes Agents Review ({time})",
+            "delivery_thread_time_format": "%Y-%m-%d %H:%M KST",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule):
+            _deliver_result(
+                job,
+                "Review body",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        adapter.create_handoff_thread.assert_called_once()
+        assert adapter.create_handoff_thread.call_args[0][0] == "parent-123"
+        assert adapter.create_handoff_thread.call_args[0][1].startswith("Hermes Agents Review (")
+        adapter.send.assert_called_once_with(
+            "parent-123",
+            "Review body",
+            metadata={"thread_id": "thread-456"},
+        )
+
     def test_live_adapter_sends_media_as_attachments(self):
         """When a live adapter is available, MEDIA files should be sent as native
         platform attachments (e.g., Discord voice, Telegram audio) rather than

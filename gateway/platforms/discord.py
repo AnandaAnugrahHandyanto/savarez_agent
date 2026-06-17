@@ -3624,6 +3624,34 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_trigger_role_ids(self) -> set:
+        """Return Discord role IDs that should count as mentioning this bot.
+
+        Discord exposes role pings in ``message.role_mentions`` /
+        ``message.raw_role_mentions`` rather than ``message.mentions``. Hermes'
+        default mention gate only treats direct bot user pings as invocations.
+        This opt-in lets an operator create a dedicated "agent" role and use
+        that role ping as an invocation without opening the whole parent
+        channel as a free-response channel.
+        """
+        raw = os.getenv("DISCORD_TRIGGER_ROLE_IDS", "")
+        return {part.strip() for part in raw.split(",") if part.strip()}
+
+    def _message_mentions_trigger_role(self, message: DiscordMessage) -> bool:
+        trigger_roles = self._discord_trigger_role_ids()
+        if not trigger_roles:
+            return False
+
+        role_ids: set[str] = set()
+        for role in getattr(message, "role_mentions", []) or []:
+            role_id = getattr(role, "id", None)
+            if role_id is not None:
+                role_ids.add(str(role_id))
+        for role_id in getattr(message, "raw_role_mentions", []) or []:
+            role_ids.add(str(role_id))
+
+        return bool(role_ids & trigger_roles)
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -3952,15 +3980,24 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
 
-        # First try: create a thread directly on the channel.
+        # First try: create a public thread directly on the channel.
+        # discord.py defaults channel-level ``create_thread`` to private
+        # threads on normal text channels unless ``type`` is explicit; those
+        # are invisible to regular channel users unless invited. Handoff/review
+        # threads are operational reports, so they must be public.
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(
-                    name=thread_name,
-                    auto_archive_duration=1440,
-                    reason=reason,
-                )
+                create_kwargs = {
+                    "name": thread_name,
+                    "auto_archive_duration": 1440,
+                    "reason": reason,
+                }
+                channel_type = getattr(discord, "ChannelType", None)
+                public_thread_type = getattr(channel_type, "public_thread", None) if channel_type else None
+                if public_thread_type is not None:
+                    create_kwargs["type"] = public_thread_type
+                thread = await create(**create_kwargs)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -4455,6 +4492,11 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        role_mention_prefix = self._message_mentions_trigger_role(message)
+        if role_mention_prefix:
+            for role_id in self._discord_trigger_role_ids():
+                normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
+            message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -4503,7 +4545,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if (
+                    self._client.user not in message.mentions
+                    and not mention_prefix
+                    and not role_mention_prefix
+                ):
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

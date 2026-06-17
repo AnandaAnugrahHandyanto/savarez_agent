@@ -342,3 +342,31 @@ def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     import os
     # Env var should NOT be overwritten
     assert os.getenv("DISCORD_IGNORED_CHANNELS") == "999"
+
+
+@pytest.mark.asyncio
+async def test_handoff_thread_uses_public_thread_type(adapter, monkeypatch):
+    """Handoff threads in text channels must be public so channel users can see them."""
+    public_thread = object()
+    monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", True, raising=False)
+    monkeypatch.setattr(
+        discord_platform.discord,
+        "ChannelType",
+        SimpleNamespace(public_thread=public_thread),
+        raising=False,
+    )
+
+    class ParentWithThreadCreate(FakeTextChannel):
+        def __init__(self):
+            super().__init__(channel_id=123, name="hemogry-dev")
+            self.create_thread = AsyncMock(return_value=SimpleNamespace(id=456))
+
+    parent = ParentWithThreadCreate()
+    adapter._client.get_channel = MagicMock(return_value=parent)
+    adapter._client.fetch_channel = AsyncMock()
+
+    thread_id = await adapter.create_handoff_thread("123", "Hermes Agents Review")
+
+    assert thread_id == "456"
+    parent.create_thread.assert_awaited_once()
+    assert parent.create_thread.await_args.kwargs["type"] is public_thread

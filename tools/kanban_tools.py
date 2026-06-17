@@ -165,6 +165,95 @@ def _normalize_profile(value: Any) -> Optional[str]:
     return text
 
 
+def _clean_origin_value(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _agent_gateway_origin(agent: Any) -> Optional[dict[str, Optional[str]]]:
+    """Return gateway source metadata carried by an AIAgent, if present."""
+    if agent is None:
+        return None
+    platform = getattr(agent, "platform", None)
+    platform_value = getattr(platform, "value", platform)
+    platform_str = str(platform_value or "").strip().lower()
+    chat_id = _clean_origin_value(getattr(agent, "_chat_id", ""))
+    if not platform_str or not chat_id:
+        return None
+    return {
+        "platform": platform_str,
+        "chat_id": chat_id,
+        "chat_name": _clean_origin_value(getattr(agent, "_chat_name", "")),
+        "chat_type": _clean_origin_value(getattr(agent, "_chat_type", "")),
+        "thread_id": _clean_origin_value(getattr(agent, "_thread_id", "")),
+        "parent_chat_id": _clean_origin_value(getattr(agent, "_parent_chat_id", "")),
+        "guild_id": _clean_origin_value(getattr(agent, "_guild_id", "")),
+        "user_id": _clean_origin_value(getattr(agent, "_user_id", "")),
+        "user_name": _clean_origin_value(getattr(agent, "_user_name", "")),
+        "source_session_id": _clean_origin_value(getattr(agent, "session_id", "")),
+        "gateway_session_key": _clean_origin_value(getattr(agent, "_gateway_session_key", "")),
+    }
+
+
+def _record_gateway_origin_event(kb: Any, conn: Any, task_id: str, origin: dict[str, Optional[str]]) -> None:
+    """Persist an audit event for where a gateway-created task came from."""
+    payload = {"origin": {k: v for k, v in origin.items() if v}}
+    with kb.write_txn(conn):
+        kb._append_event(conn, task_id, "origin_recorded", payload)
+
+
+def _inherit_notify_subs_from_parents(
+    kb: Any,
+    conn: Any,
+    task_id: str,
+    parents: list[str] | tuple[str, ...],
+) -> int:
+    """Copy origin-thread notification subscriptions from parent tasks.
+
+    Worker-created child/final cards usually do not have a gateway ``agent``
+    object, but their parents may already be subscribed to the originating
+    thread. Copying the subscription keeps fan-out/fan-in graphs reporting
+    back to the same thread without storing message bodies.
+    """
+    copied = 0
+    seen: set[tuple[str, str, str]] = set()
+    try:
+        for existing in kb.list_notify_subs(conn, str(task_id)):
+            seen.add((
+                str(existing.get("platform") or ""),
+                str(existing.get("chat_id") or ""),
+                str(existing.get("thread_id") or ""),
+            ))
+    except Exception:
+        logger.debug("kanban_create: cannot read existing notify subs for %s", task_id)
+    for parent_id in parents:
+        try:
+            subs = kb.list_notify_subs(conn, str(parent_id))
+        except Exception:
+            logger.debug("kanban_create: cannot read notify subs for parent %s", parent_id)
+            continue
+        for sub in subs:
+            key = (
+                str(sub.get("platform") or ""),
+                str(sub.get("chat_id") or ""),
+                str(sub.get("thread_id") or ""),
+            )
+            if not key[0] or not key[1] or key in seen:
+                continue
+            seen.add(key)
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=key[0],
+                chat_id=key[1],
+                thread_id=key[2] or None,
+                user_id=sub.get("user_id"),
+                notifier_profile=sub.get("notifier_profile"),
+            )
+            copied += 1
+    return copied
+
+
 def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     value = args.get(name)
     if value is None:
@@ -613,10 +702,42 @@ def _handle_create(args: dict, **kw) -> str:
                 skills=skills,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
+            origin = _agent_gateway_origin(kw.get("agent"))
+            inherited_subs = 0
+            if origin:
+                kb.add_notify_sub(
+                    conn,
+                    task_id=new_tid,
+                    platform=origin["platform"] or "",
+                    chat_id=origin["chat_id"] or "",
+                    thread_id=origin.get("thread_id"),
+                    user_id=origin.get("user_id"),
+                    notifier_profile=os.environ.get("HERMES_PROFILE") or None,
+                )
+                _record_gateway_origin_event(kb, conn, new_tid, origin)
+            else:
+                # Worker-created workflow gates are not always explicit
+                # children of the current card. PM/worker agents commonly
+                # create sibling or successor review cards with no ``parents``
+                # argument, but the contract still expects origin-thread
+                # notifications to follow the workflow. Fall back to the
+                # current worker task as the subscription source when no
+                # explicit parents were provided.
+                inherit_sources = tuple(str(p) for p in parents)
+                if not inherit_sources:
+                    current_tid = _default_task_id(None)
+                    inherit_sources = (current_tid,) if current_tid else ()
+                if inherit_sources:
+                    inherited_subs = _inherit_notify_subs_from_parents(
+                        kb, conn, new_tid, inherit_sources
+                    )
+            dispatch_info: dict[str, Any] | None = None
             new_task = kb.get_task(conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                inherited_notify_subs=inherited_subs,
+                dispatch=dispatch_info,
             )
         finally:
             conn.close()
@@ -658,11 +779,23 @@ def _handle_link(args: dict, **kw) -> str:
     child_id = args.get("child_id")
     if not parent_id or not child_id:
         return tool_error("both parent_id and child_id are required")
+    inherit_notify_subs, bool_error = _parse_bool_arg(args, "inherit_notify_subs")
+    if bool_error:
+        return tool_error(bool_error)
     try:
         kb, conn = _connect()
         try:
             kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
-            return _ok(parent_id=parent_id, child_id=child_id)
+            inherited_subs = 0
+            if inherit_notify_subs:
+                inherited_subs = _inherit_notify_subs_from_parents(
+                    kb, conn, str(child_id), (str(parent_id),)
+                )
+            return _ok(
+                parent_id=parent_id,
+                child_id=child_id,
+                inherited_notify_subs=inherited_subs,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -1047,6 +1180,13 @@ KANBAN_LINK_SCHEMA = {
         "properties": {
             "parent_id": {"type": "string", "description": "Parent task id."},
             "child_id":  {"type": "string", "description": "Child task id."},
+            "inherit_notify_subs": {
+                "type": "boolean",
+                "description": (
+                    "If true, copy the parent's notification subscriptions to the child. "
+                    "Defaults to false to avoid widening notification scope accidentally."
+                ),
+            },
         },
         "required": ["parent_id", "child_id"],
     },

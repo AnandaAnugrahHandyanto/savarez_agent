@@ -3384,14 +3384,24 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-                await self.send(
-                    chat_id=event.source.chat_id,
-                    content=(
+                if (
+                    "_pool_may_recover_from_rate_limit" in error_detail
+                    or "No Codex credentials" in error_detail
+                ):
+                    error_message = (
+                        "Codex 사용량 한도를 초과해서 발생한 오류입니다. "
+                        "잠시 후 다시 시도하거나 다른 모델/세션으로 재시도해주세요."
+                    )
+                else:
+                    error_message = (
                         f"Sorry, I encountered an error ({error_type}).\n"
                         f"{error_detail}\n"
                         "Try again or use /reset to start a fresh session."
-                    ),
+                    )
+                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                await self.send(
+                    chat_id=event.source.chat_id,
+                    content=error_message,
                     metadata=_thread_metadata,
                 )
             except Exception:

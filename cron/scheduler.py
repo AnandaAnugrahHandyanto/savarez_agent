@@ -426,6 +426,30 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
+def _render_delivery_thread_name(job: dict) -> Optional[str]:
+    """Render an optional per-run thread title for cron delivery.
+
+    Jobs can set ``delivery_thread_name`` with a ``{time}`` placeholder.  The
+    timestamp format defaults to a short local-time string and can be
+    customized with ``delivery_thread_time_format``.
+    """
+    template = (job.get("delivery_thread_name") or "").strip()
+    if not template:
+        return None
+
+    fmt = job.get("delivery_thread_time_format") or "%Y-%m-%d %H:%M %Z"
+    try:
+        time_text = _hermes_now().strftime(fmt)
+    except Exception:
+        time_text = _hermes_now().strftime("%Y-%m-%d %H:%M %Z")
+
+    try:
+        rendered = template.format(time=time_text, job_name=job.get("name", job.get("id", "")), job_id=job.get("id", ""))
+    except Exception:
+        rendered = template.replace("{time}", time_text)
+    return rendered.strip()[:100] or None
+
+
 # Media extension sets — audio routing is centralized in gateway.platforms.base
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
@@ -581,10 +605,49 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        # Discord jobs can request a fresh thread under a parent channel on
+        # every run.  This requires the live gateway adapter because normal
+        # text-channel thread creation is a websocket-client capability; when
+        # successful, the rest of delivery uses the new thread_id metadata.
+        runtime_adapter = (adapters or {}).get(platform)
+        if (
+            platform_name.lower() == "discord"
+            and not thread_id
+            and runtime_adapter is not None
+            and loop is not None
+            and getattr(loop, "is_running", lambda: False)()
+        ):
+            thread_name = _render_delivery_thread_name(job)
+            create_thread = getattr(runtime_adapter, "create_handoff_thread", None)
+            if thread_name and create_thread is not None:
+                try:
+                    from agent.async_utils import safe_schedule_threadsafe
+                    future = safe_schedule_threadsafe(
+                        create_thread(chat_id, thread_name),
+                        loop,
+                    )
+                    if future is not None:
+                        created_thread_id = future.result(timeout=60)
+                        if created_thread_id:
+                            thread_id = str(created_thread_id)
+                            logger.info(
+                                "Job '%s': created Discord delivery thread %s under %s",
+                                job["id"], thread_id, chat_id,
+                            )
+                        else:
+                            logger.warning(
+                                "Job '%s': Discord delivery thread creation returned no thread_id; sending to parent channel",
+                                job["id"],
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "Job '%s': Discord delivery thread creation failed (%s); sending to parent channel",
+                        job["id"], exc,
+                    )
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
-        runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:

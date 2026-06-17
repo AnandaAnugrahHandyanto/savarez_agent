@@ -88,6 +88,7 @@ class TestSendMessageTool:
             {
                 "HERMES_CRON_AUTO_DELIVER_PLATFORM": "telegram",
                 "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "-1001",
+                "HERMES_CRON_AUTO_DELIVER_THREAD_ID": "",
             },
             clear=False,
         ), \
@@ -178,6 +179,91 @@ class TestSendMessageTool:
             "-1001",
             "hello",
             thread_id="17585",
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_kanban_worker_discord_named_target_does_not_fall_back_to_origin_subscription(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        conn = MagicMock()
+
+        with patch.dict(os.environ, {"HERMES_KANBAN_TASK": "t_notify"}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", return_value=None), \
+             patch("hermes_cli.kanban_db.connect", return_value=conn), \
+             patch(
+                 "hermes_cli.kanban_db.list_notify_subs",
+                 return_value=[{
+                     "task_id": "t_notify",
+                     "platform": "discord",
+                     "chat_id": "111222333444555666",
+                     "thread_id": "777888999000111222",
+                 }],
+             ), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:#hemogry-dev",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["error"].startswith("Could not resolve '#hemogry-dev'")
+        conn.close.assert_not_called()
+        send_mock.assert_not_awaited()
+
+    def test_kanban_worker_discord_origin_target_uses_origin_subscription(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        conn = MagicMock()
+
+        with patch.dict(os.environ, {"HERMES_KANBAN_TASK": "t_notify"}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_cli.kanban_db.connect", return_value=conn), \
+             patch(
+                 "hermes_cli.kanban_db.list_notify_subs",
+                 return_value=[{
+                     "task_id": "t_notify",
+                     "platform": "discord",
+                     "chat_id": "111222333444555666",
+                     "thread_id": "777888999000111222",
+                 }],
+             ), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:origin",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        conn.close.assert_called_once()
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            discord_cfg,
+            "111222333444555666",
+            "hello",
+            thread_id="777888999000111222",
             media_files=[],
             force_document=False,
         )

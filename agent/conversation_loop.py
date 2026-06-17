@@ -1126,7 +1126,11 @@ def run_conversation(
                             else:
                                 # output_text fallback: stream backfill may have failed
                                 # but normalize can still recover from output_text
-                                _out_text = getattr(response, "output_text", None)
+                                try:
+                                    _out_text = getattr(response, "output_text", None)
+                                except Exception:
+                                    _out_text = None
+                                    logger.debug("Codex response.output_text accessor failed during validation", exc_info=True)
                                 _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
                                 if _out_text_stripped:
                                     logger.debug(

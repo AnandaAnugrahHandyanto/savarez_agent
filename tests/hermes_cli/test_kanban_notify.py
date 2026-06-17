@@ -61,9 +61,10 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
             timeout=10.0,
         )
 
-    fake_adapter.send.assert_called_once()
-    call_msg = fake_adapter.send.call_args[0][1]
-    assert "completed" in call_msg
+    assert fake_adapter.send.call_count == 2
+    sent_messages = [call.args[1] for call in fake_adapter.send.call_args_list]
+    assert "created" in sent_messages[0]
+    assert "completed" in sent_messages[-1]
 
     conn = kb.connect()
     try:
@@ -83,7 +84,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     reclaimed, and crashes a second time); the user must hear about the
     second event too. Subscriptions are removed only when the task hits
     a truly final status (done / archived) — see the comment on
-    TERMINAL_KINDS in gateway/run.py and PR #21398.
+    REPORT_KINDS in gateway/run.py and PR #21398.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
@@ -121,9 +122,11 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
             timeout=10.0,
         )
 
-    # The user is notified about the abnormal event...
-    fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    # The user is notified about creation and the abnormal event...
+    assert fake_adapter.send.call_count == 2
+    sent_messages = [call.args[1] for call in fake_adapter.send.call_args_list]
+    assert "created" in sent_messages[0]
+    assert kind.replace('_', ' ') in sent_messages[-1]
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside
@@ -137,8 +140,8 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
         f"Subscription should survive {kind!r} so the next cycle of the "
         f"same event reaches the user; got {subs!r}"
     )
-    assert int(subs[0]["last_event_id"]) >= 1, (
-        "Cursor should have advanced past the delivered event "
+    assert int(subs[0]["last_event_id"]) >= 2, (
+        "Cursor should have advanced past the delivered created + abnormal events "
         "(claim_unseen_events_for_sub advances atomically inside the "
         "same write txn as the read)."
     )
@@ -423,7 +426,10 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
             timeout=10.0,
         )
 
-    fake_adapter.send.assert_called_once()
+    assert fake_adapter.send.call_count == 2
+    sent_messages = [call.args[1] for call in fake_adapter.send.call_args_list]
+    assert "created" in sent_messages[0]
+    assert "done" in sent_messages[-1]
     conn = kb.connect()
     try:
         subs = kb.list_notify_subs(conn, tid)

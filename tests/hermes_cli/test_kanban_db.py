@@ -605,19 +605,46 @@ def test_dispatch_skips_unassigned(kanban_home):
     assert not res.spawned
 
 
-def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypatch):
-    """Tasks whose assignee fails profile_exists() must NOT land in
-    ``skipped_unassigned`` (which is operator-actionable) — they go in
-    the dedicated ``skipped_nonspawnable`` bucket so health telemetry
-    can suppress false-positive "stuck" warnings."""
+def test_dispatch_dry_run_reports_unknown_assignee_without_claiming(kanban_home, monkeypatch):
+    """Dry-run keeps the DB unchanged but surfaces ready work whose assignee
+    cannot be spawned as a Hermes profile."""
     from hermes_cli import profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="for-terminal", assignee="orion-cc")
+        t = kb.create_task(conn, title="typo", assignee="test-worker")
         res = kb.dispatch_once(conn, dry_run=True)
+        task = kb.get_task(conn, t)
+    assert task is not None
     assert t in res.skipped_nonspawnable
     assert t not in res.skipped_unassigned
     assert not res.spawned
+    assert task.status == "ready"
+    assert task.claim_lock is None
+
+
+def test_dispatch_auto_blocks_unknown_assignee_before_claim(kanban_home, monkeypatch):
+    """A real dispatcher tick must not silently leave unknown-profile cards
+    ready forever, and must not claim/spawn them."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    spawns = []
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="typo", assignee="test-worker")
+        res = kb.dispatch_once(conn, spawn_fn=lambda task, workspace: spawns.append(task.id))
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+        runs = kb.list_runs(conn, t)
+    assert task is not None
+    assert t in res.auto_blocked
+    assert t in res.skipped_nonspawnable
+    assert not res.spawned
+    assert spawns == []
+    assert task.status == "blocked"
+    assert task.claim_lock is None
+    assert task.current_run_id is None
+    assert any(ev.kind == "blocked" for ev in events)
+    assert runs[-1].outcome == "blocked"
+    assert "unknown assignee profile" in (runs[-1].summary or "")
 
 
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):

@@ -1505,6 +1505,17 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # Optional proposal-first frontdoor routing for platform messages.
+        # Safe default is disabled; when enabled, only messages from the
+        # configured channel/thread allowlist can be promoted into PM triage
+        # cards. Casual/no-op messages still go through the normal agent path.
+        "frontdoor_pm_routing": {
+            "enabled": False,
+            "board": "default",
+            "assignee": "",
+            "channel_ids": [],
+            "thread_ids": [],
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

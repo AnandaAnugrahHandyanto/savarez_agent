@@ -184,23 +184,35 @@ def _handle_send(args):
     else:
         is_explicit = False
 
-    # Resolve human-friendly channel names to numeric IDs
+    # Resolve human-friendly channel names to numeric IDs. Dispatcher-spawned
+    # Kanban workers can also address their captured origin thread, but that
+    # shortcut must be explicit: a named target like ``discord:#ops`` must not
+    # silently reroute to the origin subscription.
     if target_ref and not is_explicit:
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+        if _is_origin_target_ref(target_ref):
+            kanban_origin_target = _resolve_kanban_notify_target(platform_name)
+            if kanban_origin_target:
+                chat_id, thread_id = kanban_origin_target
             else:
                 return json.dumps({
-                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
+                    "error": f"No Kanban origin notification target is available for {platform_name}."
                 })
-        except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
+        else:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name, target_ref)
+                if resolved:
+                    chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+                else:
+                    return json.dumps({
+                        "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                        f"Use send_message(action='list') to see available targets."
+                    })
+            except Exception:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Try using a numeric channel ID instead."
+                })
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -369,6 +381,60 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
     return None, None, False
+
+
+def _is_origin_target_ref(target_ref: str) -> bool:
+    """Whether a non-explicit target ref intentionally means Kanban origin."""
+    return target_ref.strip().lower() in {"origin", "#origin", "kanban-origin", "kanban_origin"}
+
+
+def _resolve_kanban_notify_target(platform_name: str):
+    """Return this Kanban worker's origin notification target, if unambiguous.
+
+    Gateway-created Kanban cards persist origin delivery as rows in
+    ``kanban_notify_subs``. A dispatcher-spawned worker may not have access to
+    the gateway channel-directory cache, but it can still deliver back to the
+    originating Discord/Telegram/etc. thread via that subscription. Only use
+    the shortcut when exactly one distinct subscription exists for the requested
+    platform; otherwise fall back to normal channel-name resolution.
+    """
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not task_id or not platform_name:
+        return None
+
+    conn = None
+    try:
+        from hermes_cli import kanban_db as kb
+        conn = kb.connect()
+        subs = kb.list_notify_subs(conn, task_id)
+    except Exception:
+        logger.debug("send_message: cannot read kanban notify subscriptions", exc_info=True)
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    matches: list[tuple[str, Optional[str]]] = []
+    seen: set[tuple[str, Optional[str]]] = set()
+    for sub in subs or []:
+        sub_platform = str(sub.get("platform") or "").strip().lower()
+        chat_id = str(sub.get("chat_id") or "").strip()
+        if sub_platform != platform_name or not chat_id:
+            continue
+        raw_thread = sub.get("thread_id")
+        thread_id = str(raw_thread).strip() if raw_thread is not None else ""
+        key = (chat_id, thread_id or None)
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(key)
+
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def _describe_media_for_mirror(media_files):

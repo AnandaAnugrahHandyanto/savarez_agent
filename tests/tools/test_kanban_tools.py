@@ -602,6 +602,45 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_without_parents_inherits_current_worker_origin_subscription(worker_env):
+    """Worker-created sibling/successor cards still report to origin thread.
+
+    A worker often creates a follow-up review or QA gate without spelling the
+    current card as a dependency. The workflow notification contract says the
+    new card must still inherit the current worker task's origin subscription.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="discord",
+            chat_id="channel-1",
+            thread_id="thread-1",
+            user_id="user-1",
+            notifier_profile="hemogrypm",
+        )
+
+    out = kt._handle_create({
+        "title": "QA review gate",
+        "assignee": "hemogryqa",
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True
+    assert d["inherited_notify_subs"] == 1
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, d["task_id"])
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "channel-1"
+    assert subs[0]["thread_id"] == "thread-1"
+    assert subs[0]["user_id"] == "user-1"
+    assert subs[0]["notifier_profile"] == "hemogrypm"
+
+
 def test_create_rejects_no_title(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"assignee": "x"})).get("error")
@@ -674,6 +713,35 @@ def test_create_accepts_string_parent(worker_env):
     assert json.loads(out)["ok"]
 
 
+def test_create_with_inherited_subscription_does_not_dispatch_board(worker_env, monkeypatch):
+    """Creating a child card should not spawn unrelated ready work as a side effect."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="discord",
+            chat_id="channel-1",
+            thread_id="thread-1",
+        )
+
+    calls = []
+    monkeypatch.setattr(kb, "dispatch_once", lambda conn, **kwargs: calls.append(kwargs))
+
+    out = kt._handle_create({
+        "title": "child with notify",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True
+    assert d["inherited_notify_subs"] == 1
+    assert d["dispatch"] is None
+    assert calls == []
+
+
 def test_create_accepts_skills_list(worker_env):
     """Tool writes the per-task skills through to the kernel."""
     from tools import kanban_tools as kt
@@ -727,6 +795,75 @@ def test_link_happy_path(worker_env):
     out = kt._handle_link({"parent_id": a, "child_id": b})
     d = json.loads(out)
     assert d["ok"] is True
+
+
+def test_link_does_not_inherit_parent_origin_subscription_by_default(worker_env):
+    """Late parent links should not widen notification scope unless explicit."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        child = kb.create_task(conn, title="final diff QA", assignee="hemogryinspect")
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="discord",
+            chat_id="channel-1",
+            thread_id="thread-1",
+            user_id="user-1",
+            notifier_profile="hemogrypm",
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_link({"parent_id": worker_env, "child_id": child})
+    d = json.loads(out)
+
+    assert d["ok"] is True
+    assert d["inherited_notify_subs"] == 0
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, child)
+    assert subs == []
+
+
+def test_link_can_explicitly_inherit_parent_origin_subscription(worker_env):
+    """Explicit fan-in links can opt into origin thread notification inheritance."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        child = kb.create_task(conn, title="final diff QA", assignee="hemogryinspect")
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="discord",
+            chat_id="channel-1",
+            thread_id="thread-1",
+            user_id="user-1",
+            notifier_profile="hemogrypm",
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_link({
+        "parent_id": worker_env,
+        "child_id": child,
+        "inherit_notify_subs": True,
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True
+    assert d["inherited_notify_subs"] == 1
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, child)
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "channel-1"
+    assert subs[0]["thread_id"] == "thread-1"
+    assert subs[0]["user_id"] == "user-1"
+    assert subs[0]["notifier_profile"] == "hemogrypm"
 
 
 def test_link_rejects_self_reference(worker_env):

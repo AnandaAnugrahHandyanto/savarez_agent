@@ -1757,7 +1757,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     if res.skipped_nonspawnable:
         print(
-            f"Skipped (non-spawnable assignee — terminal lane, OK): "
+            f"Skipped (unknown assignee profile; live tick auto-blocks): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
     return 0

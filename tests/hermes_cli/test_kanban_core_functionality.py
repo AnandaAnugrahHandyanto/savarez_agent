@@ -1012,6 +1012,8 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         if sig == _sig.SIGTERM:
             state["sent_term"] = True
     monkeypatch.setattr(_kb, "_pid_alive", _alive)
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
 
     conn = kb.connect()
     try:

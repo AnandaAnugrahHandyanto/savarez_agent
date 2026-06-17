@@ -66,7 +66,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design.
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Worker-side `git worktree add` creates it.
-- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
+- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. If a ready task names an assignee that is not an on-disk Hermes profile, the dispatcher auto-blocks it before claim/spawn with an operator-actionable reason; dry-runs only report it. After `kanban.failure_limit` consecutive spawn/runtime failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose workspace can't mount, worker repeatedly crashes, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
 ## Boards (multi-project)
@@ -205,6 +205,37 @@ policy forbids long-lived services, etc.) a `--force` escape hatch keeps
 the old standalone daemon alive for one release cycle, but running both
 a gateway-embedded dispatcher AND a standalone daemon against the same
 `kanban.db` causes claim races and is not supported.
+
+### Proposal-first frontdoor PM routing
+
+The gateway can optionally intercept allowlisted Discord text before the
+normal agent turn and promote high-confidence project-governance work into
+a PM triage card. This is for teams that encode orchestration rules in
+project `AGENTS.md` files and want non-trivial requests to enter Kanban
+without teaching users a new slash command.
+
+```yaml
+kanban:
+  frontdoor_pm_routing:
+    enabled: true
+    board: hemogry
+    assignee: hemogrypm
+    channel_ids: ["1234567890"]   # or parent channel id for Discord threads
+    thread_ids: []                 # optional narrower allowlist
+```
+
+Safety rules are deliberately conservative:
+
+- Default is disabled.
+- At least one channel or thread allowlist must be configured.
+- Casual/low-confidence text remains a normal gateway agent response and
+  creates no task.
+- High-confidence non-trivial work creates a `triage` card assigned to the
+  configured PM profile, records a `frontdoor_routing_decision` event, adds
+  the same origin notification subscription shape used by `/kanban create`,
+  and runs one dispatcher tick.
+- Credential/auth/deploy/publish/billing/customer/production-data signals
+  return an approval-required notice and do not create executable cards.
 
 ### Idempotent create (for automation / webhooks)
 

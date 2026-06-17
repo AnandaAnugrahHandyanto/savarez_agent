@@ -77,3 +77,26 @@ async def test_native_image_buffer_not_cleared_by_other_sessions_without_images(
 
     assert runner._consume_pending_native_image_paths(build_session_key(source_a)) == ["/tmp/a.png"]
     assert runner._consume_pending_native_image_paths(build_session_key(source_b)) == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_photo_and_zip_routes_only_real_images_as_native_and_keeps_document_note():
+    runner = _make_runner()
+    source = _source("mixed-chat")
+
+    prepared = await runner._prepare_inbound_message_text(
+        event=MessageEvent(
+            text="please inspect these",
+            message_type=MessageType.PHOTO,
+            source=source,
+            media_urls=["/tmp/photo.png", "/tmp/deck.zip"],
+            media_types=["image/png", "application/zip"],
+        ),
+        source=source,
+        history=[],
+    )
+
+    assert prepared is not None
+    assert runner._consume_pending_native_image_paths(build_session_key(source)) == ["/tmp/photo.png"]
+    assert "deck.zip" in prepared
+    assert "The user sent a document" in prepared

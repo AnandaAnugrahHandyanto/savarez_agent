@@ -62,6 +62,7 @@ When a message arrives from any platform:
    - Check authorization (see Authorization below)
    - Check if it's a slash command → dispatch to command handler
    - Check if agent is already running → intercept commands like `/stop`, `/status`
+   - Optionally run the proposal-first frontdoor PM router (`kanban.frontdoor_pm_routing`) before agent creation
    - Otherwise → create `AIAgent` instance and run conversation
 4. **Response** is sent back through the platform adapter
 
