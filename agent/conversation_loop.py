@@ -1008,6 +1008,7 @@ def run_conversation(
                             provider=agent.provider,
                             base_url=agent.base_url,
                             api_mode=agent.api_mode,
+                            routing_decision=getattr(agent, "turn_route_decision", None),
                             api_call_count=api_call_count,
                             request_messages=list(request_messages)
                             if isinstance(request_messages, list)
@@ -3530,6 +3531,7 @@ def run_conversation(
                         provider=agent.provider,
                         base_url=agent.base_url,
                         api_mode=agent.api_mode,
+                        routing_decision=getattr(agent, "turn_route_decision", None),
                         api_call_count=api_call_count,
                         api_duration=api_duration,
                         started_at=api_start_time,

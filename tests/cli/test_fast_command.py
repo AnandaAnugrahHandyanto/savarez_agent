@@ -258,7 +258,7 @@ class TestFastModeRouting(unittest.TestCase):
         assert route["runtime"]["provider"] == "openrouter"
         assert route.get("request_overrides") is None
 
-    def test_turn_route_uses_lower_latency_model_for_short_greeting(self):
+    def test_turn_route_keeps_opus_for_short_greeting_by_default(self):
         cli_mod = _import_cli()
         credential_pool = SimpleNamespace(name="pool")
         stub = SimpleNamespace(
@@ -272,14 +272,17 @@ class TestFastModeRouting(unittest.TestCase):
             _credential_pool=credential_pool,
             _runtime_request_overrides={"extra_body": {"trace": "yes"}},
             service_tier=None,
+            config={},
+            session_id="cli-session-1",
         )
 
         for message in ("hi there", "네", "확인했습니다", "감사합니다", "안녕하세요"):
             with self.subTest(message=message):
                 route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, message)
-                assert route["model"] == "anthropic/claude-sonnet-4.6"
+                assert route["model"] == "anthropic/claude-opus-4.7"
                 assert route["runtime"]["credential_pool"] is credential_pool
                 assert route["request_overrides"] == {"extra_body": {"trace": "yes"}}
+                assert route["route_decision"]["enabled"] is False
 
     def test_turn_route_keeps_opus_for_complex_cli_turns(self):
         cli_mod = _import_cli()
@@ -294,6 +297,20 @@ class TestFastModeRouting(unittest.TestCase):
             _credential_pool=None,
             _runtime_request_overrides=None,
             service_tier=None,
+            config={
+                "bob": {
+                    "routing": {
+                        "experiment": {
+                            "enabled": True,
+                            "mode": "ab",
+                            "rollout": 1.0,
+                            "seed": "cli-test",
+                            "treatment_model": "claude-sonnet-4-6",
+                        },
+                    },
+                },
+            },
+            session_id="cli-session-2",
         )
 
         for message in (
@@ -327,6 +344,120 @@ class TestFastModeRouting(unittest.TestCase):
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "thanks")
 
         assert route["model"] == "gpt-5.4"
+
+    def test_turn_route_shadow_records_proposed_model_without_routing(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="anthropic/claude-opus-4.7",
+            api_key="primary-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            api_mode="chat_completions",
+            acp_command=None,
+            acp_args=[],
+            _credential_pool=None,
+            _runtime_request_overrides=None,
+            service_tier=None,
+            config={
+                "bob": {
+                    "routing": {
+                        "experiment": {
+                            "enabled": True,
+                            "mode": "shadow",
+                            "rollout": 1.0,
+                            "seed": "cli-test",
+                            "treatment_model": "anthropic/claude-sonnet-4.6",
+                            "include_platforms": ["cli"],
+                        },
+                    },
+                },
+            },
+            session_id="cli-shadow-session",
+        )
+
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "thanks")
+
+        assert route["model"] == "anthropic/claude-opus-4.7"
+        assert route["route_decision"] == {
+            "enabled": True,
+            "mode": "shadow",
+            "arm": "treatment",
+            "class": "short_chat",
+            "original_model": "anthropic/claude-opus-4.7",
+            "effective_model": "anthropic/claude-opus-4.7",
+            "proposed_model": "anthropic/claude-sonnet-4.6",
+            "bucket_key": "cli-shadow-session",
+            "bucket": route["route_decision"]["bucket"],
+            "routed": False,
+            "reason": "shadow",
+        }
+
+    def test_turn_route_ab_treatment_routes_short_chat(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="anthropic/claude-opus-4.7",
+            api_key="primary-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            api_mode="chat_completions",
+            acp_command=None,
+            acp_args=[],
+            _credential_pool=None,
+            _runtime_request_overrides=None,
+            service_tier=None,
+            config={
+                "bob": {
+                    "routing": {
+                        "experiment": {
+                            "enabled": True,
+                            "mode": "ab",
+                            "rollout": 1.0,
+                            "seed": "cli-test",
+                            "treatment_model": "anthropic/claude-sonnet-4.6",
+                        },
+                    },
+                },
+            },
+            session_id="cli-treatment-session",
+        )
+
+        route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "ok")
+
+        assert route["model"] == "anthropic/claude-sonnet-4.6"
+        assert route["route_decision"]["arm"] == "treatment"
+        assert route["route_decision"]["class"] == "short_chat"
+        assert route["route_decision"]["routed"] is True
+
+    def test_latency_routing_bucket_assignment_is_stable(self):
+        from hermes_cli.latency_experiment import decide_latency_route
+
+        config = {
+            "enabled": True,
+            "mode": "ab",
+            "rollout": 0.5,
+            "seed": "stable-seed",
+            "treatment_model": "anthropic/claude-sonnet-4.6",
+        }
+
+        first = decide_latency_route(
+            model="anthropic/claude-opus-4.7",
+            provider="openrouter",
+            user_message="thanks",
+            experiment_config=config,
+            platform="cli",
+            bucket_key="session-123",
+        )
+        second = decide_latency_route(
+            model="anthropic/claude-opus-4.7",
+            provider="openrouter",
+            user_message="thanks",
+            experiment_config=config,
+            platform="cli",
+            bucket_key="session-123",
+        )
+
+        assert first.metadata["bucket"] == second.metadata["bucket"]
+        assert first.metadata["arm"] == second.metadata["arm"]
 
 
 class TestAnthropicFastMode(unittest.TestCase):

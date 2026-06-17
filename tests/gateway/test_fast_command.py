@@ -18,9 +18,11 @@ from gateway.session import SessionSource
 class _CapturingAgent:
     last_init = None
     last_run = None
+    last_instance = None
 
     def __init__(self, *args, **kwargs):
         type(self).last_init = dict(kwargs)
+        type(self).last_instance = self
         self.tools = []
 
     def run_conversation(self, user_message, conversation_history=None, task_id=None, persist_user_message=None):
@@ -146,7 +148,7 @@ def test_turn_route_injects_anthropic_speed_without_latency_rewrite():
     assert route["request_overrides"] == {"speed": "fast"}
 
 
-def test_turn_route_uses_lower_latency_model_for_short_ack():
+def test_turn_route_keeps_opus_for_short_ack_by_default():
     runner = _make_runner()
     runner._service_tier = None
     credential_pool = SimpleNamespace(name="pool")
@@ -167,11 +169,14 @@ def test_turn_route_uses_lower_latency_model_for_short_ack():
             message,
             "anthropic/claude-opus-4.7",
             runtime_kwargs,
+            platform="telegram",
+            bucket_key="gateway-session-1",
         )
 
-        assert route["model"] == "anthropic/claude-sonnet-4.6"
+        assert route["model"] == "anthropic/claude-opus-4.7"
         assert route["runtime"]["credential_pool"] is credential_pool
         assert route["request_overrides"] == {"extra_headers": {"X-Test": "1"}}
+        assert route["route_decision"]["enabled"] is False
 
 
 def test_turn_route_keeps_opus_for_code_tool_and_kanban_requests():
@@ -185,6 +190,19 @@ def test_turn_route_keeps_opus_for_code_tool_and_kanban_requests():
         "command": None,
         "args": [],
         "credential_pool": None,
+        "config": {
+            "bob": {
+                "routing": {
+                    "experiment": {
+                        "enabled": True,
+                        "mode": "ab",
+                        "rollout": 1.0,
+                        "seed": "gateway-test",
+                        "treatment_model": "claude-sonnet-4-6",
+                    },
+                },
+            },
+        },
     }
 
     examples = [
@@ -205,8 +223,11 @@ def test_turn_route_keeps_opus_for_code_tool_and_kanban_requests():
             message,
             "claude-opus-4-7",
             runtime_kwargs,
+            platform="telegram",
+            bucket_key="gateway-session-2",
         )
         assert route["model"] == "claude-opus-4-7"
+        assert route["route_decision"]["class"] == "complex"
 
 
 def test_turn_route_does_not_rewrite_non_opus_model():
@@ -230,6 +251,148 @@ def test_turn_route_does_not_rewrite_non_opus_model():
     )
 
     assert route["model"] == "gpt-5.4"
+
+
+def test_turn_route_shadow_carries_proposed_model_metadata_without_routing():
+    runner = _make_runner()
+    runner._service_tier = None
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "config": {
+            "bob": {
+                "routing": {
+                    "experiment": {
+                        "enabled": True,
+                        "mode": "shadow",
+                        "rollout": 1.0,
+                        "seed": "gateway-test",
+                        "treatment_model": "anthropic/claude-sonnet-4.6",
+                        "include_platforms": ["telegram"],
+                    },
+                },
+            },
+        },
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "hi",
+        "anthropic/claude-opus-4.7",
+        runtime_kwargs,
+        platform="telegram",
+        bucket_key="gateway-shadow-session",
+    )
+
+    assert route["model"] == "anthropic/claude-opus-4.7"
+    assert route["route_decision"]["mode"] == "shadow"
+    assert route["route_decision"]["arm"] == "treatment"
+    assert route["route_decision"]["class"] == "short_chat"
+    assert route["route_decision"]["proposed_model"] == "anthropic/claude-sonnet-4.6"
+    assert route["route_decision"]["routed"] is False
+
+
+def test_turn_route_ab_treatment_routes_short_chat():
+    runner = _make_runner()
+    runner._service_tier = None
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "config": {
+            "bob": {
+                "routing": {
+                    "experiment": {
+                        "enabled": True,
+                        "mode": "ab",
+                        "rollout": 1.0,
+                        "seed": "gateway-test",
+                        "treatment_model": "anthropic/claude-sonnet-4.6",
+                    },
+                },
+            },
+        },
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "ok",
+        "anthropic/claude-opus-4.7",
+        runtime_kwargs,
+        platform="telegram",
+        bucket_key="gateway-treatment-session",
+    )
+
+    assert route["model"] == "anthropic/claude-sonnet-4.6"
+    assert route["route_decision"]["arm"] == "treatment"
+    assert route["route_decision"]["routed"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_agent_passes_route_decision_metadata_to_gateway_agent(monkeypatch, tmp_path):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+
+    user_config = {
+        "bob": {
+            "routing": {
+                "experiment": {
+                    "enabled": True,
+                    "mode": "shadow",
+                    "rollout": 1.0,
+                    "seed": "gateway-test",
+                    "treatment_model": "anthropic/claude-sonnet-4.6",
+                    "include_platforms": ["telegram"],
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: user_config)
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: user_config)
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "anthropic/claude-opus-4.7")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "***",
+        },
+    )
+
+    import hermes_cli.tools_config as tools_config
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+
+    _CapturingAgent.last_init = None
+    result = await runner._run_agent(
+        message="hi",
+        context_prompt="",
+        history=[],
+        source=_make_source(),
+        session_id="session-1",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "ok"
+    assert _CapturingAgent.last_init is not None
+    assert _CapturingAgent.last_init["model"] == "anthropic/claude-opus-4.7"
+    assert _CapturingAgent.last_instance is not None
+    turn_route = _CapturingAgent.last_instance.turn_route_decision
+    assert turn_route["mode"] == "shadow"
+    assert turn_route["proposed_model"] == "anthropic/claude-sonnet-4.6"
 
 
 @pytest.mark.asyncio
@@ -294,5 +457,6 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
     )
 
     assert result["final_response"] == "ok"
+    assert _CapturingAgent.last_init is not None
     assert _CapturingAgent.last_init["service_tier"] == "priority"
     assert _CapturingAgent.last_init["request_overrides"] == {"service_tier": "priority"}

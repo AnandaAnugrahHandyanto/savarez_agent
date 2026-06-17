@@ -181,7 +181,7 @@ class CLIAgentSetupMixin:
         API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
-        from hermes_cli.latency_routing import route_latency_model
+        from hermes_cli.latency_experiment import decide_latency_route, latency_experiment_config
 
         runtime = {
             "api_key": self.api_key,
@@ -200,14 +200,20 @@ class CLIAgentSetupMixin:
                 fast_overrides = resolve_fast_mode_overrides(self.model)
             except Exception:
                 fast_overrides = None
-        model = (
-            self.model
-            if fast_overrides
-            else route_latency_model(self.model, runtime["provider"], user_message)
+        experiment_config = latency_experiment_config(getattr(self, "config", None))
+        route_decision = decide_latency_route(
+            model=self.model,
+            provider=runtime["provider"],
+            user_message=user_message,
+            experiment_config=None if fast_overrides else experiment_config,
+            platform="cli",
+            bucket_key=getattr(self, "session_id", None),
         )
+        model = self.model if fast_overrides else route_decision.effective_model
         route = {
             "model": model,
             "runtime": runtime,
+            "route_decision": route_decision.metadata,
             "signature": (
                 model,
                 runtime["provider"],

@@ -2154,6 +2154,7 @@ class AIAgent:
                 provider=self.provider,
                 base_url=self.base_url,
                 api_mode=self.api_mode,
+                routing_decision=getattr(self, "turn_route_decision", None),
                 api_call_count=api_call_count,
                 api_duration=ended_at - api_start_time,
                 started_at=api_start_time,

@@ -3041,7 +3041,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        platform: str | None = None,
+        bucket_key: str | None = None,
+        config: dict | None = None,
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
         Always uses the session's primary model/provider.  If `/fast` is
@@ -3050,7 +3059,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
-        from hermes_cli.latency_routing import route_latency_model
+        from hermes_cli.latency_experiment import decide_latency_route, latency_experiment_config
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -3070,14 +3079,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 fast_overrides = resolve_fast_mode_overrides(model)
             except Exception:
                 fast_overrides = None
-        model = (
-            model
-            if fast_overrides
-            else route_latency_model(model, runtime["provider"], user_message)
+        experiment_config = latency_experiment_config(config or runtime_kwargs.get("config"))
+        route_decision = decide_latency_route(
+            model=model,
+            provider=runtime["provider"],
+            user_message=user_message,
+            experiment_config=None if fast_overrides else experiment_config,
+            platform=platform,
+            bucket_key=bucket_key,
         )
+        model = model if fast_overrides else route_decision.effective_model
         route = {
             "model": model,
             "runtime": runtime,
+            "route_decision": route_decision.metadata,
             "signature": (
                 model,
                 runtime["provider"],
@@ -10451,7 +10466,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                platform=platform_key,
+                bucket_key=task_id,
+                config=user_config,
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -10500,6 +10522,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                agent.turn_route_decision = turn_route["route_decision"]
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -14499,7 +14522,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                platform=platform_key,
+                bucket_key=session_key,
+                config=user_config,
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -14566,6 +14596,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 except KeyError:
                                     pass
                             self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                            agent.turn_route_decision = turn_route["route_decision"]
                             logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
@@ -14602,6 +14633,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                agent.turn_route_decision = turn_route["route_decision"]
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig, _current_msg_count)
@@ -14655,6 +14687,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent.turn_route_decision = turn_route["route_decision"]
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
