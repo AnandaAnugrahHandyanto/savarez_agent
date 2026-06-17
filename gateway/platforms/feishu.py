@@ -162,6 +162,22 @@ _MARKDOWN_TABLE_RE = re.compile(
 )
 
 
+def _display_width(text: str) -> int:
+    """Estimate display width of a string (CJK=2, ASCII=1, emoji=2)."""
+    width = 0
+    for ch in text:
+        cp = ord(ch)
+        # CJK Unified Ideographs, Hangul, Hiragana, Katakana, etc.
+        if 0x4E00 <= cp <= 0x9FFF or 0x3040 <= cp <= 0x30FF or 0xAC00 <= cp <= 0xD7AF:
+            width += 2
+        # Emoji range (simplified)
+        elif cp > 0x2E80 or (0x1F000 <= cp <= 0x1FFFF):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
 def _markdown_table_to_card(title: str, table_text: str) -> Optional[Dict[str, Any]]:
     """Convert a Markdown table string to a Feishu interactive card JSON.
 
@@ -200,19 +216,21 @@ def _markdown_table_to_card(title: str, table_text: str) -> Optional[Dict[str, A
     ]
 
     # Auto-size columns based on content length to reduce truncation
-    # Calculate max display length per column (header + data rows)
+    # Calculate display width per column (header + data rows)
+    # CJK chars ~18px, ASCII ~10px, emoji ~24px
     num_cols = len(header_cells)
-    col_max: list[int] = [len(c) for c in header_cells]
+    col_max: list[int] = [0] * num_cols
+    for col_name in header_cells:
+        col_max[header_cells.index(col_name)] = _display_width(col_name)
     for row in rows:
         for i, col_name in enumerate(header_cells):
-            val_len = len(row.get(col_name, ""))
-            if val_len > col_max[i]:
-                col_max[i] = val_len
+            dw = _display_width(row.get(col_name, ""))
+            if dw > col_max[i]:
+                col_max[i] = dw
 
-    # Convert char count to pixel width (~8px per ASCII, ~14px per CJK)
-    # Clamp to [80, 300] to avoid too narrow or too wide columns
+    # Convert display width to pixel width, clamp to [80, 400]
     for i in range(num_cols):
-        px = max(80, min(300, col_max[i] * 12 + 20))
+        px = max(80, min(400, col_max[i] * 16 + 30))
         col_defs[i]["width"] = f"{px}px"
 
     return {
