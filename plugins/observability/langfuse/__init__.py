@@ -50,10 +50,15 @@ class TraceState:
     pending_tools_by_name: Dict[str, list] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     last_updated_at: float = field(default_factory=time.time)
+    session_id: str = ""
 
 
 _STATE_LOCK = threading.Lock()
 _TRACE_STATE: Dict[str, TraceState] = {}
+# session_id -> messaging end-user id (sender_id). Captured from the turn-scoped
+# pre_llm_call hook so the root trace (created later from pre_api_request, which
+# carries no user identity) can attribute itself to that user via Langfuse user_id.
+_SENDER_BY_SESSION: Dict[str, str] = {}
 _LANGFUSE_CLIENT = None
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
@@ -563,7 +568,7 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 
 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
-                      api_mode: str, messages: Any, client: Langfuse) -> TraceState:
+                      api_mode: str, messages: Any, client: Langfuse, user_id: str = "") -> TraceState:
     trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
     trace_input = _extract_last_user_message(messages)
     metadata = {
@@ -574,40 +579,16 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "model": model,
         "api_mode": api_mode,
     }
+    if user_id:
+        metadata["user_id"] = user_id
 
     # session_id must be passed in trace_context for Langfuse session grouping.
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
     if session_id:
         trace_ctx["session_id"] = session_id
 
-    if propagate_attributes is not None:
-        try:
-            with propagate_attributes(
-                session_id=session_id or task_key,
-                trace_name="Hermes turn",
-                tags=["hermes", "langfuse"],
-            ):
-                root_ctx = client.start_as_current_observation(
-                    trace_context=trace_ctx,
-                    name="Hermes turn",
-                    as_type="chain",
-                    input=trace_input,
-                    metadata=metadata,
-                    end_on_exit=False,
-                )
-                root_span = root_ctx.__enter__()
-        except Exception:
-            root_ctx = client.start_as_current_observation(
-                trace_context=trace_ctx,
-                name="Hermes turn",
-                as_type="chain",
-                input=trace_input,
-                metadata=metadata,
-                end_on_exit=False,
-            )
-            root_span = root_ctx.__enter__()
-    else:
-        root_ctx = client.start_as_current_observation(
+    def _open_root() -> tuple[Any, Any]:
+        ctx = client.start_as_current_observation(
             trace_context=trace_ctx,
             name="Hermes turn",
             as_type="chain",
@@ -615,7 +596,34 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
             metadata=metadata,
             end_on_exit=False,
         )
-        root_span = root_ctx.__enter__()
+        return ctx, ctx.__enter__()
+
+    if propagate_attributes is not None:
+        attr_kwargs: Dict[str, Any] = {
+            "session_id": session_id or task_key,
+            "trace_name": "Hermes turn",
+            "tags": ["hermes", "langfuse"],
+        }
+        if user_id:
+            attr_kwargs["user_id"] = user_id
+        try:
+            try:
+                attr_cm = propagate_attributes(**attr_kwargs)
+            except TypeError:
+                # Older Langfuse SDKs don't accept user_id on
+                # propagate_attributes. Drop only that kwarg and retry so
+                # session grouping / trace_name / tags are still applied —
+                # without this, an unsupported user_id would fall through to
+                # the bare-observation fallback below and silently lose all
+                # three.
+                attr_kwargs.pop("user_id", None)
+                attr_cm = propagate_attributes(**attr_kwargs)
+            with attr_cm:
+                root_ctx, root_span = _open_root()
+        except Exception:
+            root_ctx, root_span = _open_root()
+    else:
+        root_ctx, root_span = _open_root()
 
     try:
         root_span.set_trace_io(input=trace_input)
@@ -623,7 +631,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         pass
 
     _debug(f"started trace {trace_id} for {task_key}")
-    return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
+    return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span, session_id=session_id)
 
 
 def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, as_type: str,
@@ -676,6 +684,8 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
 
     with _STATE_LOCK:
         state = _TRACE_STATE.pop(task_key, None)
+        if state is not None and state.session_id:
+            _SENDER_BY_SESSION.pop(state.session_id, None)
     if state is None:
         return
 
@@ -712,17 +722,27 @@ def _request_key(api_call_count: Any) -> str:
 def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = "", model: str = "",
                     provider: str = "", base_url: str = "", api_mode: str = "",
                     api_call_count: int = 0, messages: Any = None, turn_type: str = "user",
-                    conversation_history: Any = None, user_message: Any = None, **_: Any) -> None:
+                    conversation_history: Any = None, user_message: Any = None,
+                    sender_id: str = "", **_: Any) -> None:
+    client = _get_langfuse()
+    if client is None:
+        return
+
+    # Capture the messaging end-user (emitted on the turn-scoped pre_llm_call)
+    # before the early return below, keyed by session_id, so the root trace
+    # created later from pre_api_request — which carries no user identity — can
+    # attribute itself to that user. Gated on an active client so it stays
+    # symmetric with the pop in _finish_trace.
+    if session_id and sender_id:
+        with _STATE_LOCK:
+            _SENDER_BY_SESSION[session_id] = sender_id
+
     # Older Hermes branches used pre_llm_call for request-scoped tracing and
     # passed the actual API messages. Current Hermes also has a turn-scoped
     # pre_llm_call used for context injection; tracing that hook creates an
     # extra orphan/root trace before the real request trace. Only trace the
     # legacy request-shaped call here.
     if not isinstance(messages, list):
-        return
-
-    client = _get_langfuse()
-    if client is None:
         return
 
     # messages is a list only for legacy Hermes branches that fired
@@ -744,6 +764,7 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                 api_mode=api_mode,
                 messages=messages,
                 client=client,
+                user_id=sender_id,
             )
             _TRACE_STATE[task_key] = state
         state.last_updated_at = time.time()
@@ -798,6 +819,7 @@ def on_pre_llm_request(
                 api_mode=api_mode,
                 messages=input_messages,
                 client=client,
+                user_id=_SENDER_BY_SESSION.get(session_id, ""),
             )
             _TRACE_STATE[task_key] = state
         state.last_updated_at = time.time()

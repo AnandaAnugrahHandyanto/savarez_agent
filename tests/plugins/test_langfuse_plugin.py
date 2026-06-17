@@ -811,3 +811,162 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+# ---------------------------------------------------------------------------
+# End-user attribution: the messaging sender_id should be set as the Langfuse
+# trace userId (via propagate_attributes + trace metadata), with the sender
+# captured on the turn-scoped pre_llm_call and read back on pre_api_request.
+# ---------------------------------------------------------------------------
+
+
+class TestEndUserAttribution:
+    @staticmethod
+    def _fresh_plugin():
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    @staticmethod
+    def _fake_client(captured):
+        class _Span:
+            def __init__(self, kind="root"):
+                self._kind = kind
+
+            def set_trace_io(self, **k):
+                pass
+
+            def update(self, **k):
+                pass
+
+            def start_observation(self, **k):
+                captured.setdefault("child_observations", []).append(k)
+                return _Span(kind="child")
+
+            def end(self):
+                captured.setdefault("ended", []).append(self._kind)
+
+        class _Ctx:
+            def __enter__(self):
+                return _Span()
+
+            def __exit__(self, *a):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return "trace-id"
+
+            def start_as_current_observation(self, **kwargs):
+                captured.setdefault("observations", []).append(kwargs)
+                return _Ctx()
+
+            def flush(self):
+                pass
+
+        return _Client()
+
+    def _wire(self, monkeypatch, captured):
+        from contextlib import contextmanager
+
+        mod = self._fresh_plugin()
+        client = self._fake_client(captured)
+
+        @contextmanager
+        def _fake_propagate(**kwargs):
+            captured["propagate"] = kwargs
+            yield
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "propagate_attributes", _fake_propagate)
+        mod._TRACE_STATE.clear()
+        mod._SENDER_BY_SESSION.clear()
+        return mod
+
+    def test_sender_id_sets_trace_user_id(self, monkeypatch):
+        captured = {}
+        mod = self._wire(monkeypatch, captured)
+
+        # Legacy request-shaped pre_llm_call (messages is a list) carries the
+        # sender and creates the root trace in one shot.
+        mod.on_pre_llm_call(
+            task_id="t1", session_id="s1", sender_id="U12345",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert mod._SENDER_BY_SESSION.get("s1") == "U12345"
+        assert captured["propagate"]["user_id"] == "U12345"
+        assert captured["observations"][0]["metadata"]["user_id"] == "U12345"
+
+    def test_pre_api_request_reads_stashed_sender_and_finish_clears_it(self, monkeypatch):
+        captured = {}
+        mod = self._wire(monkeypatch, captured)
+
+        # Turn-scoped pre_llm_call (no messages list) only stashes the sender.
+        mod.on_pre_llm_call(task_id="t2", session_id="s2", sender_id="U999", messages=None)
+        assert mod._SENDER_BY_SESSION.get("s2") == "U999"
+        assert "propagate" not in captured  # no trace created yet
+
+        # The real request creates the root trace, picks up the stash, and opens
+        # a child generation through the real _start_child_observation path.
+        mod.on_pre_llm_request(
+            task_id="t2", session_id="s2", api_call_count=1,
+            request_messages=[{"role": "user", "content": "hi"}],
+        )
+        assert captured["propagate"]["user_id"] == "U999"
+        assert len(captured.get("child_observations", [])) == 1
+
+        # Finishing the trace runs the real _finish_trace/_end_observation path:
+        # the child generation and the root span are both ended, and the
+        # per-session sender mapping is cleared.
+        mod._finish_trace(mod._trace_key("t2", "s2"))
+        assert captured.get("ended") == ["child", "root"]
+        assert "s2" not in mod._SENDER_BY_SESSION
+
+    def test_no_sender_leaves_user_id_unset(self, monkeypatch):
+        captured = {}
+        mod = self._wire(monkeypatch, captured)
+
+        mod.on_pre_llm_call(
+            task_id="t3", session_id="s3",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert "s3" not in mod._SENDER_BY_SESSION
+        # With no end-user, user_id is omitted entirely (not passed as None),
+        # so an SDK that predates the user_id kwarg is never exercised.
+        assert "user_id" not in captured["propagate"]
+        assert "user_id" not in captured["observations"][0]["metadata"]
+
+    def test_legacy_sdk_without_user_id_kwarg_still_groups_session(self, monkeypatch):
+        # An older Langfuse SDK whose propagate_attributes has no user_id
+        # parameter must not lose session grouping / trace_name / tags: the
+        # plugin retries without user_id instead of falling through to the
+        # bare-observation fallback.
+        from contextlib import contextmanager
+
+        captured = {}
+        mod = self._wire(monkeypatch, captured)
+
+        @contextmanager
+        def _legacy_propagate(*, session_id=None, trace_name=None, tags=None):
+            captured["propagate"] = {
+                "session_id": session_id,
+                "trace_name": trace_name,
+                "tags": tags,
+            }
+            yield
+
+        monkeypatch.setattr(mod, "propagate_attributes", _legacy_propagate)
+
+        mod.on_pre_llm_call(
+            task_id="t4", session_id="s4", sender_id="U777",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        # propagate_attributes was still entered with grouping intact...
+        assert captured["propagate"]["session_id"] == "s4"
+        assert captured["propagate"]["trace_name"] == "Hermes turn"
+        assert "user_id" not in captured["propagate"]
+        # ...and the user_id still landed in trace metadata as a fallback.
+        assert captured["observations"][0]["metadata"]["user_id"] == "U777"
