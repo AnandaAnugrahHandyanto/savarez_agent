@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import threading
 from pathlib import Path
 
@@ -149,12 +150,28 @@ def test_run_slash_comment_max_len_trims_long_body(kanban_home):
     assert "x" * 30 not in show
 
 
-def test_run_slash_block_unblock_cycle(kanban_home):
+def test_run_slash_block_unblock_cycle(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    remote = repo.parent / f"{repo.name}-origin.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(remote)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", "main"], check=True, capture_output=True, text=True)
+    monkeypatch.chdir(repo)
+
     out = kc.run_slash("create 'x' --assignee alice")
     import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
     # Claim first so block() finds it running
-    kc.run_slash(f"claim {tid}")
+    claim = kc.run_slash(f"claim {tid}")
+    assert "Workspace:" in claim
+    assert ".worktrees" in claim
     assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 

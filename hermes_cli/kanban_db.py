@@ -749,6 +749,8 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    workspace_base_ref: Optional[str] = None
+    workspace_base_commit: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -828,6 +830,12 @@ class Task:
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
+            workspace_base_ref=(
+                row["workspace_base_ref"] if "workspace_base_ref" in keys else None
+            ),
+            workspace_base_commit=(
+                row["workspace_base_commit"] if "workspace_base_commit" in keys else None
+            ),
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
@@ -985,6 +993,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
+    workspace_base_ref   TEXT,
+    workspace_base_commit TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -4735,16 +4745,10 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
-        p = Path(task.workspace_path).expanduser()
-        if not p.is_absolute():
-            raise ValueError(
-                f"task {task.id} has non-absolute worktree path "
-                f"{task.workspace_path!r}; use an absolute path"
-            )
-        return p
+        workspace, _branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+            task, board=board
+        )
+        return workspace
     raise ValueError(f"unknown workspace_kind: {kind}")
 
 
@@ -4756,6 +4760,247 @@ def set_workspace_path(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
         )
+
+
+def set_workspace_kind(
+    conn: sqlite3.Connection, task_id: str, workspace_kind: str
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = ? WHERE id = ?",
+            (workspace_kind, task_id),
+        )
+
+
+def set_branch_name(
+    conn: sqlite3.Connection, task_id: str, branch_name: Optional[str]
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET branch_name = ? WHERE id = ?",
+            (branch_name, task_id),
+        )
+
+
+def set_workspace_base(
+    conn: sqlite3.Connection,
+    task_id: str,
+    base_ref: Optional[str],
+    base_commit: Optional[str],
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_base_ref = ?, workspace_base_commit = ? WHERE id = ?",
+            (base_ref, base_commit, task_id),
+        )
+
+
+def _git_ref_commit(path: Path, ref: str) -> Optional[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", ref],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    commit = (result.stdout or "").strip()
+    return commit or None
+
+
+def _git_is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _fetch_origin_main(repo_root: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "fetch", "origin", "main"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"git fetch origin main failed in {repo_root}: {stderr}")
+    commit = _git_ref_commit(repo_root, "origin/main")
+    if not commit:
+        raise RuntimeError(f"origin/main is unavailable in {repo_root}")
+    return commit
+
+
+def _git_toplevel(path: Path) -> Optional[Path]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    top = (result.stdout or "").strip()
+    return Path(top).resolve(strict=False) if top else None
+
+
+def _git_current_branch(path: Path) -> Optional[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    branch = (result.stdout or "").strip()
+    return branch or None
+
+
+def _is_linked_worktree_checkout(path: Path) -> bool:
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        return False
+    try:
+        return git_dir.is_file() and git_dir.read_text(encoding="utf-8").startswith("gitdir:")
+    except OSError:
+        return False
+
+
+def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
+    cur = path.resolve(strict=False)
+    result = subprocess.run(
+        ["git", "-C", str(cur), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode == 0:
+        common_dir = (result.stdout or "").strip()
+        if common_dir:
+            common_path = Path(common_dir)
+            if not common_path.is_absolute():
+                common_path = (cur / common_path).resolve(strict=False)
+            return common_path.parent.resolve(strict=False)
+    while True:
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
+def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+    origin_main = _fetch_origin_main(repo_root)
+    if target.exists():
+        if _is_linked_worktree_checkout(target):
+            actual_branch = _git_current_branch(target)
+            if actual_branch != branch_name:
+                raise RuntimeError(
+                    f"existing worktree {target} is on branch {actual_branch or '(detached)'} "
+                    f"but expected {branch_name}"
+                )
+            if not _git_is_ancestor(repo_root, "origin/main", branch_name):
+                raise RuntimeError(
+                    f"existing branch {branch_name} is not based on fresh origin/main {origin_main}"
+                )
+            return
+        raise RuntimeError(f"worktree target {target} already exists but is not a linked git worktree")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _git_ref_commit(repo_root, branch_name):
+        if not _git_is_ancestor(repo_root, "origin/main", branch_name):
+            raise RuntimeError(
+                f"existing branch {branch_name} is not based on fresh origin/main {origin_main}"
+            )
+        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+    else:
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name, str(target), "origin/main"
+        ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"git worktree add failed for {target} on branch {branch_name}: {stderr}")
+
+
+def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> tuple[Path, str, str, str]:
+    branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    if not task.workspace_path:
+        repo_root = None
+        if board is not None:
+            board_meta = read_board_metadata(board)
+            board_default = board_meta.get("default_workdir")
+            if board_default:
+                repo_root = _repo_root_for_worktree_target(Path(str(board_default)).expanduser())
+        if repo_root is None:
+            repo_root = _git_toplevel(Path.cwd())
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but no workspace_path, "
+                "and no git repo could be discovered from the board default_workdir or cwd"
+            )
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name)
+        origin_main = _git_ref_commit(repo_root, "origin/main")
+        if not origin_main:
+            raise RuntimeError(f"origin/main is unavailable in {repo_root}")
+        return target, branch_name, "origin/main", origin_main
+
+    requested = Path(task.workspace_path).expanduser()
+    if not requested.is_absolute():
+        raise ValueError(
+            f"task {task.id} has non-absolute worktree path {task.workspace_path!r}; use an absolute path"
+        )
+    requested_resolved = requested.resolve(strict=False)
+    if requested.exists() and _is_linked_worktree_checkout(requested):
+        actual_branch = _git_current_branch(requested)
+        if actual_branch != branch_name:
+            raise ValueError(
+                f"task {task.id} worktree path {task.workspace_path!r} is already on branch {actual_branch or '(detached)'} but expected {branch_name}"
+            )
+        repo_root = _repo_root_for_worktree_target(requested.parent)
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo"
+            )
+        _ensure_git_worktree(repo_root, requested, branch_name)
+        origin_main = _git_ref_commit(repo_root, "origin/main")
+        if not origin_main:
+            raise RuntimeError(f"origin/main is unavailable in {repo_root}")
+        return requested_resolved, actual_branch or branch_name, "origin/main", origin_main
+    repo_root = _git_toplevel(requested)
+    if repo_root is not None and requested_resolved == repo_root:
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name)
+        origin_main = _git_ref_commit(repo_root, "origin/main")
+        if not origin_main:
+            raise RuntimeError(f"origin/main is unavailable in {repo_root}")
+        return target, branch_name, "origin/main", origin_main
+    repo_root = _repo_root_for_worktree_target(requested.parent)
+    if repo_root is None:
+        raise ValueError(
+            f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo and does not point at a git repo root"
+        )
+    _ensure_git_worktree(repo_root, requested, branch_name)
+    origin_main = _git_ref_commit(repo_root, "origin/main")
+    if not origin_main:
+        raise RuntimeError(f"origin/main is unavailable in {repo_root}")
+    return requested_resolved, branch_name, "origin/main", origin_main
 
 
 # ---------------------------------------------------------------------------
@@ -6283,7 +6528,9 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+                claimed, board=board
+            )
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -6294,7 +6541,10 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        set_workspace_kind(conn, claimed.id, "worktree")
+        set_branch_name(conn, claimed.id, resolved_branch_name)
+        set_workspace_base(conn, claimed.id, _base_ref, _base_commit)
+        _maybe_emit_scratch_tip(conn, claimed.id, "worktree")
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -6369,7 +6619,9 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+                claimed, board=board
+            )
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -6380,7 +6632,10 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        set_workspace_kind(conn, claimed.id, "worktree")
+        set_branch_name(conn, claimed.id, resolved_branch_name)
+        set_workspace_base(conn, claimed.id, _base_ref, _base_commit)
+        _maybe_emit_scratch_tip(conn, claimed.id, "worktree")
         # Force-load sdlc-review skill for review agents.  The
         # _default_spawn function already auto-loads kanban-worker, and
         # appends task.skills via --skills.  Setting task.skills here
@@ -6949,13 +7204,23 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         return s[:limit] + f"… [truncated, {len(s) - limit} chars omitted]"
 
     lines: list[str] = []
+    live_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    workspace_kind = task.workspace_kind
+    workspace_path = task.workspace_path
+    branch_name = task.branch_name
+    if live_workspace:
+        live_path = Path(live_workspace).expanduser()
+        if live_path.exists() and _is_linked_worktree_checkout(live_path):
+            workspace_kind = "worktree"
+            workspace_path = str(live_path)
+            branch_name = _git_current_branch(live_path) or branch_name
     lines.append(f"# Kanban task {task.id}: {task.title}")
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    lines.append(f"Workspace: {workspace_kind} @ {workspace_path or '(unresolved)'}")
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds,
@@ -6965,8 +7230,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
-    if task.branch_name:
-        lines.append(f"Branch:   {task.branch_name}")
+    if branch_name:
+        lines.append(f"Branch:   {branch_name}")
     lines.append("")
 
     if task.body and task.body.strip():

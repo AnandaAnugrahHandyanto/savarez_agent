@@ -10,8 +10,24 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
+
+
+def _init_git_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    remote = repo.parent / f"{repo.name}-origin.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(remote)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", "main"], check=True, capture_output=True, text=True)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +196,88 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert d["task"]["status"] == "running"
     assert "worker_context" in d
     assert "runs" in d
+
+
+def test_show_packet_uses_live_worktree_branch_and_kind(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    target = repo / ".worktrees" / "packet-task"
+    from hermes_cli import kanban_db as kb
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="packet task",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        resolved = kb.resolve_workspace(task)
+        assert resolved == target
+
+        # Corrupt the persisted row so the show packet must consult the live
+        # git workspace instead of trusting stale metadata.
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='scratch', branch_name=NULL WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(target))
+
+    from tools import kanban_tools as kt
+
+    out = kt._handle_show({})
+    d = json.loads(out)
+    assert d["task"]["id"] == tid
+    assert d["task"]["workspace_kind"] == "worktree"
+    assert d["task"]["workspace_path"] == str(target)
+    assert d["task"]["branch_name"] == f"wt/{tid}"
+    assert f"Workspace: worktree @ {target}" in d["worker_context"]
+    assert f"Branch:   wt/{tid}" in d["worker_context"]
+
+
+def test_show_packet_does_not_fabricate_worktree_branch_for_scratch_workspace(monkeypatch, tmp_path):
+    scratch_ws = tmp_path / "scratch"
+    scratch_ws.mkdir()
+    from hermes_cli import kanban_db as kb
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="scratch packet")
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(scratch_ws))
+
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_show({}))
+    assert d["task"]["workspace_kind"] == "scratch"
+    assert d["task"]["branch_name"] is None
+    assert "Branch:" not in d["worker_context"]
 
 
 def test_show_explicit_task_id(worker_env):
@@ -748,17 +846,28 @@ def test_comment_schema_omits_author_override():
 
 
 def test_create_happy_path(worker_env):
+    from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    # Use a distinct upstream parent (NOT the worker's own task). Listing the
+    # worker's own task as a parent triggers the reroute-inversion guard and
+    # is covered separately by
+    # test_create_self_parent_inverts_to_wake_after_not_deadlock.
+    conn = kb.connect()
+    try:
+        upstream = kb.create_task(conn, title="upstream", assignee="setup")
+    finally:
+        conn.close()
+
     out = kt._handle_create({
         "title": "child task",
         "assignee": "peer",
-        "parents": [worker_env],
+        "parents": [upstream],
     })
     d = json.loads(out)
     assert d["ok"] is True
     assert d["task_id"]
     assert d["status"] == "todo"  # parent isn't done yet
-    from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
@@ -1812,3 +1921,76 @@ def test_board_param_in_all_schemas():
         assert "board" not in schema["parameters"].get("required", []), (
             f"{schema['name']} marks board as required; must be optional"
         )
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator-reroute deadlock (hermes-setup board: t_f335b678)
+# ---------------------------------------------------------------------------
+
+def test_create_self_parent_inverts_to_wake_after_not_deadlock(worker_env):
+    """Regression: an orchestrator rerouting its OWN card must not gate the
+    spawned children on that (parked / re-dispatched) card.
+
+    The bug: ``kanban_create(parents=[self])`` was taken literally as "child
+    blocked until self reaches 'done'". The router card never reaches 'done'
+    (it's parked 'blocked' waiting on the children), so the children deadlock
+    in 'todo' and ``promote`` reports "unsatisfied parent dependencies".
+
+    The fix inverts the self-edge to match ``decompose_triage_task``: the
+    spawning task becomes a CHILD of the new task (it wakes only after the
+    child completes), and the child is created with no blocking parent so it
+    is immediately promotable.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    root = worker_env  # HERMES_KANBAN_TASK == root, status 'running'
+    out = json.loads(kt._handle_create({
+        "title": "Implement the host-side install",
+        "assignee": "sentinel",
+        "parents": [root],
+    }))
+    assert out["ok"] is True
+    child = out["task_id"]
+    # The inversion was applied and surfaced to the agent.
+    assert "note" in out and root in out["note"]
+
+    conn = kb.connect()
+    try:
+        # The child is NOT gated on the parked router -> promotable now.
+        assert kb.parent_ids(conn, child) == []
+        assert kb.get_task(conn, child).status == "ready"
+        # The router instead wakes AFTER the child (decompose pattern).
+        assert child in kb.parent_ids(conn, root)
+    finally:
+        conn.close()
+
+
+def test_create_preserves_non_self_parents(worker_env):
+    """The reroute inversion is scoped to the worker's own task id only — a
+    genuine upstream dependency passed in ``parents`` must still gate the
+    child normally (status 'todo', no inversion note)."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="real upstream dep", assignee="peer")
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_create({
+        "title": "downstream work",
+        "assignee": "sentinel",
+        "parents": [other],
+    }))
+    assert out["ok"] is True
+    child = out["task_id"]
+    assert "note" not in out  # no self-edge -> no inversion
+
+    conn = kb.connect()
+    try:
+        assert kb.parent_ids(conn, child) == [other]
+        assert kb.get_task(conn, child).status == "todo"
+    finally:
+        conn.close()

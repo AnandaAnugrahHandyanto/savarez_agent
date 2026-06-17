@@ -58,6 +58,15 @@ def _fmt_task_line(t: kb.Task) -> str:
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
+    live = kb.live_worker_workspace_snapshot(t)
+    if "workspace_kind" in live:
+        workspace_kind = live["workspace_kind"]
+        workspace_path = live["workspace_path"]
+        branch_name = live["branch_name"]
+    else:
+        workspace_kind = t.workspace_kind
+        workspace_path = t.workspace_path
+        branch_name = t.branch_name
     return {
         "id": t.id,
         "title": t.title,
@@ -66,9 +75,11 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "status": t.status,
         "priority": t.priority,
         "tenant": t.tenant,
-        "workspace_kind": t.workspace_kind,
-        "workspace_path": t.workspace_path,
-        "branch_name": t.branch_name,
+        "workspace_kind": workspace_kind,
+        "workspace_path": workspace_path,
+        "branch_name": branch_name,
+        "workspace_base_ref": t.workspace_base_ref,
+        "workspace_base_commit": t.workspace_base_commit,
         "created_by": t.created_by,
         "created_at": t.created_at,
         "started_at": t.started_at,
@@ -1828,8 +1839,13 @@ def _cmd_claim(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        workspace = kb.resolve_workspace(task)
+        workspace, branch_name, _base_ref, _base_commit = kb._resolve_worktree_workspace(
+            task, board=kb.get_current_board()
+        )
         kb.set_workspace_path(conn, task.id, str(workspace))
+        kb.set_workspace_kind(conn, task.id, "worktree")
+        kb.set_branch_name(conn, task.id, branch_name)
+        kb.set_workspace_base(conn, task.id, _base_ref, _base_commit)
     print(f"Claimed {task.id}")
     print(f"Workspace: {workspace}")
     return 0
@@ -2166,6 +2182,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "route_watchdog_hits": [
+                {"task_id": tid, "kind": kind, "action": action}
+                for (tid, kind, action) in res.route_watchdog_hits
+            ],
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2203,6 +2223,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.route_watchdog_hits:
+        for tid, kind, action in res.route_watchdog_hits:
+            print(f"Route watchdog ({action}): {tid} [{kind}]")
     return 0
 
 
