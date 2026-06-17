@@ -50,6 +50,21 @@ class TestBuildToolPreview:
         assert result is not None
         assert "/tmp/test.py" in result
 
+    def test_execute_code_single_line_preview(self):
+        result = build_tool_preview("execute_code", {"code": "print('hello')"})
+        assert result == "print('hello')"
+
+    def test_execute_code_two_line_preview(self):
+        result = build_tool_preview("execute_code", {"code": "import os\nprint(os.getcwd())"})
+        assert result == "import os | print(os.getcwd())"
+
+    def test_execute_code_longer_preview_counts_remaining_lines(self):
+        result = build_tool_preview(
+            "execute_code",
+            {"code": "import os\nimport sys\nprint(os.getcwd())"},
+        )
+        assert result == "import os (+2 lines)"
+
     def test_unknown_tool_with_fallback_key(self):
         """Unknown tool but with a recognized fallback key should still preview."""
         result = build_tool_preview("custom_tool", {"query": "test query"})
@@ -204,6 +219,31 @@ class TestCuteToolMessagePreviewLength:
             1.2,
         )
         assert "2x: Review PR A | Review PR B" in line
+
+    def test_execute_code_message_includes_two_line_preview(self):
+        line = get_cute_tool_message(
+            "execute_code",
+            {"code": "import os\nprint(os.getcwd())"},
+            0.1,
+        )
+        assert "import os | print(os.getcwd())" in line
+
+    def test_execute_code_message_counts_remaining_lines(self):
+        line = get_cute_tool_message(
+            "execute_code",
+            {"code": "import os\nimport sys\nprint(os.getcwd())"},
+            0.1,
+        )
+        assert "import os (+2 lines)" in line
+        assert "import sys" not in line
+
+    def test_execute_code_message_preview_uses_wider_limit(self):
+        set_tool_preview_max_len(55)
+        first_line = "x = '" + "a" * 70 + "'"
+        line = get_cute_tool_message("execute_code", {"code": first_line}, 0.1)
+
+        assert first_line[:52] in line
+        assert "..." in line
 
 
 class TestEditDiffPreview:
