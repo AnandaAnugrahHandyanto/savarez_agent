@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~64 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 9 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
+**Quick counts (current registry):** ~65 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 9 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone or opt-in tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `ask_claude_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -43,6 +43,14 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports two modes: 1. **Multiple choice** — provide up to 4 choices. The user picks one or types their own answer via a 5th 'Other' option. 2.… | — |
+
+## `claude_code` toolset
+
+Opt-in local Claude Code CLI delegation. The tool is availability-gated: Hermes only exposes it when a `claude` executable is found and a short non-interactive, plan-mode auth probe succeeds.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `ask_claude_code` | Run `claude -p` in a chosen working directory with bounded stdout/stderr capture. Returns JSON containing success status, stdout/stderr tails, proof artifact paths, and metadata. Optional `expected_artifact` verification must stay inside `workdir`. | Local `claude` CLI installed and authenticated |
 
 ## `code_execution` toolset
 

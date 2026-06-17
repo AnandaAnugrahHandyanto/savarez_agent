@@ -54,6 +54,7 @@ Or in-session:
 |---------|-------|---------|
 | `browser` | `browser_back`, `browser_cdp`, `browser_click`, `browser_console`, `browser_dialog`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | Core browser automation. Includes `web_search` as a fallback for quick lookups. `browser_cdp` and `browser_dialog` are gated at runtime — registered only when a CDP endpoint is reachable at session start (via `/browser connect`, `browser.cdp_url` config, Browserbase, or Camofox). `browser_dialog` works together with the `pending_dialogs` and `frame_tree` fields that `browser_snapshot` adds when a CDP supervisor is attached. |
 | `clarify` | `clarify` | Ask the user a question when the agent needs clarification. |
+| `claude_code` | `ask_claude_code` | Optional local Claude Code CLI worker. Registered only when `claude` is installed and a non-interactive auth probe succeeds; stores bounded proof artifacts under Hermes outputs. |
 | `code_execution` | `execute_code` | Run Python scripts that call Hermes tools programmatically. |
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
@@ -158,7 +159,7 @@ custom_toolsets:
 
 A handful of tools have an additional availability check on top of toolset membership and are **not** turned on by `all`/`*` alone:
 
-- **Capability-gated** tools (browser, `computer_use`, `code_execution`, Feishu, Home Assistant, cronjob) appear only when their backend/credential prerequisite is configured.
+- **Capability-gated** tools (browser, `computer_use`, `code_execution`, Feishu, Home Assistant, cronjob, Claude Code) appear only when their backend/credential prerequisite is configured. The `claude_code` toolset additionally requires a local `claude` binary and a successful non-interactive auth probe.
 - **Workflow-gated** tools — the `kanban` toolset — are deliberately opt-in. `all`/`*` does **not** enable kanban; you must list `kanban` explicitly (or be a dispatcher-spawned worker with `HERMES_KANBAN_TASK` set). Kanban tools mutate shared board state, so they stay off by default even under `all`.
 
 ## Relationship to `hermes tools`
