@@ -46,6 +46,10 @@ _NEW_SEGMENT = object()
 # API/tool iterations (for example: "I'll inspect the repo first.").
 _COMMENTARY = object()
 
+# Sentinel for tool-status ephemeral display — tool activity shown as
+# a transient suffix on the streaming card, cleared on next text delta.
+_TOOL_STATUS = object()
+
 
 @dataclass
 class StreamConsumerConfig:
@@ -192,6 +196,7 @@ class GatewayStreamConsumer:
         # in their chat history (drafts have no message_id).
         self._use_draft_streaming = False
         self._draft_id: Optional[int] = None
+        self._tool_status_text: Optional[str] = None
         # Cumulative draft-frame failure count for this consumer.  After the
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
@@ -279,6 +284,11 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
+
+    def on_tool_status(self, text: str) -> None:
+        """Thread-safe callback — set ephemeral tool status for card display."""
+        if text:
+            self._queue.put((_TOOL_STATUS, text))
 
     def _notify_new_message(self) -> None:
         """Fire the on_new_message callback, swallowing any errors."""
@@ -489,7 +499,11 @@ class GatewayStreamConsumer:
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
                             break
+                        if isinstance(item, tuple) and len(item) == 2 and item[0] is _TOOL_STATUS:
+                            self._tool_status_text = item[1]
+                            continue
                         self._filter_and_accumulate(item)
+                        self._tool_status_text = None
                     except queue.Empty:
                         break
 
@@ -601,7 +615,9 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
 
                     display_text = self._accumulated
-                    if not got_done and not got_segment_break and commentary_text is None:
+                    if self._tool_status_text:
+                        display_text += f"\n\n{self._tool_status_text}"
+                    elif not got_done and not got_segment_break and commentary_text is None:
                         display_text += self.cfg.cursor
 
                     # Segment break: finalize the current message so platforms

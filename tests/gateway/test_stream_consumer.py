@@ -1948,3 +1948,30 @@ class TestUtf16OverflowDetection:
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
 
+
+class TestToolStatus:
+    """Test on_tool_status ephemeral display in stream consumer."""
+
+    def test_on_tool_status_queues_sentinel(self):
+        from gateway.stream_consumer import GatewayStreamConsumer, _TOOL_STATUS
+        from unittest.mock import MagicMock
+
+        adapter = MagicMock()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        consumer.on_tool_status("⏳ Bash · 执行命令...")
+
+        item = consumer._queue.get_nowait()
+        assert isinstance(item, tuple)
+        assert item[0] is _TOOL_STATUS
+        assert item[1] == "⏳ Bash · 执行命令..."
+
+    def test_tool_status_cleared_on_text_delta(self):
+        from gateway.stream_consumer import GatewayStreamConsumer, _TOOL_STATUS
+        from unittest.mock import MagicMock
+
+        adapter = MagicMock()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        consumer._tool_status_text = "⏳ Read · 阅读文件..."
+        consumer._filter_and_accumulate("new text")
+        consumer._tool_status_text = None
+        assert consumer._tool_status_text is None
