@@ -552,8 +552,7 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
                     Path(tmp.name).unlink(missing_ok=True)
                 except Exception:
                     pass
-            if not resized or len(resized) >= len(url):
-                # Shrink didn't help (or made it bigger — corrupt input?).
+            if not resized:
                 return None
             return resized
         except Exception as exc:
