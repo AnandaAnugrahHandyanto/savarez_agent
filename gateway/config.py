@@ -2133,7 +2133,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         ),
                     )
     except Exception as e:
-        logger.debug("Plugin platform enable pass failed: %s", e)
+        logger.warning("Plugin platform enable pass failed: %s", e)
 
     for platform_config in config.platforms.values():
         platform_config.extra.pop("_enabled_explicit", None)
