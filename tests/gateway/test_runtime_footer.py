@@ -340,3 +340,23 @@ class TestNewFooterFields:
             elapsed_seconds=34.2,
         )
         assert result == "↑48 · ↓11.1k · cache:3.4M · $2.9475 · @nine:feat/xxx · ⏳34s · gpt-5.5"
+
+
+class TestFeishuFooterConfig:
+    def test_feishu_platform_override(self):
+        config = {
+            "display": {
+                "runtime_footer": {"enabled": True},
+                "platforms": {
+                    "feishu": {
+                        "runtime_footer": {
+                            "enabled": True,
+                            "fields": ["tokens_in", "tokens_out", "cache", "cost", "git_context", "elapsed", "model"],
+                        }
+                    }
+                },
+            }
+        }
+        resolved = resolve_footer_config(config, "feishu")
+        assert resolved["enabled"] is True
+        assert resolved["fields"] == ["tokens_in", "tokens_out", "cache", "cost", "git_context", "elapsed", "model"]
