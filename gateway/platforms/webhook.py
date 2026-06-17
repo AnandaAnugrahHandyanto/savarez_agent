@@ -188,6 +188,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/readyz", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
 
         # Port conflict detection — fail fast if port is already in use
