@@ -570,6 +570,12 @@ export function GatewaySettings({ onReconnectApplied }: GatewaySettingsProps) {
           action={
             <div className="flex flex-wrap gap-2">
               <Button
+                className={cn(
+                  'border',
+                  transportMode === 'direct'
+                    ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
+                    : 'border-(--ui-stroke-tertiary)'
+                )}
                 disabled={state.envOverride}
                 onClick={() =>
                   setState(current => ({
@@ -581,20 +587,36 @@ export function GatewaySettings({ onReconnectApplied }: GatewaySettingsProps) {
                 size="sm"
                 variant={transportMode === 'direct' ? 'textStrong' : 'outline'}
               >
+                {transportMode === 'direct' ? <Check className="size-3" /> : null}
                 {g.transportDirect}
               </Button>
               <Button
+                className={cn(
+                  'border',
+                  transportMode === 'local_mtls_proxy'
+                    ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
+                    : 'border-(--ui-stroke-tertiary)'
+                )}
                 disabled={state.envOverride}
                 onClick={() =>
-                  setState(current => ({
-                    ...current,
-                    remoteEffectiveUrl: current.remoteEffectiveUrl || DEFAULT_LOCAL_MTLS_PROXY_URL,
-                    remoteTransportMode: 'local_mtls_proxy'
-                  }))
+                  setState(current => {
+                    const currentEffective = (current.remoteEffectiveUrl || '').trim()
+                    const currentPublic = (current.remoteUrl || current.remotePublicUrl || '').trim()
+
+                    const nextEffective =
+                      !currentEffective || currentEffective === currentPublic ? DEFAULT_LOCAL_MTLS_PROXY_URL : currentEffective
+
+                    return {
+                      ...current,
+                      remoteEffectiveUrl: nextEffective,
+                      remoteTransportMode: 'local_mtls_proxy'
+                    }
+                  })
                 }
                 size="sm"
                 variant={transportMode === 'local_mtls_proxy' ? 'textStrong' : 'outline'}
               >
+                {transportMode === 'local_mtls_proxy' ? <Check className="size-3" /> : null}
                 {g.transportLocalMtlsProxy}
               </Button>
             </div>
