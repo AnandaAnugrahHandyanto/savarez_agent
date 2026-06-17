@@ -126,3 +126,32 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_starts_mcp_discovery_before_ready(monkeypatch):
+    import tui_gateway.entry as entry
+
+    calls = []
+    events = []
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: calls.append("mcp"))
+
+    class FakeWS:
+        async def accept(self):
+            events.append("accept")
+
+        async def send_text(self, line):
+            if '"gateway.ready"' in line:
+                events.append(f"ready_after_{len(calls)}")
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS()))
+
+    assert calls == ["mcp"]
+    assert events == ["accept", "ready_after_1"]

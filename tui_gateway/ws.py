@@ -190,6 +190,17 @@ async def handle_ws(ws: Any) -> None:
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
 
+        # WebSocket/Desktop sessions do not run tui_gateway.entry.main(), so
+        # start the same background MCP discovery path here before advertising
+        # gateway.ready. _make_agent() will briefly wait for this thread before
+        # snapshotting tools.
+        try:
+            from tui_gateway.entry import ensure_mcp_discovery_started
+
+            ensure_mcp_discovery_started()
+        except Exception:
+            _log.warning("ws MCP discovery startup failed", exc_info=True)
+
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
