@@ -83,6 +83,20 @@ class TestWriteAllowed:
     def test_project_file(self):
         assert _is_write_denied("/home/user/project/main.py") is False
 
-    def test_hermes_config_not_env(self):
-        path = os.path.join(str(Path.home()), ".hermes", "config.yaml")
-        assert _is_write_denied(path) is False
+    def test_hermes_config(self):
+        """config.yaml under active HERMES_HOME must be write-denied."""
+        from hermes_constants import get_hermes_home
+        path = str(get_hermes_home() / "config.yaml")
+        assert _is_write_denied(path) is True
+
+    def test_hermes_auth_json(self):
+        """auth.json under active HERMES_HOME must be write-denied."""
+        from hermes_constants import get_hermes_home
+        path = str(get_hermes_home() / "auth.json")
+        assert _is_write_denied(path) is True
+
+    def test_hermes_webhook_subscriptions(self):
+        """webhook_subscriptions.json under active HERMES_HOME must be write-denied."""
+        from hermes_constants import get_hermes_home
+        path = str(get_hermes_home() / "webhook_subscriptions.json")
+        assert _is_write_denied(path) is True
