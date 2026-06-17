@@ -340,15 +340,16 @@ class WeComAdapter(BasePlatformAdapter):
 
                 delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
                 backoff_idx += 1
+                logger.info("[%s] Reconnecting in %ds (attempt %d)...", self.name, delay, backoff_idx)
                 await asyncio.sleep(delay)
 
                 try:
                     await self._open_connection()
                     backoff_idx = 0
                     self._mark_connected()
-                    logger.info("[%s] Reconnected", self.name)
+                    logger.info("[%s] Reconnected successfully", self.name)
                 except Exception as reconnect_exc:
-                    logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+                    logger.warning("[%s] Reconnect attempt %d failed: %s", self.name, backoff_idx, reconnect_exc)
 
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""
