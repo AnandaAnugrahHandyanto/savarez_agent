@@ -6,7 +6,7 @@ author: Suede Labs AI
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
-  commands: [python3]
+  commands: [python3, uv]
   pip: [suede-ai]
 metadata:
   hermes:
@@ -30,8 +30,8 @@ Music promotion and AI media production from Suede Labs AI. Two fulfillment trac
 ## Prerequisites
 
 ```bash
-pip3 install suede-ai         # Python 3.10+
-# or: python3 -m pip install suede-ai
+uv pip install suede-ai       # preferred — works inside Hermes' uv-managed env
+# or: pip3 install suede-ai --break-system-packages  (macOS Homebrew fallback)
 ```
 
 Authentication uses a funded Ethereum wallet — no API keys or subscriptions. Set your private key as an environment variable:
