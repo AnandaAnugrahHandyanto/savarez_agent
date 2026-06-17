@@ -1,4 +1,5 @@
 """Tests for API server request/content normalization helpers."""
+import gateway.ingress as ingress
 from gateway.ingress import (
     _normalize_chat_completions_request,
     _normalize_chat_content,
@@ -359,7 +360,7 @@ class TestNormalizeChatContent:
             sum_calls += 1
             return sum(values)
 
-        monkeypatch.setattr(api_server, "sum", counting_sum, raising=False)
+        monkeypatch.setattr(ingress, "sum", counting_sum, raising=False)
         result = _normalize_chat_content(content)
 
         assert result.count("x") == 1000
