@@ -2693,6 +2693,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        # "__no_edit__" is a stream_consumer sentinel meaning "no preview message
+        # was created"; treating it as a real message_id would crash int() below.
+        if message_id == "__no_edit__":
+            return SendResult(success=True, message_id=message_id)
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -4380,6 +4385,29 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         return error
 
+    def _resolve_workspace_path(self, path: str) -> str:
+        """Translate /workspace/ Docker container paths to host equivalents.
+
+        When the terminal backend is Docker, tool-generated media lives at
+        /workspace/<file> inside the container. The gateway runs on the host
+        where that path does not exist. This looks up the active Docker env's
+        workspace host directory and rewrites the path so os.path.exists() works.
+        """
+        if not path.startswith("/workspace"):
+            return path
+        try:
+            from tools.terminal_tool import _active_environments  # type: ignore[import]
+            for env in list(_active_environments.values()):
+                wd = getattr(env, "_workspace_dir", None)
+                if wd:
+                    if path == "/workspace":
+                        return wd
+                    if path.startswith("/workspace/"):
+                        return wd + path[len("/workspace"):]
+        except Exception:
+            pass
+        return path
+
     def _telegram_media_too_large_note(self, label: str, file_size: Any, max_bytes: int) -> str:
         limit_mb = max(1, max_bytes // (1024 * 1024))
         try:
@@ -4419,7 +4447,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=True, message_id=None)
+
+        audio_path = self._resolve_workspace_path(audio_path)
         try:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
@@ -4646,6 +4678,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=True, message_id=None)
+
+        image_path = self._resolve_workspace_path(image_path)
         try:
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
@@ -4740,6 +4776,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=True, message_id=None)
+
+        file_path = self._resolve_workspace_path(file_path)
         try:
             if not os.path.exists(file_path):
                 return SendResult(success=False, error=self._missing_media_path_error("File", file_path))
@@ -4790,6 +4830,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
+            return SendResult(success=True, message_id=None)
+
+        video_path = self._resolve_workspace_path(video_path)
         try:
             if not os.path.exists(video_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Video", video_path))
