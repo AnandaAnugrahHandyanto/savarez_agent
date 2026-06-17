@@ -8,17 +8,28 @@ from hermes_cli import agents_os, agents_os_web
 from hermes_cli.agents_os import AgentsOSService, connect, log_event, resolve_paths, utc_now
 from hermes_cli.agents_os_web import (
     agents_registry_payload,
+    approval_detail_payload,
+    artifact_detail_payload,
     artifacts_payload,
     create_idea_action,
     jarvis_briefing_payload,
     jarvis_model_advisor_payload,
     jarvis_preview_payload,
     jarvis_reply_payload,
+    approvals_payload,
+    cron_readiness_payload,
+    events_payload,
     jarvis_transcribe_payload,
     knowledge_index_payload,
     media_assets_payload,
     mission_control_html,
     redacted_manage_status_payload,
+    run_detail_payload,
+    runs_payload,
+    sessions_visibility_payload,
+    skills_visibility_payload,
+    task_detail_payload,
+    tasks_payload,
     voice_status_payload,
 )
 
@@ -50,6 +61,10 @@ def test_root_html_contains_operator_tabs_and_bootstrap_payload(agents_home):
     ]:
         assert label in html
     assert "/api/idea-factory/draft" in html
+    assert "demo=task-detail" in html
+    assert "demo=approval-detail" in html
+    assert "showTaskDetail(tasks.items[0].id)" in html
+    assert "showApprovalDetail(approvals.items[0].id)" in html
     assert "vault/reference graph, not runtime memory merge" in html
 
 
@@ -150,6 +165,110 @@ def test_artifacts_media_operator_manage_voice_payloads_are_redacted_and_read_on
     assert "cross_agent_memory_merge" in jarvis["approval_gates"]
     assert operator["judge_status"] in {"pending", "ready"}
 
+
+def test_task_approval_run_event_and_cron_payloads_are_read_only_and_redacted(agents_home):
+    paths = resolve_paths(None)
+    with connect(paths) as conn:
+        conn.execute(
+            "INSERT INTO tasks(id,title,status,workflow,priority,created_at,updated_at,notes,route,approval_required) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("task-visible", "Visible task", "ready", "code-task", 1, utc_now(), utc_now(), "notes", "local:direct", 0),
+        )
+        conn.execute(
+            "INSERT INTO approvals(id,title,status,risk,task_id,payload,created_at) VALUES(?,?,?,?,?,?,?)",
+            ("approval-visible", "Visible approval", "pending", "external-action", "task-visible", '{"token":"secret-value"}', utc_now()),
+        )
+        conn.execute(
+            "INSERT INTO runs(id,task_id,workflow,status,input,created_at,completed_at) VALUES(?,?,?,?,?,?,?)",
+            ("run-visible", "task-visible", "code-task", "created", "safe input", utc_now(), None),
+        )
+        log_event(conn, "visible_event", task_id="task-visible", run_id="run-visible", payload={"cookie": "secret"})
+        conn.commit()
+
+    tasks = tasks_payload(paths)
+    approvals = approvals_payload(paths)
+    runs = runs_payload(paths)
+    events = events_payload(paths)
+    cron = cron_readiness_payload(paths)
+
+    assert tasks["read_only"] is True
+    assert any(item["id"] == "task-visible" for item in tasks["items"])
+    approval = next(item for item in approvals["items"] if item["id"] == "approval-visible")
+    assert approvals["resolution_enabled"] is False
+    assert approval["payload_preview"] == "[redacted-sensitive-preview]"
+    assert runs["read_only"] is True
+    assert any(item["id"] == "run-visible" for item in runs["items"])
+    event = next(item for item in events["items"] if item["event_type"] == "visible_event")
+    assert event["payload_preview"] == "[redacted-sensitive-preview]"
+    assert cron["read_only"] is True
+    assert cron["cron_mutation_enabled"] is False
+
+
+
+def test_detail_visibility_payloads_are_read_only_and_bounded(agents_home):
+    paths = resolve_paths(None)
+    artifact_file = paths.artifacts / "detail" / "artifact.md"
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file.write_text("# Evidence\n\nSafe local evidence.", encoding="utf-8")
+    with connect(paths) as conn:
+        conn.execute(
+            "INSERT INTO tasks(id,title,status,workflow,priority,created_at,updated_at,notes,route,approval_required) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("task-detail", "Detail task", "ready", "code-task", 1, utc_now(), utc_now(), "notes", "local:direct", 1),
+        )
+        conn.execute(
+            "INSERT INTO approvals(id,title,status,risk,task_id,payload,created_at) VALUES(?,?,?,?,?,?,?)",
+            ("approval-detail", "Detail approval", "pending", "external-action", "task-detail", '{"api_key":"hidden"}', utc_now()),
+        )
+        conn.execute(
+            "INSERT INTO runs(id,task_id,workflow,status,input,created_at,completed_at) VALUES(?,?,?,?,?,?,?)",
+            ("run-detail", "task-detail", "code-task", "created", '{"secret":"hidden"}', utc_now(), None),
+        )
+        conn.execute(
+            "INSERT INTO artifacts(id,kind,title,path,task_id,workflow,created_at,run_id) VALUES(?,?,?,?,?,?,?,?)",
+            ("artifact-detail", "verification", "Detail artifact", str(artifact_file), "task-detail", "qa-report", utc_now(), "run-detail"),
+        )
+        log_event(conn, "detail_event", task_id="task-detail", run_id="run-detail", payload={"token": "hidden"})
+        conn.commit()
+
+    task = task_detail_payload(paths, "task-detail")
+    approval = approval_detail_payload(paths, "approval-detail")
+    run = run_detail_payload(paths, "run-detail")
+    artifact = artifact_detail_payload(paths, "artifact-detail")
+    missing = approval_detail_payload(paths, "missing")
+
+    assert task["read_only"] is True
+    assert task["mutation_actions_enabled"] is False
+    assert task["approvals"][0]["payload_preview"] == "[redacted-sensitive-preview]"
+    assert task["runs"][0]["input_preview"] == "[redacted-sensitive-preview]"
+    assert task["events"][0]["payload_preview"] == "[redacted-sensitive-preview]"
+    assert approval["resolution_enabled"] is False
+    assert approval["approval"]["payload_preview"] == "[redacted-sensitive-preview]"
+    assert "approve" in approval["blocked_actions"]
+    assert approval["risk_taxonomy"]["deterministic"] is True
+    assert run["read_only"] is True
+    assert run["run"]["input_preview"] == "[redacted-sensitive-preview]"
+    assert artifact["preview_status"] == "ok"
+    assert "Evidence" in artifact["preview"]
+    assert missing["status"] == "not_found"
+
+
+def test_skills_and_sessions_visibility_are_metadata_only(agents_home, tmp_path):
+    paths = resolve_paths(None)
+    skill = paths.home / "skills" / "demo" / "sample" / "SKILL.md"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text('---\nname: sample-skill\ndescription: Sample description\n---\nbody', encoding="utf-8")
+    session = paths.home / "sessions" / "demo.json"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text('{"private":"content"}', encoding="utf-8")
+
+    skills = skills_visibility_payload(paths)
+    sessions = sessions_visibility_payload(paths)
+
+    assert skills["read_only"] is True
+    assert skills["content_visible"] is False
+    assert any(item["name"] == "sample-skill" for item in skills["items"])
+    assert sessions["metadata_only"] is True
+    assert sessions["raw_transcript_visible"] is False
+    assert any(item["file"] == "demo.json" for item in sessions["items"])
 
 def test_jarvis_transcribe_writes_local_artifacts_without_execution(agents_home):
     paths = resolve_paths(None)
