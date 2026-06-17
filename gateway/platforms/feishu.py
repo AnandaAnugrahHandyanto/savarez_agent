@@ -156,7 +156,10 @@ _MARKDOWN_HINT_RE = re.compile(
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_TABLE_RE = re.compile(
+    r"^(\|.*\|\n\|[-|: ]+\|\n(?:\|.*\|\n?)*)",
+    re.MULTILINE,
+)
 
 
 def _markdown_table_to_card(title: str, table_text: str) -> Optional[Dict[str, Any]]:
@@ -1890,7 +1893,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 card_sent = True
             else:
-                card_sent = False
+                logger.warning("[Feishu] Table parse returned None — falling through")
 
             # Send remaining text (before + after the table)
             remaining = "\n\n".join(filter(None, [before, after]))
