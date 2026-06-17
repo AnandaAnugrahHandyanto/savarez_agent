@@ -32,10 +32,85 @@ from pharma_compliance.session import (
     SessionManager,
     VisitSession,
 )
-from pharma_compliance.extractor import extract_fields, fields_to_summary, get_missing_core_fields
-from pharma_compliance.persistence import save_record
+from pharma_compliance.extractor import (
+    extract_fields,
+    fields_to_summary,
+    get_missing_core_fields,
+    CORE_FIELDS_PRIORITY,
+    CORE_FIELD_LABELS,
+    _extract_date,
+    _extract_time,
+    _extract_org_name,
+    _extract_person,
+    _extract_products,
+    _extract_topic,
+    _extract_feedback,
+    _extract_next_steps,
+    _extract_competitor,
+    detect_task_type,
+)
+from pharma_compliance.persistence import save_record, update_record
 
 logger = logging.getLogger(__name__)
+
+# ── Progressive field questioning ───────────────────────────────────────────
+
+# Priority order for progressive follow-up: date → time → core fields (deduped)
+_PROGRESSIVE_FIELD_PRIORITY = ["visit_date", "visit_time"] + [
+    f for f in CORE_FIELDS_PRIORITY if f not in ("visit_date",)
+]
+
+# Natural-language question templates for each field
+_FIELD_QUESTION_TEMPLATES: Dict[str, str] = {
+    "visit_date": "好的，记录下来了～请问这次拜访是什么时候去的呢？",
+    "visit_time": "了解～具体是几点左右去的呢？",
+    "task_type": "请问这次的任务类型是什么呢？（药店拜访 / 医疗机构拜访 / 学术推广）",
+    "org_name": "请问拜访的是哪家药店或机构呢？",
+    "contact_person": "请问拜访对象是哪位呢？",
+    "products": "主要涉及了哪些产品呢？",
+    "topic": "这次拜访主要聊了什么主题呢？",
+    "content_summary": "能简单描述一下拜访内容吗？",
+    "next_steps": "接下来有什么计划或下一步安排吗？",
+    "feedback": "这次的拜访对象有什么具体的反馈吗？比如对产品的评价、销量变化、提出的建议等等。",
+    "competitor_info": "有了解到什么竞品信息吗？",
+}
+
+
+def _get_field_question(field_name: str) -> Optional[str]:
+    """Return a natural-language follow-up question for a given field."""
+    return _FIELD_QUESTION_TEMPLATES.get(field_name)
+
+
+def _extract_single_field(text: str, field_name: str) -> str:
+    """Extract a single field value from user's reply text."""
+    if not text or not text.strip():
+        return ""
+    if field_name == "visit_date":
+        return _extract_date(text)
+    elif field_name == "visit_time":
+        return _extract_time(text)
+    elif field_name == "org_name":
+        return _extract_org_name(text)
+    elif field_name == "contact_person":
+        name, _ = _extract_person(text)
+        return name
+    elif field_name == "products":
+        return _extract_products(text)
+    elif field_name == "topic":
+        return _extract_topic(text)
+    elif field_name == "feedback":
+        return _extract_feedback(text)
+    elif field_name == "next_steps":
+        return _extract_next_steps(text)
+    elif field_name == "competitor_info":
+        return _extract_competitor(text)
+    elif field_name == "task_type":
+        return detect_task_type(text)
+    elif field_name == "content_summary":
+        return text.strip()
+    else:
+        # Generic: use the raw text
+        return text.strip()
 
 
 class ComplianceBotHandler:
@@ -78,11 +153,71 @@ class ComplianceBotHandler:
         """
         warnings: List[str] = []
         metadata = metadata or {}
+        # ── Check for stale session BEFORE touching activity ──
+        # get_or_create_session calls touch_activity() which would reset last_activity,
+        # so we must check staleness first using get_session (which does NOT touch activity).
+        existing = self.sessions.get_session(user_id)
+        if existing and (existing.pending_field is not None or (
+            existing.merged_fields is not None and existing.pending_questions
+        )):
+            if existing.is_stale():
+                existing.clear()
+                return {
+                    "merged": False,
+                    "task": None,
+                    "warnings": ["上次对话已超时，请重新开始"],
+                    "pending_count": 0,
+                    "text_preview": None,
+                    "missing_fields": [],
+                    "needs_followup": False,
+                    "followup_field": None,
+                    "followup_message": None,
+                }
         session = self.sessions.get_or_create_session(user_id)
 
-        # Check for manual merge trigger in text messages
+        # Check for manual merge trigger in text messages FIRST (takes priority over progressive routing)
         if msg_type == "text" and session.check_manual_merge(content):
             return await self._force_merge(session)
+
+        # ── Progressive questioning: user is answering a field follow-up ──
+        # Two scenarios trigger this path:
+        # 1. session.pending_field is set → actively answering a progressive question
+        # 2. merged_fields exists but no pending_field → answering feedback from _do_merge
+        #    (feedback was asked in merge response, now transitioning to progressive)
+        if session.pending_field is not None or (
+            session.merged_fields is not None and session.pending_questions
+        ):
+            # Check if session has been inactive for too long
+            if session.is_stale():
+                session.clear()
+                return {
+                    "merged": False,
+                    "task": None,
+                    "warnings": ["上次对话已超时，请重新开始"],
+                    "pending_count": 0,
+                    "text_preview": None,
+                    "missing_fields": [],
+                    "needs_followup": False,
+                    "followup_field": None,
+                    "followup_message": None,
+                }
+            if msg_type != "text":
+                # Non-text messages in progressive mode: briefly acknowledge
+                return {
+                    "merged": False,
+                    "task": None,
+                    "warnings": [],
+                    "pending_count": 0,
+                    "text_preview": None,
+                    "missing_fields": session.pending_questions,
+                    "needs_followup": True,
+                    "followup_field": session.pending_field,
+                    "followup_message": (
+                        f"收到啦～不过刚才在问的「{CORE_FIELD_LABELS.get(session.pending_field or '信息', '信息')}」"
+                        f"方便用文字回复一下吗？"
+                    ),
+                }
+            return await self._handle_progressive_answer(user_id, content, session)
 
         try:
             if msg_type == "voice":
@@ -525,8 +660,9 @@ class ComplianceBotHandler:
 
         # Persist record + photos to disk FIRST (before archive may delete temp files)
         persist_ok = False
+        record_id = None
         try:
-            save_record(task, photo_paths)
+            record_id = save_record(task, photo_paths)
             persist_ok = True
         except Exception as e:
             logger.error("Failed to persist record: %s", e)
@@ -534,27 +670,97 @@ class ComplianceBotHandler:
         if persist_ok:
             # Only archive (which may delete temp files) after successful persistence
             self._archive_photos(session)
-            # Clear pending messages ONLY after successful persistence
-            session.clear()
         else:
             logger.warning(
-                "Persistence failed for user %s — session NOT cleared, data retained for retry",
+                "Persistence failed for user %s — session cleared, data retained in memory only (retry will produce new visit record)",
                 session.user_id,
             )
 
         # Cancel any pending merge timer for this session
         self._cancel_merge_timer(session.user_id)
 
-        # Check feedback field completeness — 反馈必填引导追问
+        # ── Bail out if persist failed ──
+        if not record_id:
+            session.clear()
+            return {
+                "merged": False,
+                "task": None,
+                "warnings": warnings + ["持久化失败，请重试"],
+                "pending_count": 0,
+                "text_preview": None,
+                "missing_fields": [],
+                "needs_followup": False,
+                "followup_field": None,
+                "followup_message": None,
+            }
+
+        # ── Build progressive questioning queue ──────────────────────────
+        # Check ALL missing fields in priority order (date → time → core fields)
+        progressive_missing = self._build_progressive_queue(fields)
+
+        # Feedback is handled specially (existing behavior): if feedback missing,
+        # it's asked first via the return value. Remaining fields go to session.
         feedback = fields.get("feedback", "")
-        feedback_missing = not feedback or (isinstance(feedback, str) and not feedback.strip())
-        followup_msg = None
-        if feedback_missing:
-            followup_msg = (
-                "好的，记录下来了～再补充一下：这次的拜访对象有什么具体的反馈吗？"
-                "比如对产品的评价、销量变化、提出的建议等等。"
-            )
-            logger.info("Feedback field missing for user %s, requesting follow-up", session.user_id)
+        is_feedback_missing = not feedback or (isinstance(feedback, str) and not feedback.strip())
+        needs_followup = is_feedback_missing  # Default: needs follow-up if feedback missing
+
+        if progressive_missing:
+            # ── Setup progressive state (don't clear session) ──────────
+
+            if is_feedback_missing:
+                # Feedback comes first (existing behavior), queue the rest
+                # Remove feedback from progressive queue since it's asked separately
+                other_missing = [f for f in progressive_missing if f != "feedback"]
+
+                if other_missing:
+                    # Both feedback + other fields missing: enter progressive mode
+                    session.merged_fields = dict(fields)
+                    if record_id:
+                        session.merged_record_id = record_id
+                    session.pending_questions = other_missing
+                    session.pending_field = None  # Will be set after user answers feedback
+                    followup_msg = (
+                        "好的，记录下来了～再补充一下：这次的拜访对象有什么具体的反馈吗？"
+                        "比如对产品的评价、销量变化、提出的建议等等。"
+                    )
+                    logger.info(
+                        "Merge for user %s: feedback missing + %d other fields queued: %s",
+                        session.user_id, len(other_missing), other_missing,
+                    )
+                else:
+                    # ONLY feedback missing, no other progressive fields → progressive follow-up
+                    session.merged_fields = dict(fields)
+                    if record_id:
+                        session.merged_record_id = record_id
+                    session.pending_questions = []
+                    session.pending_field = "feedback"  # Will be answered in progressive flow, then update_record
+                    followup_msg = (
+                        "好的，记录下来了～再补充一下：这次的拜访对象有什么具体的反馈吗？"
+                        "比如对产品的评价、销量变化、提出的建议等等。"
+                    )
+                    logger.info(
+                        "Merge for user %s: only feedback missing, progressive follow-up with record_id=%s",
+                        session.user_id, record_id,
+                    )
+            else:
+                # No feedback missing — start progressive immediately
+                session.merged_fields = dict(fields)
+                if record_id:
+                    session.merged_record_id = record_id
+                first_field = progressive_missing.pop(0)
+                session.pending_field = first_field
+                session.pending_questions = progressive_missing
+                followup_msg = _get_field_question(first_field)
+                needs_followup = True  # Signal needs_followup (non-feedback field when feedback was OK)
+                logger.info(
+                    "Merge for user %s: progressive start with '%s', %d more queued: %s",
+                    session.user_id, first_field, len(progressive_missing), progressive_missing,
+                )
+        else:
+            # No missing fields at all — clean up normally
+            session.clear()
+            followup_msg = None
+            needs_followup = False
 
         if self.on_task_complete:
             try:
@@ -564,8 +770,9 @@ class ComplianceBotHandler:
             except Exception as e:
                 logger.error("on_task_complete callback failed: %s", e)
 
+        # Build missing_fields for the response (for backward compat)
         missing_fields = get_missing_core_fields(fields)
-        if feedback_missing and "feedback" not in missing_fields:
+        if is_feedback_missing and "feedback" not in missing_fields:
             missing_fields.append("feedback")
 
         return {
@@ -575,8 +782,8 @@ class ComplianceBotHandler:
             "pending_count": 0,
             "text_preview": fields_to_summary(fields),
             "missing_fields": missing_fields,
-            "needs_followup": feedback_missing,
-            "followup_field": "feedback" if feedback_missing else None,
+            "needs_followup": needs_followup,
+            "followup_field": "feedback" if (is_feedback_missing and not session.pending_field) else session.pending_field,
             "followup_message": followup_msg,
         }
 
@@ -593,6 +800,173 @@ class ComplianceBotHandler:
             }
         logger.info("Manual merge triggered for user %s", session.user_id)
         return await self._do_merge(session)
+
+    # ── Progressive field questioning (post-merge multi-round) ──────────────
+
+    def _build_progressive_queue(self, fields: Dict[str, Any]) -> List[str]:
+        """Build ordered list of missing fields from merged result.
+
+        Priority: visit_date → visit_time → CORE_FIELDS_PRIORITY (deduped).
+        Excludes fields already present (non-empty).
+        """
+        missing: List[str] = []
+        for field in _PROGRESSIVE_FIELD_PRIORITY:
+            value = fields.get(field, "")
+            if not value or (isinstance(value, str) and not value.strip()):
+                missing.append(field)
+        return missing
+
+    async def _handle_progressive_answer(
+        self, user_id: str, text: str, session: VisitSession
+    ) -> Dict[str, Any]:
+        """Handle user's answer to a progressive field question.
+
+        Extracts the field value from user's reply, updates merged_fields,
+        and asks the next pending question. When all fields are collected,
+        updates the persisted record and finalizes.
+        """
+        merged = session.merged_fields or {}
+        current_field = session.pending_field
+
+        # ── Phase 1: Answering the current progressive question ──────────
+        if current_field:
+            extracted = _extract_single_field(text, current_field)
+            if extracted:
+                merged[current_field] = extracted
+                session.retry_count = 0  # reset on success
+                logger.info(
+                    "Progressive: user %s answered field '%s': %s",
+                    user_id, current_field, extracted,
+                )
+            else:
+                if session.retry_count >= 2:
+                    # Retry count exhausted, skip this field
+                    logger.info(
+                        "Progressive: user %s failed field '%s' after 2 retries, skipping",
+                        user_id, current_field,
+                    )
+                else:
+                    session.retry_count += 1
+                    logger.info(
+                        "Progressive: user %s replied to '%s' but no value extracted (retry %d/2): %s",
+                        user_id, current_field, session.retry_count, text[:80],
+                    )
+                    # Re-ask the same field with a retry prompt
+                    field_label = CORE_FIELD_LABELS.get(current_field, current_field)
+                    retry_msg = (
+                        f"信息不清晰，能否重新补充一下{field_label}？"
+                        f"比如{CORE_FIELD_LABELS.get(current_field, '具体说明一下')}..."
+                    )
+                    return {
+                        "merged": False,
+                        "task": None,
+                        "warnings": [],
+                        "pending_count": 0,
+                        "text_preview": None,
+                        "missing_fields": session.pending_questions,
+                        "needs_followup": True,
+                        "followup_field": current_field,
+                        "followup_message": retry_msg,
+                    }
+
+        # ── Phase 2: Also extract feedback if we were awaiting it ────────
+        # (feedback flagged as missing in _do_merge but no pending_field was set)
+        if not current_field and "feedback" in merged and not merged.get("feedback"):
+            extracted = _extract_single_field(text, "feedback")
+            if extracted:
+                merged["feedback"] = extracted
+                logger.info(
+                    "Progressive: user %s provided feedback: %s", user_id, extracted[:80],
+                )
+
+        session.merged_fields = merged
+
+        # ── Phase 3: Move to next question or finalize ───────────────────
+        next_field = None
+        if session.pending_questions:
+            next_field = session.pending_questions.pop(0)
+
+        if next_field:
+            session.pending_field = next_field
+            question = _get_field_question(next_field) or f"请补充一下「{CORE_FIELD_LABELS.get(next_field, next_field)}」的信息～"
+            logger.info(
+                "Progressive: user %s → next question for field '%s'", user_id, next_field,
+            )
+            return {
+                "merged": False,
+                "task": None,
+                "warnings": [],
+                "pending_count": 0,
+                "text_preview": None,
+                "missing_fields": session.pending_questions,
+                "needs_followup": True,
+                "followup_field": next_field,
+                "followup_message": question,
+            }
+
+        # ── Phase 4: All questions answered — update persisted record ────
+        session.pending_field = None
+        record_id = session.merged_record_id
+        if record_id:
+            try:
+                update_record(record_id, merged)
+                logger.info(
+                    "Progressive: updated record %s for user %s with %d completed fields",
+                    record_id, user_id, len(merged),
+                )
+                # Build final summary
+                final_summary = fields_to_summary(merged)
+
+                # Clean up session state (only on success)
+                session.clear()
+
+                # Cancel merge timer
+                self._cancel_merge_timer(session.user_id)
+
+                return {
+                    "merged": True,
+                    "task": {"fields": merged, "summary": final_summary, "warnings": [], "message_count": 0},
+                    "warnings": [],
+                    "pending_count": 0,
+                    "text_preview": f"✅ 记录已完善～\n{final_summary}",
+                    "missing_fields": [],
+                    "needs_followup": False,
+                    "followup_field": None,
+                    "followup_message": None,
+                }
+            except Exception as e:
+                logger.error("Progressive: failed to update record %s: %s", record_id, e)
+                # Do NOT clear session — data retained for retry
+                return {
+                    "merged": False,
+                    "task": None,
+                    "warnings": [f"记录更新失败: {e}"],
+                    "pending_count": 0,
+                    "text_preview": None,
+                    "missing_fields": [],
+                    "needs_followup": False,
+                    "followup_field": None,
+                    "followup_message": None,
+                }
+
+        # No record_id — just clean up without persistence
+        final_summary = fields_to_summary(merged)
+        session.clear()
+        self._cancel_merge_timer(session.user_id)
+
+        return {
+            "merged": True,
+            "task": {"fields": merged, "summary": final_summary, "warnings": [], "message_count": 0},
+            "warnings": [],
+            "pending_count": 0,
+            "text_preview": f"✅ 记录已完善～\n{final_summary}",
+            "missing_fields": [],
+            "needs_followup": False,
+            "followup_field": None,
+            "followup_message": None,
+        }
+
+    # ── Location helpers ────────────────────────────────────────────────────
 
     @staticmethod
     def _extract_claimed_location(session: VisitSession) -> Optional[Dict[str, float]]:
