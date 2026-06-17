@@ -2190,6 +2190,15 @@ DEFAULT_CONFIG = {
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
         },
+        # Generic tool-result headroom gate. Oversized outputs are saved to
+        # the active environment's temp dir and the model receives a compact
+        # preview + read_file instructions instead of the full payload.
+        "result_budget": {
+            "default_result_size": 100_000,
+            "turn_budget": 200_000,
+            "preview_size": 1_500,
+            "tool_overrides": {},
+        },
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.
@@ -2416,6 +2425,11 @@ DEFAULT_CONFIG = {
         # workspace-wide diagnostics (slower).
         "wait_mode": "document",
         "wait_timeout": 5.0,
+
+        # Reap language server clients that have not been touched for this
+        # many seconds. Keeps long-lived gateway sessions from accumulating
+        # tsserver/pyright/gopls children across unrelated projects.
+        "idle_timeout": 600,
 
         # How to handle missing server binaries.
         # ``"auto"`` — try to install via npm/go/pip into

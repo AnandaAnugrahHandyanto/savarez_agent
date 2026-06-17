@@ -204,6 +204,7 @@ class LSPService:
         enabled = bool(lsp_cfg.get("enabled", True))
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
+        idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
         install_strategy = lsp_cfg.get("install_strategy", "auto")
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
@@ -235,6 +236,7 @@ class LSPService:
             env_overrides=env_overrides,
             init_overrides=init_overrides,
             disabled_servers=disabled,
+            idle_timeout=idle_timeout,
         )
 
     # ------------------------------------------------------------------
@@ -485,6 +487,7 @@ class LSPService:
         return list(client.diagnostics_for(file_path))
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
+        await self._reap_idle_clients()
         srv = find_server_for_file(file_path)
         if srv is None:
             return None
@@ -566,6 +569,23 @@ class LSPService:
             with self._state_lock:
                 self._spawning.pop(key, None)
 
+    async def _reap_idle_clients(self) -> None:
+        """Shutdown LSP clients that have been idle past the configured TTL."""
+        if self._idle_timeout <= 0:
+            return
+        now = time.time()
+        expired: list[tuple[tuple[str, str], LSPClient]] = []
+        with self._state_lock:
+            for key, client in list(self._clients.items()):
+                last = self._last_used.get(key, now)
+                if now - last > self._idle_timeout or not client.is_running:
+                    expired.append((key, client))
+                    self._clients.pop(key, None)
+                    self._last_used.pop(key, None)
+        if expired:
+            logger.info("Reaping %d idle LSP client(s)", len(expired))
+            await asyncio.gather(*(client.shutdown() for _, client in expired), return_exceptions=True)
+
     async def _shutdown_async(self) -> None:
         with self._state_lock:
             clients = list(self._clients.values())
@@ -598,6 +618,7 @@ class LSPService:
             "enabled": self._enabled,
             "wait_mode": self._wait_mode,
             "wait_timeout": self._wait_timeout,
+            "idle_timeout": self._idle_timeout,
             "install_strategy": self._install_strategy,
             "clients": clients,
             "broken": broken,

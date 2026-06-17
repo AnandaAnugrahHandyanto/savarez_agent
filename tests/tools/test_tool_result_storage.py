@@ -7,6 +7,7 @@ from tools.budget_config import (
     DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
+    budget_config_from_mapping,
 )
 from tools.tool_result_storage import (
     HEREDOC_MARKER,
@@ -62,6 +63,53 @@ class TestGeneratePreview:
         preview, has_more = generate_preview(text)
         assert preview == text
         assert has_more is False
+
+
+# ── BudgetConfig mapping loader ───────────────────────────────────────
+
+class TestBudgetConfigFromMapping:
+    def test_uses_nested_tool_result_budget_config(self):
+        cfg = budget_config_from_mapping({
+            "tools": {
+                "result_budget": {
+                    "default_result_size": 12_000,
+                    "turn_budget": 48_000,
+                    "preview_size": 900,
+                    "tool_overrides": {
+                        "terminal": 8_000,
+                        "mcp_smart_web_smartfetch": 6_000,
+                    },
+                },
+            },
+        })
+
+        assert cfg.default_result_size == 12_000
+        assert cfg.turn_budget == 48_000
+        assert cfg.preview_size == 900
+        assert cfg.tool_overrides == {
+            "terminal": 8_000,
+            "mcp_smart_web_smartfetch": 6_000,
+        }
+
+    def test_invalid_values_fall_back_to_safe_defaults(self):
+        cfg = budget_config_from_mapping({
+            "tools": {
+                "result_budget": {
+                    "default_result_size": -1,
+                    "turn_budget": "bad",
+                    "preview_size": 0,
+                    "tool_overrides": {"terminal": -50, "read_file": 1_000},
+                },
+            },
+        })
+
+        assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
+        assert cfg.turn_budget > 0
+        assert cfg.preview_size == DEFAULT_PREVIEW_SIZE_CHARS
+        # read_file remains pinned by BudgetConfig.resolve_threshold; the
+        # loader should also ignore invalid non-positive overrides.
+        assert cfg.tool_overrides == {"read_file": 1_000}
+        assert cfg.resolve_threshold("read_file") == float("inf")
 
 
 # ── _heredoc_marker ───────────────────────────────────────────────────

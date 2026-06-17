@@ -171,6 +171,7 @@ def test_service_status_includes_clients(mock_pyright):
         svc.get_diagnostics_sync(str(f))
         info = svc.get_status()
         assert info["enabled"] is True
+        assert info["idle_timeout"] == 600
         assert any(c["server_id"] == "pyright" for c in info["clients"])
     finally:
         svc.shutdown()

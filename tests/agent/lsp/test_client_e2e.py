@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,37 @@ def _client(workspace: Path, script: str = "clean") -> LSPClient:
         env=env,
         cwd=str(workspace),
     )
+
+
+@pytest.mark.asyncio
+async def test_client_spawn_uses_own_process_group_on_posix(monkeypatch, tmp_path: Path):
+    """LSP children must be group-owned so shutdown can reap helpers."""
+    captured = {}
+
+    async def fake_create_subprocess_exec(*cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            stdin=SimpleNamespace(is_closing=lambda: False),
+            stdout=SimpleNamespace(),
+            stderr=SimpleNamespace(),
+            returncode=None,
+            pid=123456,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    client = _client(tmp_path, "clean")
+    await client._spawn()
+    try:
+        if sys.platform != "win32":
+            assert captured["kwargs"].get("start_new_session") is True
+        else:
+            assert "start_new_session" not in captured["kwargs"]
+    finally:
+        if client._reader_task is not None:
+            client._reader_task.cancel()
+        if client._stderr_task is not None:
+            client._stderr_task.cancel()
 
 
 @pytest.mark.asyncio

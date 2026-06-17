@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
@@ -262,6 +263,13 @@ class LSPClient:
         if sys.platform == "win32":
             cmd = self._win_wrap_cmd(cmd)
 
+        create_kwargs: Dict[str, Any] = {}
+        if sys.platform != "win32":
+            # Put each language server in its own process group so shutdown can
+            # reap helper grandchildren (tsserver, pyright node children, etc.)
+            # instead of leaving orphaned long-lived processes under the gateway.
+            create_kwargs["start_new_session"] = True
+
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 cmd[0],
@@ -271,6 +279,7 @@ class LSPClient:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=self._cwd,
+                **create_kwargs,
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(
@@ -442,12 +451,21 @@ class LSPClient:
             return
         if proc.returncode is None:
             try:
-                proc.terminate()
+                if sys.platform != "win32":
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.terminate()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
                 except asyncio.TimeoutError:
                     try:
-                        proc.kill()
+                        if sys.platform != "win32":
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        else:
+                            proc.kill()
                         await proc.wait()
                     except ProcessLookupError:
                         pass

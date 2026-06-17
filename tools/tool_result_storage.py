@@ -31,6 +31,7 @@ from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
     DEFAULT_BUDGET,
+    budget_config_from_mapping,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,16 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+
+
+def load_budget_config() -> BudgetConfig:
+    """Load tool-result budget policy from config.yaml, fail-open to defaults."""
+    try:
+        from hermes_cli.config import load_config
+        return budget_config_from_mapping(load_config())
+    except Exception as exc:
+        logger.debug("Could not load tool result budget config: %s", exc)
+        return DEFAULT_BUDGET
 
 
 def _resolve_storage_dir(env) -> str:
