@@ -195,9 +195,25 @@ def _markdown_table_to_card(title: str, table_text: str) -> Optional[Dict[str, A
         return None
 
     col_defs = [
-        {"name": c, "display_name": c, "data_type": "text"}
+        {"name": c, "display_name": c, "data_type": "text", "width": "auto"}
         for c in header_cells
     ]
+
+    # Auto-size columns based on content length to reduce truncation
+    # Calculate max display length per column (header + data rows)
+    num_cols = len(header_cells)
+    col_max: list[int] = [len(c) for c in header_cells]
+    for row in rows:
+        for i, col_name in enumerate(header_cells):
+            val_len = len(row.get(col_name, ""))
+            if val_len > col_max[i]:
+                col_max[i] = val_len
+
+    # Convert char count to pixel width (~8px per ASCII, ~14px per CJK)
+    # Clamp to [80, 300] to avoid too narrow or too wide columns
+    for i in range(num_cols):
+        px = max(80, min(300, col_max[i] * 12 + 20))
+        col_defs[i]["width"] = f"{px}px"
 
     return {
         "header": {
