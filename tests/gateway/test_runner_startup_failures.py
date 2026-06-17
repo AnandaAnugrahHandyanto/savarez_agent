@@ -11,7 +11,12 @@ class _RetryableFailureAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    # ``is_reconnect`` is forwarded by ``_connect_adapter_with_timeout`` (see
+    # #46621). Stubbed adapters in the test suite need to accept the same
+    # kwargs-only parameter or the runner's connect() call raises
+    # ``TypeError: got an unexpected keyword argument 'is_reconnect'`` before
+    # the adapter's own error path can run, masking the test setup.
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
             "telegram_connect_error",
             "Telegram startup failed: temporary DNS resolution failure.",
@@ -33,7 +38,7 @@ class _DisabledAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=False, token="***"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         raise AssertionError("connect should not be called for disabled platforms")
 
     async def disconnect(self) -> None:
@@ -50,7 +55,7 @@ class _SuccessfulAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
