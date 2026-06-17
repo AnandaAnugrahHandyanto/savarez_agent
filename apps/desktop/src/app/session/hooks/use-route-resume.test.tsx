@@ -16,6 +16,7 @@ interface HarnessProps {
   locationPathname: string
   resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
   resumeFailedSessionId?: null | string
+  resumeExhaustedSessionId?: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
@@ -23,8 +24,12 @@ interface HarnessProps {
   startFreshSessionDraft: (focus: boolean) => unknown
 }
 
-function RouteResumeHarness({ resumeFailedSessionId = null, ...props }: HarnessProps) {
-  useRouteResume({ ...props, resumeFailedSessionId })
+function RouteResumeHarness({
+  resumeFailedSessionId = null,
+  resumeExhaustedSessionId = null,
+  ...props
+}: HarnessProps) {
+  useRouteResume({ ...props, resumeExhaustedSessionId, resumeFailedSessionId })
 
   return null
 }
@@ -405,6 +410,65 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
         selectedStoredSessionIdRef={{ current: 'session-2' }}
       />
     )
+
+    expect($resumeExhaustedSessionId.get()).toBeNull()
+  })
+
+  it('resets the retry counter for a fresh backoff cycle when the exhausted latch clears (manual retry, same session)', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    // Phase A — exhaust the bounded auto-retry (counter → MAX) like a dead
+    // backend. The resumeExhaustedSessionId prop stays null here: the hook sets
+    // the store, which doesn't feed back into the prop in this harness.
+    const { rerender } = render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    resumeSession.mockClear()
+    for (let i = 0; i < 8; i += 1) {
+      vi.advanceTimersByTime(8_000)
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId={null} />)
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    }
+    expect(resumeSession.mock.calls.length).toBe(4) // capped
+    expect($resumeExhaustedSessionId.get()).toBe('session-1')
+
+    // Phase B — user clicks Retry on the SAME stranded session. resumeSession
+    // clears both latches at entry; the exhausted latch's armed->cleared edge
+    // must reset the attempt counter so a fresh bounded cycle runs, not a single
+    // one-shot attempt that immediately re-arms the error. Model the prop
+    // transitions: reflect the armed latch, then clear it (retry), then re-arm
+    // the failure latch on the fresh failure.
+    resumeSession.mockClear()
+    rerender(<RouteResumeHarness {...props} resumeExhaustedSessionId="session-1" resumeFailedSessionId="session-1" />)
+    rerender(<RouteResumeHarness {...props} resumeExhaustedSessionId={null} resumeFailedSessionId={null} />)
+    rerender(<RouteResumeHarness {...props} resumeExhaustedSessionId={null} resumeFailedSessionId="session-1" />)
+
+    // A real retry fires again instead of staying pinned at MAX (which would
+    // dispatch nothing). Without the reset the counter stays >= MAX and this
+    // advance dispatches zero resumes.
+    vi.advanceTimersByTime(8_000)
+    expect(resumeSession.mock.calls.length).toBeGreaterThan(0)
+  })
+
+  it('does not burn retry attempts on unrelated re-renders during the backoff window', () => {
+    vi.useFakeTimers()
+    const props = strandedProps(vi.fn())
+
+    // Mount schedules the first backoff timer. Then re-render repeatedly with a
+    // fresh resumeSession identity (referential instability — a real dep change
+    // for the retry effect) WITHOUT ever letting the timer fire. The old code
+    // incremented the attempt counter at schedule time, so >= MAX re-renders
+    // armed the exhausted error with zero resumes actually dispatched. The fix
+    // only advances the counter when a timer truly fires, so the latch stays
+    // clear no matter how many spurious re-renders happen mid-backoff.
+    const { rerender } = render(
+      <RouteResumeHarness {...props} resumeFailedSessionId="session-1" resumeSession={vi.fn(async () => undefined)} />
+    )
+    for (let j = 0; j < 8; j += 1) {
+      rerender(
+        <RouteResumeHarness {...props} resumeFailedSessionId="session-1" resumeSession={vi.fn(async () => undefined)} />
+      )
+    }
 
     expect($resumeExhaustedSessionId.get()).toBeNull()
   })

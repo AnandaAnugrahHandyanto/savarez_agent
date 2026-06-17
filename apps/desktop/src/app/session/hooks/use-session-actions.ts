@@ -709,7 +709,6 @@ export function useSessionActions({
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
-
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
@@ -804,9 +803,15 @@ export function useSessionActions({
           // focus / gateway reconnect instead of stranding the loader.
         }
 
-        if (isCurrentResume()) {
-          // Arm the self-heal: tell use-route-resume this routed session's resume
-          // failed terminally so it retries (bounded) rather than spinning forever.
+        if (isCurrentResume() && $messages.get().length === 0) {
+          // Arm the self-heal ONLY when the window is still empty: the gateway
+          // resume rejected AND the REST fallback failed to paint a transcript.
+          // That is the exact stranded state the loader latches on
+          // (messagesEmpty && !activeSessionId), and matches $resumeFailedSessionId's
+          // documented contract. If the REST fallback DID paint history, the
+          // window is readable — arming here would needlessly auto-retry and,
+          // once retries exhaust, blank that visible transcript behind the
+          // exhausted-state error overlay (a regression vs. plain fallback success).
           setResumeFailedSessionId(storedSessionId)
         }
 

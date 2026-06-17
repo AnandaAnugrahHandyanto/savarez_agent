@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages } from '@/hermes'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import { $currentCwd, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
+import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -192,6 +192,35 @@ describe('resumeSession failure recovery', () => {
     // The window is no longer silently stranded: the failure latch is armed for
     // the stored session, which use-route-resume consumes to retry.
     expect($resumeFailedSessionId.get()).toBe('stored-1')
+  })
+
+  it('does NOT arm the failure latch when the resume RPC fails but the REST fallback paints history', async () => {
+    // session.resume rejects, but the REST transcript fallback succeeds and
+    // hydrates a readable transcript — the window is NOT stranded.
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('request timed out: session.resume')
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'hello', role: 'user', timestamp: 1 },
+        { content: 'hi there', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-1'
+    } as never)
+
+    await runResume(requestGateway)
+
+    // Arming here would auto-retry a window that already shows history and,
+    // on exhaustion, blank that transcript behind the error overlay — a
+    // regression vs. plain fallback-success. The latch must stay clear.
+    expect($resumeFailedSessionId.get()).toBeNull()
+    // The fallback transcript is visible.
+    expect($messages.get().length).toBeGreaterThan(0)
   })
 
   it('does NOT throw out of the fallback when REST also fails (no unhandled rejection)', async () => {

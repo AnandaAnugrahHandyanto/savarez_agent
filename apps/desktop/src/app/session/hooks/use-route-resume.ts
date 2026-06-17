@@ -17,6 +17,12 @@ interface RouteResumeOptions {
   // routedSessionId the window would otherwise latch on the loader forever, so
   // the bounded-retry effect below re-attempts the resume.
   resumeFailedSessionId: string | null
+  // Stored-session id whose bounded auto-retry has EXHAUSTED (mirrored from
+  // $resumeExhaustedSessionId). Only resumeSession clears this latch (manual
+  // Retry / reconnect / reselect) — the auto-retry loop never does — so its
+  // armed->cleared edge is an unambiguous "give me a fresh backoff cycle"
+  // signal the effect below uses to reset the attempt counter.
+  resumeExhaustedSessionId: string | null
   routedSessionId: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
@@ -69,6 +75,7 @@ export function useRouteResume({
   locationPathname,
   resumeSession,
   resumeFailedSessionId,
+  resumeExhaustedSessionId,
   routedSessionId,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
@@ -82,6 +89,12 @@ export function useRouteResume({
   // by the session id we're retrying so switching chats resets the counter.
   const retrySessionIdRef = useRef<string | null>(null)
   const retryAttemptRef = useRef(0)
+  // Tracks the previous exhausted-latch value so we can detect its armed->cleared
+  // edge. resumeSession clears $resumeExhaustedSessionId on a manual Retry /
+  // reconnect / reselect; that transition is our cue to reset the attempt counter
+  // for a fresh backoff cycle on the SAME session (the auto-retry loop itself
+  // never touches this latch, so it can't spuriously trigger the reset).
+  const prevResumeExhaustedRef = useRef<string | null>(null)
 
   useEffect(() => {
     const gatewayOpen = gatewayState === 'open'
@@ -175,6 +188,23 @@ export function useRouteResume({
   // success keeps it clear (the effect's guard then no-ops), a repeat failure
   // re-arms it and we back off further, capped at MAX_RESUME_RETRIES.
   useEffect(() => {
+    // Detect the exhausted-latch armed->cleared edge for the current route. Only
+    // resumeSession clears $resumeExhaustedSessionId (manual Retry / reconnect /
+    // reselect) — the auto-retry loop never touches it — so this transition
+    // uniquely means "the user asked for another go." Reset the attempt counter
+    // for a fresh bounded backoff cycle on the SAME session. Without this,
+    // retryAttemptRef stays pinned at MAX after exhaustion (the !stranded reset
+    // below only fires on a route CHANGE to a different session), so a manual
+    // retry on the same stranded session would get exactly ONE attempt and then
+    // immediately re-arm the exhausted error — never the renewed backoff cycle
+    // the store/session.ts + use-session-actions.ts comments promise. (Point 2)
+    const wasExhausted = prevResumeExhaustedRef.current
+    prevResumeExhaustedRef.current = resumeExhaustedSessionId
+    if (wasExhausted && wasExhausted === routedSessionId && resumeExhaustedSessionId !== wasExhausted) {
+      retrySessionIdRef.current = routedSessionId
+      retryAttemptRef.current = 0
+    }
+
     if (currentView !== 'chat' || gatewayState !== 'open') {
       return
     }
@@ -218,7 +248,6 @@ export function useRouteResume({
     }
 
     const attempt = retryAttemptRef.current
-    retryAttemptRef.current = attempt + 1
     const sessionId = routedSessionId as string
 
     const timer = setTimeout(() => {
@@ -231,6 +260,14 @@ export function useRouteResume({
         return
       }
 
+      // Consume an attempt ONLY now that a resume is actually dispatching.
+      // Incrementing at schedule time (the old behavior) let unrelated dep
+      // changes during the 1s–8s backoff window — a transient gatewayState
+      // flip, a non-referentially-stable resumeSession — clear the pending
+      // timer and re-run the effect, burning an attempt without any resume
+      // having fired. A flapping backend could then hit MAX in a couple of
+      // re-renders with far fewer than MAX real attempts. (Point 3)
+      retryAttemptRef.current += 1
       void resumeSession(sessionId, true)
     }, resumeRetryDelayMs(attempt))
 
@@ -242,6 +279,7 @@ export function useRouteResume({
     gatewayState,
     resumeSession,
     resumeFailedSessionId,
+    resumeExhaustedSessionId,
     routedSessionId,
     selectedStoredSessionIdRef
   ])
