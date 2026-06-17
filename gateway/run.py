@@ -712,6 +712,44 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+
+def _flatten_content_to_text(content: Any) -> str:
+    """Extract text from content that may be a multimodal parts list.
+
+    Observed-group-context is text-only by design (injected as a plain-string
+    prefix via ``_wrap_current_message_with_observed_context``).  When the
+    stored ``content`` is a list of parts (e.g. ``[{"type": "text", ...},
+    {"type": "image_url", ...}]``) produced by the image-routing pipeline,
+    ``str()``-ing it yields an unusable Python repr.  This helper extracts
+    the human-readable text and appends a media placeholder so the model
+    knows an attachment was present.
+
+    See issue #47415.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        media_count = 0
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type", "")
+            if ptype == "text":
+                t = part.get("text", "")
+                if t:
+                    text_parts.append(t)
+            elif ptype == "image_url":
+                media_count += 1
+            elif ptype in ("image", "video", "audio", "file"):
+                media_count += 1
+        result = " ".join(text_parts).strip()
+        if media_count:
+            label = f"[{media_count} image(s) attached]" if media_count > 1 else "[image attached]"
+            result = f"{result} {label}" if result else label
+        return result or str(content).strip()
+    return str(content).strip()
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -759,7 +797,7 @@ def _build_gateway_agent_history(
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
         if separate_observed_context and msg.get("observed") and role == "user" and content:
-            observed_group_context.append(str(content).strip())
+            observed_group_context.append(_flatten_content_to_text(content))
             continue
 
         # Rich agent messages (tool_calls, tool results) must be passed through

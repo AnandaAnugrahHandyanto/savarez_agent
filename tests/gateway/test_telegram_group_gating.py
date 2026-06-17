@@ -1209,3 +1209,98 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
         assert "unsupported" in message["content"].lower()
 
     asyncio.run(_run())
+
+
+def test_observed_group_context_flattens_multimodal_content_to_text():
+    """Observed group photos must be represented as text, not Python repr.
+
+    Regression test for #47415: when an observed group message contains
+    multimodal content (text + image_url parts), str() produced an unusable
+    Python repr.  The fix extracts text parts and appends an image placeholder.
+    """
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "[Alice|111] here's the desk sheet"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+            "observed": True,
+        },
+        {
+            "role": "user",
+            "content": "[Bob|222] what was in that image?",
+            "observed": True,
+        },
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Telegram group context",
+    )
+
+    # The image message must NOT contain Python repr
+    assert "image_url" not in observed_context
+    assert "{'type'" not in observed_context
+    # Must contain the text caption and an image placeholder
+    assert "desk sheet" in observed_context
+    assert "[image attached]" in observed_context
+    # The plain text message must still be present
+    assert "what was in that image?" in observed_context
+
+
+def test_observed_group_context_handles_image_only_no_text():
+    """An observed group image with no caption should still produce a placeholder."""
+    from gateway.run import (
+        _build_gateway_agent_history,
+    )
+
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBBB"}},
+            ],
+            "observed": True,
+        },
+    ]
+
+    _, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Telegram group context",
+    )
+
+    assert observed_context == "[image attached]"
+    assert "image_url" not in observed_context
+
+
+def test_observed_group_context_handles_multiple_images():
+    """Multiple images in one observed message produce a count placeholder."""
+    from gateway.run import (
+        _build_gateway_agent_history,
+    )
+
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "[Alice|111] batch upload"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,CCC"}},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,DDD"}},
+            ],
+            "observed": True,
+        },
+    ]
+
+    _, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Telegram group context",
+    )
+
+    assert "[2 image(s) attached]" in observed_context
+    assert "batch upload" in observed_context
