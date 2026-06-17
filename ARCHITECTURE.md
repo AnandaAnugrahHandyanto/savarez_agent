@@ -60,4 +60,4 @@ Hermes Agent is a multi-surface personal AI agent. The same agent core can run f
 - Keep the core model tool schema narrow.
 - Preserve profile isolation; use profile-aware helpers instead of hardcoded paths.
 - Tests must be hermetic and avoid mutating a real user Hermes home.
-- Public Hermes Agent source should not embed private Artem/Enkidu policy unless the explicit goal is a general feature.
+- Public Hermes Agent source should stay general-purpose; project-specific contributor policy belongs in repository-neutral docs or local workflow configuration.

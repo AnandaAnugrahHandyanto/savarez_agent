@@ -38,11 +38,11 @@ Hermes Agent is an open-source, provider-agnostic AI agent framework by Nous Res
 - Hermes is frequently installed under `$HERMES_HOME/hermes-agent`, commonly `~/.hermes/hermes-agent`, but source code must stay profile-safe and portable.
 - Runtime configuration and secrets live in user profile homes, not in this public source tree.
 - Development uses git worktrees for isolated source changes.
-- Public upstream source changes should remain general-purpose; private Enkidu policy belongs in private Enkidu governance, not upstream Hermes Agent source.
+- Public upstream source changes should remain general-purpose; private deployment or automation policy belongs outside upstream Hermes Agent source.
 
 ## BMad/Rosetta boundary for this repo
 
 - These root Rosetta docs describe current Hermes Agent AS-IS behavior.
 - `_bmad-output/project-context.md` points BMad agents to these AS-IS docs and adds implementation rules.
 - Future BMad PRDs, architectures, stories, and sprint artifacts should describe TO-BE work and must not overwrite these AS-IS docs.
-- Hermes Agent framework/source changes are high-risk in Enkidu automation and require explicit source-route approval, worktree isolation, tests, and PR review.
+- Hermes Agent framework/source changes require explicit source-route approval, worktree isolation, tests, and PR review in automated workflows.

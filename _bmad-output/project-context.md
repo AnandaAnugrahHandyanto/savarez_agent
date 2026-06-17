@@ -18,12 +18,12 @@
 - Preserve per-conversation prompt caching; do not mutate system/tool schema mid-conversation unless the explicit task requires it and the impact is documented.
 - Preserve strict message role alternation in agent-loop changes.
 - Keep the core model tool schema narrow. Prefer existing tools, CLI+skill flows, service-gated tools, plugins, or MCP servers before adding a new core tool.
-- Public Hermes Agent source must stay general-purpose. Private Artem/Enkidu policy belongs in private Enkidu governance, not upstream framework code.
+- Public Hermes Agent source must stay general-purpose. Private deployment or automation policy belongs outside upstream framework code.
 - Use profile-safe path helpers such as `get_hermes_home()` instead of hardcoded `~/.hermes` in framework code.
 - Tests must not touch the real user's Hermes home; use isolated temp homes and the repository test wrapper where possible.
 - For bug fixes, reproduce or locate line-level evidence before implementation. Add regression coverage where practical.
 - For behavior changes, use TDD where practical: failing test first, minimal implementation, then verification.
-- For source changes, use an isolated git worktree and open a PR for review. Do not auto-merge Hermes Agent source changes under Enkidu automation.
+- For source changes, use an isolated git worktree and open a PR for review. Do not auto-merge source changes unless maintainers have explicitly approved that automation policy.
 
 ## To-be vs as-is
 
