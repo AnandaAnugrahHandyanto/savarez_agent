@@ -592,3 +592,33 @@ def test_restore_cron_skill_links_standalone(backup_env):
     assert report["restored"][0]["to"]["skills"] == ["narrow-a", "narrow-b"]
     assert len(report["skipped_missing"]) == 1
     assert report["skipped_missing"][0]["job_id"] == "job-gone"
+
+
+def test_rollback_oldest_snapshot_not_deleted(backup_env, monkeypatch):
+    """Regression for issue #47612: rolling back to the oldest snapshot
+    when the backup directory is already at the keep limit must NOT delete
+    that oldest snapshot. The safety snapshot taken inside rollback() should
+    not trigger a prune that removes the target snapshot before extraction."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    monkeypatch.setattr(cb, "get_keep", lambda: 5)
+
+    # Create exactly 5 snapshots (the steady state at keep=5). All 5 exist.
+    ids = [f"2026-05-0{i}T00-00-00Z" for i in range(1, 6)]
+    for i, fid in enumerate(ids):
+        monkeypatch.setattr(cb, "_utc_id", lambda now=None, _f=fid: _f)
+        cb.snapshot_skills(reason=f"n{i}")
+
+    oldest_id = ids[0]  # 2026-05-01T00-00-00Z
+    assert cb._resolve_backup(oldest_id) is not None
+
+    # Rollback to the oldest snapshot
+    ok, msg, _ = cb.rollback(backup_id=oldest_id)
+    assert ok, f"rollback failed: {msg}"
+
+    # The oldest snapshot must still be present (prune should not have
+    # removed it before extraction).
+    assert cb._resolve_backup(oldest_id) is not None, (
+        f"oldest snapshot {oldest_id} was deleted during rollback"
+    )
