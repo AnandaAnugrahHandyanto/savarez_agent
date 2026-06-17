@@ -12,7 +12,14 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
+import {
+  getCronJobs,
+  getSessionMessages,
+  listAllProfileSessions,
+  type SessionInfo,
+  type SessionMessage,
+  triggerCronJob
+} from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
   isMessagingSource,
@@ -140,6 +147,12 @@ const SkillsView = lazy(async () => ({ default: (await import('./skills')).Skill
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
+// Messaging-platform turns are written by the background gateway (WeChat,
+// Telegram, Discord, ...), not the desktop websocket that drives local chats.
+// Poll the bounded messaging slices while visible so inbound platform traffic
+// appears in the desktop without requiring a manual refresh or route change.
+const MESSAGING_POLL_INTERVAL_MS = 10_000
+const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
 // self-managed sidebar section (refreshMessagingSessions). Excluding both here
@@ -150,14 +163,68 @@ const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSI
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 
-// Cheap signature compare so the poll only swaps the atom (and re-renders the
-// sidebar) when the visible cron rows actually changed.
+// Cheap signature compare so polls only swap atoms (and re-render the sidebar)
+// when visible row metadata actually changed.
 function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
   if (a.length !== b.length) {
     return false
   }
 
-  return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+  return a.every((session, i) => {
+    const other = b[i]
+
+    return (
+      other != null &&
+      session.id === other.id &&
+      session._lineage_root_id === other._lineage_root_id &&
+      session.title === other.title &&
+      session.source === other.source &&
+      session.profile === other.profile &&
+      session.preview === other.preview &&
+      session.message_count === other.message_count &&
+      session.last_active === other.last_active &&
+      session.ended_at === other.ended_at
+    )
+  })
+}
+
+function sessionMatchesStoredId(session: SessionInfo, id: string): boolean {
+  return session.id === id || session._lineage_root_id === id
+}
+
+function hashString(hash: number, value: string): number {
+  let next = hash
+
+  for (let index = 0; index < value.length; index += 1) {
+    next ^= value.charCodeAt(index)
+    next = Math.imul(next, 16777619)
+  }
+
+  return next >>> 0
+}
+
+function messageContentString(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  try {
+    return JSON.stringify(content) ?? ''
+  } catch {
+    return String(content)
+  }
+}
+
+function sessionMessagesSignature(messages: SessionMessage[]): string {
+  let hash = 2166136261
+
+  for (const message of messages) {
+    hash = hashString(hash, message.role)
+    hash = hashString(hash, String(message.timestamp ?? ''))
+    hash = hashString(hash, messageContentString(message.content))
+  }
+
+  return `${messages.length}:${hash}`
 }
 
 // Rows a session refresh must preserve even if the aggregator omits them:
@@ -193,6 +260,7 @@ export function DesktopController() {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
   const refreshSessionsRequestRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
@@ -587,9 +655,9 @@ export function DesktopController() {
         return
       }
 
-      const storedProfile = $sessions
-        .get()
-        .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)?.profile
+      const storedProfile = [...$sessions.get(), ...$messagingSessions.get()].find(session =>
+        sessionMatchesStoredId(session, storedSessionId)
+      )?.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
@@ -627,6 +695,45 @@ export function DesktopController() {
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
+
+  const refreshActiveMessagingTranscript = useCallback(async () => {
+    const storedSessionId = selectedStoredSessionIdRef.current
+    const runtimeSessionId = activeSessionIdRef.current
+
+    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+      return
+    }
+
+    const stored = $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
+    if (!stored || !isMessagingSource(stored.source)) {
+      return
+    }
+
+    try {
+      const latest = await getSessionMessages(storedSessionId, stored.profile)
+      const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+      const signature = sessionMessagesSignature(latest.messages)
+
+      if (messagingTranscriptSignatureRef.current.get(signatureKey) === signature) {
+        return
+      }
+
+      messagingTranscriptSignatureRef.current.set(signatureKey, signature)
+      const messages = toChatMessages(latest.messages)
+
+      updateSessionState(
+        runtimeSessionId,
+        state => ({
+          ...state,
+          messages: preserveLocalAssistantErrors(messages, state.messages)
+        }),
+        storedSessionId
+      )
+    } catch {
+      // Non-fatal: the next poll or manual refresh can hydrate the transcript.
+    }
+  }, [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState])
 
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
@@ -828,6 +935,47 @@ export function DesktopController() {
       document.removeEventListener('visibilitychange', tick)
     }
   }, [gatewayState, refreshCronJobs])
+
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshMessagingSessions()
+      }
+    }
+
+    const intervalId = window.setInterval(tick, MESSAGING_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshMessagingSessions])
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || !selectedStoredSessionId) {
+      return
+    }
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshActiveMessagingTranscript()
+      }
+    }
+
+    const intervalId = window.setInterval(tick, ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+    tick()
+
+    return () => {
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [gatewayState, refreshActiveMessagingTranscript, selectedStoredSessionId])
 
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
