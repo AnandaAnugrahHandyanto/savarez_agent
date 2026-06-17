@@ -155,7 +155,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     node_add_p.add_argument(
         "--ssh-user",
         default=None,
-        help="SSH user (default: $HERMES_DGX_SSH_USER, then $USER)",
+        help="SSH user (default: $USER)",
     )
     node_add_p.add_argument("--ollama-port", type=int, default=11434)
     node_add_p.add_argument("--vllm-port", type=int, default=30800)
@@ -1226,19 +1226,18 @@ def _cmd_nim_deploy(model: str, port: int = 8010, apply: bool = False) -> int:
 
     slug = re.sub(r"[^a-z0-9]", "-", model.lower()).strip("-")
     cfg = load_dgx_config()
-    k8s_host = cfg.get("litellm_host") or os.environ.get("HERMES_DGX_K8S_HOST")
-    k8s_user = cfg.get("ssh_user") or os.environ.get("HERMES_DGX_SSH_USER") or os.environ.get("USER")
+    k8s_host = cfg.get("litellm_host")
+    k8s_user = cfg.get("ssh_user") or os.environ.get("USER")
     dgx_host = cfg.get("host")
     if apply and not (k8s_host and k8s_user):
         print(
             "nim deploy --apply needs a host to ssh into for `kubectl apply`. "
-            "Set dgx.litellm_host (or HERMES_DGX_K8S_HOST) and dgx.ssh_user."
+            "Set dgx.litellm_host and dgx.ssh_user (run `hermes dgx setup`)."
         )
         return 1
     if not dgx_host:
         print(
-            "DGX host is not configured. Run `hermes dgx setup` or export "
-            "HERMES_DGX_HOST=<ip-or-hostname>."
+            "DGX host is not configured. Run `hermes dgx setup` to configure it."
         )
         return 1
 
@@ -1337,12 +1336,7 @@ def _cmd_node_list() -> int:
 def _cmd_node_add(name: str, host: str, ssh_user: Optional[str] = None,
                   ollama_port: int = 11434, vllm_port: int = 30800) -> int:
     dgx = load_dgx_config()
-    resolved_user = (
-        ssh_user
-        or os.environ.get("HERMES_DGX_SSH_USER")
-        or os.environ.get("USER")
-        or "dgx"
-    )
+    resolved_user = ssh_user or os.environ.get("USER") or "dgx"
     nodes = dict(dgx.get("nodes") or {})
     nodes[name] = {
         "host": host,
@@ -1371,7 +1365,6 @@ def _cmd_node_use(name: str) -> int:
         dgx["host"] = nd["host"]
         dgx["ssh_user"] = (
             nd.get("ssh_user")
-            or os.environ.get("HERMES_DGX_SSH_USER")
             or os.environ.get("USER")
             or "dgx"
         )

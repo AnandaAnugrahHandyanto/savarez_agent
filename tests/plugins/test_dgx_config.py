@@ -42,7 +42,7 @@ class TestLoadDgxConfig:
         from plugins.dgx._dgx_config import load_dgx_config
         _make_config(monkeypatch, {})
         cfg = load_dgx_config()
-        # host defaults to None until configured (env var or `hermes dgx setup`)
+        # host defaults to None until configured via `hermes dgx setup`
         assert cfg["host"] is None
         assert cfg["ollama_port"] == 11434
         assert cfg["vllm_port"] == 30800
@@ -260,3 +260,49 @@ class TestUrlHelpers:
     def test_custom_host_and_port(self):
         from plugins.dgx._dgx_config import ollama_base
         assert ollama_base(self._dgx(host="10.0.0.5", ollama_port=9999)) == "http://10.0.0.5:9999"
+
+
+# ---------------------------------------------------------------------------
+# Config policy — no HERMES_* env vars for non-secret settings (AGENTS.md)
+# ---------------------------------------------------------------------------
+
+class TestNoHermesEnvVars:
+    """AGENTS.md ("What we don't want"): non-secret behavioral config — host,
+    ports, the LiteLLM host — must live in config.yaml via `hermes dgx setup`,
+    NOT in new ``HERMES_*`` env vars (``.env`` is for secrets only).
+    """
+
+    def _dgx_source_files(self):
+        from pathlib import Path
+        pkg = Path(__file__).parents[2] / "plugins" / "dgx"
+        return sorted(pkg.glob("*.py"))
+
+    def test_no_hermes_dgx_env_vars_in_source(self):
+        offenders = []
+        for py in self._dgx_source_files():
+            for i, line in enumerate(py.read_text().splitlines(), 1):
+                if "HERMES_DGX" in line:
+                    offenders.append(f"{py.name}:{i}: {line.strip()}")
+        assert not offenders, (
+            "HERMES_DGX_* env vars are banned for non-secret config "
+            "(AGENTS.md — use config.yaml via `hermes dgx setup`):\n"
+            + "\n".join(offenders)
+        )
+
+    def test_defaults_do_not_read_host_from_environment(self, monkeypatch):
+        # Even with a HERMES_DGX_HOST exported, a fresh import must leave the
+        # host unset — the value comes only from config.yaml.
+        import importlib
+        import plugins.dgx._dgx_config as dc
+        monkeypatch.setenv("HERMES_DGX_HOST", "10.9.9.9")
+        monkeypatch.setenv("HERMES_DGX_SSH_USER", "intruder")
+        monkeypatch.setenv("HERMES_DGX_OLLAMA_PORT", "59999")
+        try:
+            importlib.reload(dc)
+            assert dc.DEFAULTS["host"] is None
+            assert dc.NODE_DEFAULTS["host"] is None
+            assert dc.DEFAULTS["ssh_user"] != "intruder"
+            assert dc.DEFAULTS["ollama_port"] == 11434
+        finally:
+            monkeypatch.undo()
+            importlib.reload(dc)

@@ -7,8 +7,10 @@ configs (flat ``dgx.host`` etc.) are transparently migrated on first read.
 
 Defaults are intentionally unset (None) for host-specific values so that
 nothing accidentally talks to a stranger's network. The user supplies the
-host either by running ``hermes dgx setup`` (interactive) or by exporting
-``HERMES_DGX_HOST`` / ``HERMES_DGX_SSH_USER`` / ``HERMES_DGX_LITELLM_HOST``.
+host by running ``hermes dgx setup`` (interactive), which writes the ``dgx:``
+block to config.yaml. Host, ports and the LiteLLM host are non-secret
+behavioral settings, so per AGENTS.md they live in config.yaml — never in new
+``HERMES_*`` env vars (``.env`` is for secrets only).
 """
 
 from __future__ import annotations
@@ -20,33 +22,29 @@ from typing import Any, Dict, Optional
 # Defaults
 # ---------------------------------------------------------------------------
 
-def _env(name: str) -> Optional[str]:
-    """Read an env var, returning None for empty/unset."""
-    v = os.environ.get(name)
-    return v or None
-
-
-# SSH user falls back to the local $USER so the same machine can be both
-# the controller and the GPU host without configuring anything.
-_DEFAULT_SSH_USER = _env("HERMES_DGX_SSH_USER") or os.environ.get("USER") or "dgx"
+# SSH user falls back to the local $USER so the same machine can be both the
+# controller and the GPU host without configuring anything. $USER is the
+# standard login env var, not a HERMES_* config knob; everything else comes
+# from config.yaml (written by `hermes dgx setup`).
+_DEFAULT_SSH_USER = os.environ.get("USER") or "dgx"
 
 NODE_DEFAULTS: Dict[str, Any] = {
-    "host": _env("HERMES_DGX_HOST"),
+    "host": None,
     "ssh_user": _DEFAULT_SSH_USER,
-    "ollama_port": int(_env("HERMES_DGX_OLLAMA_PORT") or "11434"),
-    "vllm_port": int(_env("HERMES_DGX_VLLM_PORT") or "30800"),
+    "ollama_port": 11434,
+    "vllm_port": 30800,
     "name": "DGX Spark",
 }
 
 DEFAULTS: Dict[str, Any] = {
     # flat keys kept for backwards compat and single-node convenience
-    "host": _env("HERMES_DGX_HOST"),
+    "host": None,
     "ssh_user": _DEFAULT_SSH_USER,
-    "ollama_port": int(_env("HERMES_DGX_OLLAMA_PORT") or "11434"),
-    "vllm_port": int(_env("HERMES_DGX_VLLM_PORT") or "30800"),
-    "vllm_32b_port": int(_env("HERMES_DGX_VLLM_32B_PORT") or "30881"),
-    "litellm_host": _env("HERMES_DGX_LITELLM_HOST"),
-    "litellm_port": int(_env("HERMES_DGX_LITELLM_PORT") or "4000"),
+    "ollama_port": 11434,
+    "vllm_port": 30800,
+    "vllm_32b_port": 30881,
+    "litellm_host": None,
+    "litellm_port": 4000,
     "active_endpoint": "ollama",
     "default_model": "qwen2.5-coder:latest",
     # vLLM servers started via "hermes dgx models add <hf-model>"
@@ -169,12 +167,12 @@ def apply_endpoint(dgx: Dict[str, Any], endpoint: Optional[str] = None,
         base_url = f"http://{host}:{port}/v1"
         provider = "custom"
     elif ep == "litellm":
-        lh = dgx.get("litellm_host") or _env("HERMES_DGX_LITELLM_HOST")
+        lh = dgx.get("litellm_host")
         lp = dgx.get("litellm_port", 4000)
         if not lh:
             raise ValueError(
-                "litellm endpoint requires dgx.litellm_host (run `hermes dgx "
-                "setup` or set HERMES_DGX_LITELLM_HOST)"
+                "litellm endpoint requires dgx.litellm_host "
+                "(run `hermes dgx setup` to configure it)"
             )
         base_url = f"http://{lh}:{lp}/v1"
         provider = "custom"
@@ -205,8 +203,7 @@ def _require_host(node: Dict[str, Any]) -> str:
     host = node.get("host")
     if not host:
         raise DGXNotConfigured(
-            "DGX host is not configured. Run `hermes dgx setup` or export "
-            "HERMES_DGX_HOST=<ip-or-hostname>."
+            "DGX host is not configured. Run `hermes dgx setup` to configure it."
         )
     return host
 
@@ -223,7 +220,7 @@ def vllm_base(dgx: Dict[str, Any]) -> str:
 
 def litellm_base(dgx: Dict[str, Any]) -> Optional[str]:
     """Return the LiteLLM base URL, or None if not configured."""
-    lh = dgx.get("litellm_host") or _env("HERMES_DGX_LITELLM_HOST")
+    lh = dgx.get("litellm_host")
     if not lh:
         return None
     lp = dgx.get("litellm_port", 4000)
