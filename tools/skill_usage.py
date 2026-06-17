@@ -536,14 +536,18 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     if not archive_root.exists():
         return False, "no archive directory"
 
-    # Try exact name match first, then any prefix match (for timestamped dupes).
+    # Try exact name match first, then timestamped duplicate match.
     # Recursive walk handles nested archive layouts (e.g. .archive/<category>/<skill>/)
     # left behind by older archive paths or external imports.
     candidates = [p for p in archive_root.rglob("*") if p.is_dir() and p.name == skill_name]
     if not candidates:
+        # Match timestamped duplicates created by archive_skill on name collision.
+        # Format: <skill_name>-YYYYMMDDHHMMSS (14-digit suffix).
+        import re
+        _ts_re = re.compile(rf"^{re.escape(skill_name)}-\d{{14}}$")
         candidates = sorted(
             [p for p in archive_root.rglob("*")
-             if p.is_dir() and p.name.startswith(f"{skill_name}-")],
+             if p.is_dir() and _ts_re.match(p.name)],
             reverse=True,
         )
     if not candidates:
