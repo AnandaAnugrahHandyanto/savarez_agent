@@ -38,6 +38,8 @@ import threading
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional, Type
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 
@@ -1087,9 +1089,328 @@ __all__ = [
     "register",
     "get",
     "available",
+    "dispatch_stream_tts",
+    "resolve_streaming_provider",
     "ElevenLabsStreamingProvider",
     "GeminiStreamingProvider",
     "OpenAIStreamingProvider",
     "XAIStreamingProvider",
     "EdgeStreamingProvider",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher (Task 8)
+# ---------------------------------------------------------------------------
+#
+# The two functions below are the runtime entry point for voice mode: the
+# legacy ``stream_tts_to_speaker`` in ``tools.tts_tool.py`` will be rewritten
+# in Task 11 to call ``dispatch_stream_tts`` once per sentence, and voice
+# mode calls ``resolve_streaming_provider`` to figure out which provider to
+# use. Everything above this comment is *pure provider plumbing* — these
+# two functions are the only place that knows about ``sounddevice``, the
+# PCM→numpy conversion, and the provider priority list.
+#
+# Design constraints (carried over from the legacy inlined path):
+#
+#   * ``sounddevice`` is lazy-imported so users who only need the registry
+#     (e.g. the unit tests) don't pay the import cost.
+#   * The output stream is opened *once per sentence* with the provider's
+#     declared format. The legacy path kept a single stream open for the
+#     whole session, but per-sentence open/close is the safe default and
+#     matches the ``_FakeOutputStream`` test seam.
+#   * ``stop_event`` is checked between chunks (and before opening the
+#     stream) so an interrupt aborts cheaply. Individual chunk errors
+#     don't crash playback — they log a warning and continue.
+#   * The ``output_stream`` kwarg is the test seam: when provided, the
+#     dispatcher uses it directly instead of opening a real ``sounddevice``
+#     stream. Production code never passes this kwarg.
+
+# Priority order for the resolver. ElevenLabs first (best quality) and
+# edge last (free fallback). The order is intentionally hard-coded rather
+# than read from config — it's a user-experience decision, not a
+# configuration knob.
+_PROVIDER_PRIORITY: List[str] = [
+    "elevenlabs",
+    "gemini",
+    "openai",
+    "xai",
+    "edge",
+]
+
+
+def _import_sounddevice():
+    """Lazy import the ``sounddevice`` audio library.
+
+    Returns the ``sounddevice`` *module* so the caller can write
+    ``sd.OutputStream(...)`` exactly like the legacy inlined path at
+    ``tools.tts_tool.py:2524``. Raises ``ImportError`` with the install
+    command when the package isn't available, so the error message tells
+    the user what to do rather than just bubbling a bare ``ModuleNotFoundError``.
+
+    This helper is the seam the test suite monkeypatches; keeping the
+    import isolated in a single function means the dispatcher tests
+    never need a working audio device or even the real ``sounddevice``
+    package installed.
+    """
+    try:
+        import sounddevice  # type: ignore
+    except ImportError as e:
+        raise ImportError(
+            "sounddevice package not installed. Run: pip install sounddevice"
+        ) from e
+    return sounddevice
+
+
+def _dtype_from_sample_width(width: int) -> str:
+    """Map a ``sample_width`` (bytes per sample) to a sounddevice dtype string.
+
+    The dispatcher reads ``sample_width`` off the provider class and passes
+    the matching dtype to ``sounddevice.OutputStream``; the conversion
+    table mirrors the formats the providers in this module actually emit
+    (currently all int16, but future 24-bit / 32-bit float providers can
+    plug in here without touching the dispatcher).
+    """
+    mapping = {
+        1: "int8",
+        2: "int16",
+        4: "int32",
+        8: "int64",
+    }
+    if width not in mapping:
+        raise ValueError(
+            f"Unsupported sample_width {width}; expected one of {sorted(mapping)}"
+        )
+    return mapping[width]
+
+
+def _try_instantiate_provider(
+    name: str, tts_config: dict, *, stop_event: Optional[threading.Event]
+) -> Optional[StreamingTTSProvider]:
+    """Try to construct the provider named ``name``; return the instance or None.
+
+    Used by ``resolve_streaming_provider`` to walk the priority list
+    cheaply. Any exception from ``__init__`` (missing API key, missing
+    SDK, bad config) is caught and converted to ``None`` so the caller
+    can move on to the next provider. The instance is discarded on
+    failure, so the resolver doesn't pay any setup cost for providers
+    it can't actually use.
+    """
+    if name not in _PROVIDERS:
+        return None
+    cls = _PROVIDERS[name]
+    provider_cfg = tts_config.get(name, {}) or {}
+    try:
+        return cls(provider_cfg, stop_event=stop_event)
+    except Exception:
+        # Constructor failure (missing key, missing SDK, etc.) means the
+        # provider is "not available right now". We deliberately catch
+        # broadly because providers raise a mix of ``RuntimeError`` and
+        # ``ImportError`` for different failure modes, and the resolver
+        # doesn't care which one — it just moves to the next candidate.
+        return None
+
+
+def resolve_streaming_provider(
+    tts_config: dict, preferred: Optional[str]
+) -> str:
+    """Pick a registered streaming TTS provider that can run *right now*.
+
+    Resolution order:
+
+        1. If ``preferred`` is set, the named provider is registered, and
+           a probe-instantiation succeeds → return ``preferred``.
+        2. Otherwise walk the priority list
+           (``elevenlabs → gemini → openai → xai → edge``) and return
+           the first name that is registered AND can be constructed
+           without raising.
+        3. If nothing in the list is usable, raise ``RuntimeError``.
+
+    The probe-instantiation deliberately *constructs* a real provider
+    (then discards it) so the resolver doesn't have to know each
+    provider's env-var / SDK-install requirements individually. That's
+    the same shape the dispatcher would use anyway, and it means
+    custom registered providers (e.g. test stubs) get the right answer
+    without us having to maintain an env-var map here.
+    """
+    if preferred:
+        # Normalize the same way ``get()`` does so the resolver matches
+        # the dispatcher's lookup contract.
+        candidate = preferred.lower().strip()
+        if candidate in _PROVIDERS:
+            inst = _try_instantiate_provider(
+                candidate, tts_config, stop_event=None
+            )
+            if inst is not None:
+                return candidate
+        # Preferred name wasn't usable; fall through to the priority
+        # walk. We deliberately don't raise here — the whole point of
+        # the priority list is to give the user a working provider
+        # even when their explicit choice is misconfigured.
+    for name in _PROVIDER_PRIORITY:
+        inst = _try_instantiate_provider(name, tts_config, stop_event=None)
+        if inst is not None:
+            return name
+    raise RuntimeError("No streaming TTS provider is available")
+
+
+def _load_tts_config_or_default(tts_config: Optional[dict]) -> dict:
+    """Return *tts_config* if provided, else load from ``tools.tts_tool``.
+
+    The production path resolves the user's TTS config from
+    ``~/.hermes/config.yaml`` via ``tools.tts_tool._load_tts_config``.
+    The test path injects a dict directly so it doesn't depend on the
+    user's actual config (which is environment-specific and not
+    hermetic).
+
+    The import is wrapped in try/except so a missing
+    ``tools.tts_tool`` (e.g. in a stripped-down venv) doesn't break the
+    dispatcher — the resolver still works with an empty config dict,
+    it just has no env vars / keys to discover.
+    """
+    if tts_config is not None:
+        return tts_config
+    try:
+        from tools.tts_tool import _load_tts_config
+        return _load_tts_config()
+    except Exception as exc:  # ImportError, AttributeError, config error
+        logger.debug("Could not load TTS config from tools.tts_tool: %s", exc)
+        return {}
+
+
+def dispatch_stream_tts(
+    sentence: str,
+    provider_name: str,
+    *,
+    stop_event: Optional[threading.Event] = None,
+    output_stream=None,
+    tts_config: Optional[dict] = None,
+) -> None:
+    """Stream *sentence* through *provider_name* and write to *output_stream*.
+
+    This is the runtime entry point the legacy
+    ``stream_tts_to_speaker`` (in ``tools/tts_tool.py``) will call once
+    per sentence in Task 11. It looks up the provider via the registry,
+    opens a ``sounddevice.OutputStream`` with the provider's declared
+    audio format, and writes each PCM chunk to it as it arrives.
+
+    Parameters
+    ----------
+    sentence : str
+        The text to speak. The provider handles its own tokenization /
+        sentence splitting; the dispatcher just forwards the string.
+    provider_name : str
+        Registry name (case-insensitive) of the provider to use. Must
+        already be registered via ``@register(...)``. A bad name raises
+        ``KeyError`` from ``get()``; the caller (typically
+        ``stream_tts_to_speaker``) is responsible for surfacing the
+        error.
+    stop_event : threading.Event, optional
+        When set, the dispatcher aborts the current stream between
+        chunks and tears down the output stream. ``None`` means
+        "no interrupt" — the same shape the legacy inlined path uses
+        for one-off scripts.
+    output_stream : optional
+        Pre-built stream object. When provided, the dispatcher uses
+        it directly (no real ``sounddevice`` import). This is the
+        test seam — production code never passes this kwarg. The
+        object must expose ``start()``/``stop()``/``close()`` and
+        ``write(numpy_array)`` matching the ``sounddevice.OutputStream``
+        contract.
+    tts_config : dict, optional
+        Override for the auto-loaded TTS config. When ``None`` (the
+        default), the dispatcher calls ``tools.tts_tool._load_tts_config``
+        to pull the ``tts:`` block from ``~/.hermes/config.yaml``. Tests
+        pass a dict here to keep the dispatcher hermetic.
+
+    Errors
+    ------
+    The whole function is wrapped in a broad ``try/except`` that logs a
+    warning and returns — matching the legacy ``stream_tts_to_speaker``
+    behaviour, where a single bad sentence should never crash the voice
+    mode loop. Provider construction errors (missing key, missing SDK)
+    propagate from ``__init__`` and are caught here.
+    """
+    try:
+        # Look up the provider class. ``get()`` raises ``KeyError`` for
+        # unknown names; we let that bubble — the caller should pick a
+        # valid name via ``resolve_streaming_provider`` first.
+        provider_cls = get(provider_name)
+
+        # Pull the user's TTS config. The provider's ``__init__`` reads
+        # its own sub-block (e.g. ``tts.elevenlabs.voice_id``) from this
+        # dict, so the resolver and dispatcher pass the same config
+        # through.
+        config = _load_tts_config_or_default(tts_config)
+
+        # Construct the provider. The constructor may raise
+        # ``RuntimeError`` (missing API key) or ``ImportError`` (missing
+        # SDK). Both are caught by the outer try/except.
+        provider = provider_cls(config, stop_event=stop_event)
+
+        # Open the audio output. If the caller injected a fake stream
+        # (test seam) we skip the real sounddevice import but still
+        # call start()/stop()/close() on it — the seam is about which
+        # audio backend is used, not about lifecycle ownership. The
+        # dispatcher's contract is "I own the stream's lifecycle for
+        # the duration of this call", which the test relies on.
+        if output_stream is None:
+            sd = _import_sounddevice()
+            output_stream = sd.OutputStream(
+                samplerate=provider.sample_rate,
+                channels=provider.channels,
+                dtype=_dtype_from_sample_width(provider.sample_width),
+            )
+        output_stream.start()
+
+        # Walk the provider's chunk iterator. ``provider.stream()`` is
+        # already supposed to honour ``stop_event`` itself, but we check
+        # again here as a belt-and-braces guard in case a provider
+        # forgets — the dispatcher's contract is "stop between chunks,
+        # no exceptions". A bad chunk should not crash the whole
+        # stream; we log a warning and move on to the next one. That
+        # matches the legacy inlined path's behaviour, which is the
+        # well-trodden UX in voice mode.
+        for chunk in provider.stream(sentence):
+            if stop_event is not None and stop_event.is_set():
+                break
+            try:
+                arr = np.frombuffer(
+                    chunk,
+                    dtype=_dtype_from_sample_width(provider.sample_width),
+                ).reshape(-1, provider.channels)
+                output_stream.write(arr)
+            except Exception as exc:
+                # One bad chunk is recoverable: log it and keep going
+                # so a transient decode glitch doesn't kill the rest of
+                # the sentence.
+                logger.warning(
+                    "dispatch_stream_tts: chunk write failed (%s); skipping",
+                    exc,
+                )
+                continue
+    except Exception as exc:
+        # Broad catch: matches the legacy ``stream_tts_to_speaker`` error
+        # handling, which logs a warning and returns so a single
+        # misconfigured sentence doesn't crash the voice mode loop.
+        logger.warning(
+            "dispatch_stream_tts failed for provider %r: %s",
+            provider_name,
+            exc,
+        )
+    finally:
+        # Always tear down the stream. Whether the dispatcher opened it
+        # or the test injected it, the lifecycle is the dispatcher's
+        # responsibility for the duration of the call. The
+        # stop()/close() calls are individually wrapped so a buggy
+        # stream object can't keep us in a half-torn-down state.
+        if output_stream is not None:
+            try:
+                output_stream.stop()
+            except Exception:
+                pass
+            try:
+                output_stream.close()
+            except Exception:
+                pass
+

@@ -793,3 +793,123 @@ def test_edge_respects_stop_event(monkeypatch):
     provider = EdgeStreamingProvider({}, stop_event=stop)
     out = list(provider.stream("hello"))
     assert out == []  # iteration aborts
+
+
+# --- Dispatcher ---
+
+
+def _register_real_providers():
+    """Re-register the real streaming providers in this test's cleared registry.
+
+    The module-level ``@register("...")`` decorators run at import time and
+    populate ``tts_streaming._PROVIDERS``. The autouse ``_clear_registry``
+    fixture snapshots and clears that dict for hermetic tests of the
+    registry itself — but the dispatcher tests need the real providers
+    to be visible to ``resolve_streaming_provider``. We re-register by
+    importing the classes and copying them into the dict, mirroring the
+    original import-time behaviour.
+    """
+    from tools import tts_streaming
+    tts_streaming._PROVIDERS["elevenlabs"] = tts_streaming.ElevenLabsStreamingProvider
+    tts_streaming._PROVIDERS["gemini"] = tts_streaming.GeminiStreamingProvider
+    tts_streaming._PROVIDERS["openai"] = tts_streaming.OpenAIStreamingProvider
+    tts_streaming._PROVIDERS["xai"] = tts_streaming.XAIStreamingProvider
+    tts_streaming._PROVIDERS["edge"] = tts_streaming.EdgeStreamingProvider
+
+
+def test_resolve_streaming_provider_returns_preferred(monkeypatch):
+    """When preferred is set + registered + has env var, return it."""
+    from tools.tts_streaming import resolve_streaming_provider
+    _register_real_providers()
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test")
+    result = resolve_streaming_provider({}, preferred="elevenlabs")
+    assert result == "elevenlabs"
+
+
+def test_resolve_streaming_provider_falls_back(monkeypatch):
+    """When preferred is missing/unavailable, fall back to next available."""
+    from tools.tts_streaming import resolve_streaming_provider
+    _register_real_providers()
+    # No env vars set → edge should still be available (no env required)
+    for k in ["ELEVENLABS_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"]:
+        monkeypatch.delenv(k, raising=False)
+    result = resolve_streaming_provider({}, preferred="elevenlabs")
+    assert result == "edge"
+
+
+def test_resolve_streaming_provider_no_available(monkeypatch):
+    """When nothing is available, raise RuntimeError."""
+    from tools.tts_streaming import resolve_streaming_provider
+    _register_real_providers()
+
+    @register("requires_special_env")
+    class RequiresEnv(StreamingTTSProvider):
+        sample_rate = 24000
+        channels = 1
+        sample_width = 2
+        def __init__(self, config, *, stop_event=None):
+            import os
+            if not os.environ.get("SPECIAL_TEST_KEY"):
+                raise RuntimeError("missing key")
+        def stream(self, text):
+            yield b"x"
+
+    # Remove all known env vars
+    for k in ["ELEVENLABS_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "SPECIAL_TEST_KEY"]:
+        monkeypatch.delenv(k, raising=False)
+    # Also make edge unavailable so the priority walk falls off the end —
+    # otherwise the test would pass with ``edge`` as the result on a host
+    # where the edge_tts package is installed. We patch the import helper
+    # to simulate a missing SDK, mirroring the same seam the edge provider
+    # tests use.
+    monkeypatch.setattr(
+        "tools.tts_streaming._import_edge_tts",
+        lambda: (_ for _ in ()).throw(ImportError("edge_tts not installed (test stub)")),
+    )
+    # And remove the requires_special_env from consideration (not in priority list)
+    # The priority list doesn't include it, so resolve should raise
+    with pytest.raises(RuntimeError):
+        resolve_streaming_provider({}, preferred=None)
+
+
+class _FakeOutputStream:
+    def __init__(self):
+        self.writes = []
+        self.started = False
+        self.stopped = False
+        self.closed = False
+    def start(self):
+        self.started = True
+    def stop(self):
+        self.stopped = True
+    def close(self):
+        self.closed = True
+    def write(self, arr):
+        self.writes.append(bytes(arr.tobytes()))
+
+
+def test_dispatch_stream_tts_writes_chunks(monkeypatch):
+    """dispatch_stream_tts writes each chunk to the output stream."""
+    from tools.tts_streaming import dispatch_stream_tts
+
+    @register("dispatch_test")
+    class DispatchTest(StreamingTTSProvider):
+        sample_rate = 24000
+        channels = 1
+        sample_width = 2
+        def __init__(self, config, *, stop_event=None):
+            # The dispatcher's contract requires providers to accept
+            # ``(config, *, stop_event=None)``; mirror that here so
+            # instantiation in the dispatcher succeeds. This fake
+            # doesn't need any config so it ignores the values.
+            self._stop_event = stop_event
+        def stream(self, text):
+            yield b"\x10\x00\x20\x00"
+            yield b"\x30\x00\x40\x00"
+
+    fake_stream = _FakeOutputStream()
+    dispatch_stream_tts("hello", "dispatch_test", output_stream=fake_stream)
+    assert fake_stream.started
+    assert fake_stream.stopped
+    assert fake_stream.closed
+    assert b"".join(fake_stream.writes) == b"\x10\x00\x20\x00\x30\x00\x40\x00"
