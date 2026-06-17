@@ -319,6 +319,24 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
         return "{}"
 
 
+def _unit_exists_in_scope(unit_name: str, scope: str = "user") -> bool:
+    """Check whether *unit_name* is actually registered in the given systemd scope.
+
+    ``systemctl --user show`` returns the compiled-in **default** timeout for
+    nonexistent units (usually 1min 30s), so we cannot distinguish a real unit
+    from a phantom by inspecting property values alone.  ``list-unit-files``
+    only lists installed units and returns nothing for absent ones.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", f"--{scope}", "list-unit-files", unit_name],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        return result.returncode == 0 and unit_name in result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, Any]]:
     """At startup, sanity-check that systemd's TimeoutStopSec >= drain_timeout.
 
@@ -361,10 +379,19 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
         return None
 
     # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
-    # on which manager actually owns the unit.  Try user first since
-    # that's the common case for hermes.
+    # on which manager actually owns the unit.  Try the system scope
+    # first because:
+    #
+    #   a) ``systemctl --user show <nonexistent-unit>`` returns the
+    #      compiled-in **default** ``TimeoutStopUSec`` (usually 1min 30s)
+    #      with exit code 0, making it indistinguishable from a real unit
+    #      that legitimately has a 90-second timeout.  See #4772X.
+    #
+    #   b) The fallback to --user still works for the common case: when
+    #      the system-level query fails (unit is user-scoped), --user is
+    #      the only answer.
     timeout_us: Optional[int] = None
-    for flag in (["--user"], []):
+    for flag in ([], ["--user"]):
         try:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
@@ -375,6 +402,7 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
         if result.returncode != 0:
             continue
         # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        timeout_us = None
         for line in result.stdout.splitlines():
             if line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
@@ -385,6 +413,16 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
                     timeout_us = _parse_systemd_duration_to_us(value)
                 if timeout_us is not None:
                     break
+        # ── Guard: systemctl --user show returns the default 90s for
+        #    nonexistent units.  If the user-level query succeeded
+        #    but the unit is not actually loaded there, the value
+        #    is meaningless — skip it and let the system-level
+        #    fallback prevail.
+        if flag == ["--user"] and timeout_us is not None:
+            _exists = _unit_exists_in_scope(unit_name, scope="user")
+            if not _exists:
+                timeout_us = None
+                continue
         if timeout_us is not None:
             break
 
