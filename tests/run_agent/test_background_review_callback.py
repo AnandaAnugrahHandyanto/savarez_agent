@@ -12,7 +12,7 @@ Verifies:
 import json
 import time
 
-from agent.background_review import (
+from agent.background_review_callback import (
     _build_improvement_records_from_review_messages,
     _invoke_callback_with_timeout,
 )
@@ -72,9 +72,13 @@ def test_build_records_captures_failed_writes():
 
 
 def test_callback_exception_does_not_propagate():
+    called = []
     def boom(record):
+        called.append(record)
         raise RuntimeError("kaboom")
+    # Should swallow.
     _invoke_callback_with_timeout(boom, {"x": 1}, timeout=1.0)
+    assert called == [{"x": 1}]  # callback was invoked and exception swallowed
 
 
 def test_callback_timeout_does_not_crash():

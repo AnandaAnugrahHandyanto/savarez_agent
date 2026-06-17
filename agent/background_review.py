@@ -19,13 +19,10 @@ for invariants and PR review criteria.
 from __future__ import annotations
 
 import contextlib
-import datetime
-import importlib
 import json
 import logging
 import os
-import threading
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -648,19 +645,8 @@ def _run_review_in_thread(
         # one structured record per write tool call. Failures here never
         # affect the review or the parent turn.
         try:
-            _cfg = (getattr(agent, "config", None) or {}).get("background_review") or {}
-            _dotted = _cfg.get("callback")
-            if _dotted:
-                _fn = _load_callback(_dotted)
-                if _fn is not None:
-                    _records = _build_improvement_records_from_review_messages(
-                        review_messages,
-                        session_id=getattr(agent, "session_id", "") or "unknown",
-                        ts=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    )
-                    _timeout = float(_cfg.get("callback_timeout_seconds", 5))
-                    for _rec in _records:
-                        _invoke_callback_with_timeout(_fn, _rec, timeout=_timeout)
+            from agent import background_review_callback as _br_cb
+            _br_cb.run_callback_pipeline(agent, review_messages)
         except Exception as _cb_err:
             logger.warning(
                 "background_review callback block failed: %s", _cb_err
@@ -696,201 +682,6 @@ def _run_review_in_thread(
             _set_approval_callback(None)
         except Exception:
             pass
-
-
-# ── improvement_record callback support ──────────────────────────────────
-# Optional hook invoked AFTER the review's run_conversation returns. Walks
-# the forked agent's message buffer and emits one structured
-# improvement_record dict per write tool call (memory or skill). Downstream
-# consumers subscribe via config "background_review.callback" (dotted path).
-# Callback failures are swallowed; a misbehaving callback never crashes the
-# review thread or the parent agent's turn.
-
-_MEMORY_TOOL_NAMES = ("memory", "categorical_memory")
-_SKILL_TOOL_NAMES = ("skill_manage",)
-
-
-def _build_improvement_records_from_review_messages(
-    messages: List[Dict],
-    *,
-    session_id: str,
-    ts: str,
-) -> List[Dict]:
-    """Walk the review_agent message buffer and emit improvement_records.
-
-    Accepts two message shapes so the helper can be exercised by unit
-    tests against an abstract shape AND fed Hermes' real session-message
-    format at runtime:
-
-    Abstract shape (used by tests):
-      - {"role": "assistant", "content": "<plan text>"}
-      - {"role": "tool_use", "name": <tool>, "input": {...}, "tool_call_id": <id>}
-      - {"role": "tool_result", "tool_call_id": <id>, "content": <json str>}
-
-    Hermes runtime shape (from review_agent._session_messages):
-      - {"role": "assistant", "content": <text-or-None>,
-         "tool_calls": [{"id": ..., "function": {"name": ..., "arguments": <json str>}}]}
-      - {"role": "tool", "tool_call_id": <id>, "content": <json str>}
-
-    Pairs each write tool_use with its tool_result; gathers the assistant
-    text emitted since the previous tool_use as the ``plan`` field.
-    """
-    records: List[Dict] = []
-    plan_buf: List[str] = []
-    pending_tool_calls: Dict[str, Dict] = {}  # tool_call_id -> normalized tool_use
-
-    def _flush_tool(tool_use: Dict, tool_result: Dict) -> None:
-        op = _classify_op(tool_use)
-        if op is None:
-            plan_buf.clear()
-            return
-        write = _build_write_entry(tool_use, tool_result, op)
-        if write is None:
-            plan_buf.clear()
-            return
-        records.append({
-            "schema_version": 1,
-            "session_id": session_id,
-            "ts": ts,
-            "origin": "background_review",
-            "plan": "\n".join(plan_buf).strip(),
-            "writes": [write],
-        })
-        plan_buf.clear()
-
-    for msg in messages or []:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        if role == "assistant":
-            content = msg.get("content", "")
-            if isinstance(content, str) and content:
-                plan_buf.append(content)
-            # Hermes runtime shape: tool_calls live on the assistant message.
-            for tc in msg.get("tool_calls", []) or []:
-                if not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function", {}) or {}
-                fn_name = fn.get("name", "")
-                if fn_name not in _MEMORY_TOOL_NAMES + _SKILL_TOOL_NAMES:
-                    continue
-                tcid = tc.get("id")
-                if not tcid:
-                    continue
-                try:
-                    args = json.loads(fn.get("arguments", "{}") or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    args = {}
-                pending_tool_calls[tcid] = {
-                    "name": fn_name,
-                    "input": args,
-                    "tool_call_id": tcid,
-                }
-        elif role == "tool_use":
-            # Abstract test shape.
-            if msg.get("name") in _MEMORY_TOOL_NAMES + _SKILL_TOOL_NAMES:
-                tcid = msg.get("tool_call_id")
-                if tcid:
-                    pending_tool_calls[tcid] = msg
-        elif role in ("tool_result", "tool"):
-            tcid = msg.get("tool_call_id")
-            if tcid in pending_tool_calls:
-                _flush_tool(pending_tool_calls.pop(tcid), msg)
-
-    return records
-
-
-def _classify_op(tool_use: Dict) -> Optional[str]:
-    """Map a tool_use to a write-op label, or None if not a tracked write."""
-    name = tool_use.get("name", "")
-    inp = tool_use.get("input") or {}
-    action = inp.get("action", "")
-    if name in _SKILL_TOOL_NAMES and action in ("write_file", "patch", "patch_file"):
-        return "patch" if "patch" in action else "write_file"
-    if name in _MEMORY_TOOL_NAMES:
-        if action == "add":
-            return "memory_add"
-        if action in ("update", "replace"):
-            return "memory_update"
-        if action in ("remove", "delete"):
-            return "memory_delete"
-    return None
-
-
-def _build_write_entry(tool_use: Dict, tool_result: Dict, op: str) -> Optional[Dict]:
-    """Construct the per-write entry attached to an improvement_record."""
-    inp = tool_use.get("input") or {}
-    raw = tool_result.get("content")
-    try:
-        result = json.loads(raw) if isinstance(raw, str) else (raw or {})
-    except json.JSONDecodeError:
-        result = {"success": False, "error": (raw or "")[:200]}
-    if not isinstance(result, dict):
-        result = {"success": False, "error": str(result)[:200]}
-    success = bool(result.get("success", False))
-    err = (result.get("error") or "")[:200] if not success else None
-    path = result.get("path") or inp.get("path") or ""
-    diff = result.get("diff") if success and op in ("write_file", "patch") else None
-    post = inp.get("content") if success and op in ("write_file", "patch") else None
-    return {
-        "path": path,
-        "op": op,
-        "success": success,
-        "error_preview": err,
-        "diff": diff,
-        "post_content": post,
-    }
-
-
-def _invoke_callback_with_timeout(
-    callback: Callable[[Dict], None],
-    record: Dict,
-    *,
-    timeout: float,
-) -> None:
-    """Run ``callback(record)`` under a timeout; swallow all exceptions.
-
-    Failures are logged at WARNING; nothing propagates. A hung callback is
-    abandoned after ``timeout`` seconds (the daemon thread is left to
-    finish on its own).
-    """
-    def _safe() -> None:
-        try:
-            callback(record)
-        except Exception as e:
-            logger.warning("background_review callback raised: %s", e)
-
-    t = threading.Thread(target=_safe, daemon=True)
-    t.start()
-    t.join(timeout=timeout)
-    if t.is_alive():
-        logger.warning(
-            "background_review callback timed out after %.1fs", timeout
-        )
-
-
-_callback_cache: Dict[str, Callable] = {}
-
-
-def _load_callback(dotted: str) -> Optional[Callable[[Dict], None]]:
-    """Resolve a dotted module path to a callable. Cached. None on failure."""
-    if dotted in _callback_cache:
-        return _callback_cache[dotted]
-    try:
-        mod_path, _, attr = dotted.rpartition(".")
-        if not mod_path:
-            return None
-        mod = importlib.import_module(mod_path)
-        fn = getattr(mod, attr, None)
-        if fn is None or not callable(fn):
-            return None
-        _callback_cache[dotted] = fn
-        return fn
-    except Exception as e:
-        logger.warning(
-            "background_review callback load failed for %r: %s", dotted, e
-        )
-        return None
 
 
 def spawn_background_review_thread(
