@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'design/hermes_theme.dart';
 import 'features/chat/presentation/chat_screen.dart';
 import 'features/connections/presentation/add_connection_screen.dart';
 import 'features/instances/presentation/instance_list_screen.dart';
@@ -36,10 +37,9 @@ class HermesRemoteClientApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp.router(
       title: 'Hermes Remote',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
-        useMaterial3: true,
-      ),
+      theme: hermesTheme(Brightness.light),
+      darkTheme: hermesTheme(Brightness.dark),
+      themeMode: ThemeMode.system,
       routerConfig: _router,
     );
   }

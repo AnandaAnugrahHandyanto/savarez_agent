@@ -13,17 +13,23 @@ Uri normalizeHermesBaseUri(String input) {
     throw FormatException('Hermes URL must use http or https: $input');
   }
 
-  return parsed.replace(
+  return Uri(
+    scheme: parsed.scheme,
+    userInfo: parsed.userInfo,
+    host: parsed.host,
+    port: parsed.hasPort ? parsed.port : null,
     path: _stripTrailingSlash(parsed.path),
-    query: '',
-    fragment: '',
   );
 }
 
 Uri buildApiUri(Uri baseUri, String path, [Map<String, String>? query]) {
   final basePath = _stripTrailingSlash(baseUri.path);
   final apiPath = path.startsWith('/') ? path : '/$path';
-  return baseUri.replace(
+  return Uri(
+    scheme: baseUri.scheme,
+    userInfo: baseUri.userInfo,
+    host: baseUri.host,
+    port: baseUri.hasPort ? baseUri.port : null,
     path: '$basePath$apiPath',
     queryParameters: query == null || query.isEmpty ? null : query,
   );
@@ -31,7 +37,14 @@ Uri buildApiUri(Uri baseUri, String path, [Map<String, String>? query]) {
 
 Uri buildHermesWsUri(Uri baseUri, {String? token}) {
   final scheme = baseUri.scheme == 'https' ? 'wss' : 'ws';
-  return buildApiUri(baseUri.replace(scheme: scheme), '/api/ws', {
+  final wsBase = Uri(
+    scheme: scheme,
+    userInfo: baseUri.userInfo,
+    host: baseUri.host,
+    port: baseUri.hasPort ? baseUri.port : null,
+    path: baseUri.path,
+  );
+  return buildApiUri(wsBase, '/api/ws', {
     if (token != null && token.isNotEmpty) 'token': token,
   });
 }

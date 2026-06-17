@@ -37,10 +37,24 @@ validation as a successful Flutter build.
 
 ## Architecture
 
+The UI includes a small Hermes design layer under `lib/design/` so mobile does
+not drift into stock Material styling. Tokens are derived from the Electron
+Desktop stylesheet:
+
+- light blue chrome/sidebar surfaces
+- `#0053fd` primary/midground accent
+- warm `#cf806d` secondary accent
+- compact Desktop-like type scale
+- soft elevated cards, hairline borders, and rounded 9-10px controls
+- monospace URL/status treatments for agent-host details
+
 ```text
 lib/
   main.dart
   app.dart
+  design/
+    hermes_theme.dart
+    hermes_components.dart
   hermes_api/
     connection_profile.dart
     hermes_rest_client.dart
