@@ -76,6 +76,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -502,6 +503,154 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban" / "logs"
     return board_dir(slug) / "logs"
+
+
+def _kanban_interactive_surface_enabled() -> bool:
+    """Whether dispatcher-spawned workers should expose a PTY control surface.
+
+    Default is enabled on POSIX when ``script(1)`` is available. Operators can
+    disable it via ``HERMES_KANBAN_DISABLE_INTERACTIVE_SURFACE=1``.
+    """
+    raw = os.environ.get("HERMES_KANBAN_DISABLE_INTERACTIVE_SURFACE", "")
+    if raw.strip().lower() in {"1", "true", "yes", "on"}:
+        return False
+    if _IS_WINDOWS:
+        return False
+    return shutil.which("script") is not None
+
+
+def _interactive_control_paths(board: str, task_id: str) -> tuple[Path, Path, Path]:
+    """Return control-dir, stdin fifo, and PTY log paths for a worker."""
+    log_root = worker_logs_dir(board=board)
+    control_dir = log_root / f"{task_id}.interactive"
+    fifo_path = control_dir / "stdin.fifo"
+    pty_log_path = control_dir / "pty.log"
+    return control_dir, fifo_path, pty_log_path
+
+
+def _interactive_session_label(board: str, task_id: str) -> str:
+    return f"kanban:{board}:{task_id}"
+
+
+def _update_latest_run_metadata(
+    task_id: str,
+    metadata: dict[str, object],
+    *,
+    db_path: Optional[str] = None,
+) -> None:
+    """Merge ``metadata`` into the most recent run row for ``task_id``."""
+    db_path = (db_path or os.environ.get("HERMES_KANBAN_DB", "")).strip()
+    if not db_path or not task_id:
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT id, metadata FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return
+        current: dict[str, object] = {}
+        raw_metadata = row["metadata"]
+        if isinstance(raw_metadata, str) and raw_metadata.strip():
+            try:
+                decoded = json.loads(raw_metadata)
+                if isinstance(decoded, dict):
+                    current = decoded
+            except Exception:
+                current = {}
+        current.update(metadata)
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps(current, ensure_ascii=False), int(row["id"])),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        return
+
+
+def _write_interactive_control_helpers(
+    control_dir: Path,
+    fifo_path: Path,
+    pty_log_path: Path,
+) -> None:
+    attach = control_dir / "attach.txt"
+    send = control_dir / "send.sh"
+    tail = control_dir / "tail.sh"
+    attach.write_text(
+        "\n".join(
+            [
+                f"log: {pty_log_path}",
+                f"fifo: {fifo_path}",
+                f"tail -f {shlex.quote(str(pty_log_path))}",
+                f"printf '%s\\n' '/status' > {shlex.quote(str(fifo_path))}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    send.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "if [[ $# -eq 0 ]]; then echo 'usage: send.sh <text>' >&2; exit 2; fi\n"
+        f"printf '%s\\n' \"$*\" > {shlex.quote(str(fifo_path))}\n",
+        encoding="utf-8",
+    )
+    tail.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"exec tail -f {shlex.quote(str(pty_log_path))}\n",
+        encoding="utf-8",
+    )
+    send.chmod(0o755)
+    tail.chmod(0o755)
+
+
+def _prepare_interactive_worker_runtime(
+    *,
+    board: str,
+    task_id: str,
+    cmd: list[str],
+    env: dict[str, str],
+    db_path: str,
+) -> tuple[list[str], dict[str, str]]:
+    """Wrap a spawned worker in ``script(1)`` and expose attach/send metadata."""
+    control_dir, fifo_path, pty_log_path = _interactive_control_paths(board, task_id)
+    control_dir.mkdir(parents=True, exist_ok=True)
+    if fifo_path.exists() or fifo_path.is_symlink():
+        fifo_path.unlink()
+    os.mkfifo(fifo_path, 0o600)
+    _write_interactive_control_helpers(control_dir, fifo_path, pty_log_path)
+
+    spawn_command = " ".join(shlex.quote(part) for part in cmd)
+    attach_hint = f"tail -f {pty_log_path}"
+    send_hint = f"printf '%s\\n' '/status' > {fifo_path}"
+    metadata = {
+        "interactive_runtime": "script-pty",
+        "interactive_session_label": _interactive_session_label(board, task_id),
+        "interactive_control_dir": str(control_dir),
+        "interactive_stdin_fifo": str(fifo_path),
+        "interactive_log_path": str(pty_log_path),
+        "interactive_attach_hint": attach_hint,
+        "interactive_send_hint": send_hint,
+        "interactive_spawned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "spawn_command": spawn_command,
+    }
+    _update_latest_run_metadata(task_id, metadata, db_path=db_path)
+
+    env = dict(env)
+    env["HERMES_KANBAN_INTERACTIVE_CONTROL_DIR"] = str(control_dir)
+    env["HERMES_KANBAN_INTERACTIVE_STDIN_FIFO"] = str(fifo_path)
+    env["HERMES_KANBAN_INTERACTIVE_LOG_PATH"] = str(pty_log_path)
+
+    shell_command = (
+        f"exec 3<>{shlex.quote(str(fifo_path))}; "
+        f"exec script -q -f -c {shlex.quote(spawn_command)} {shlex.quote(str(pty_log_path))} <&3"
+    )
+    return ["bash", "-lc", shell_command], env
 
 
 def board_metadata_path(board: Optional[str] = None) -> Path:
@@ -6859,16 +7008,27 @@ def _default_spawn(
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
+    popen_cmd = cmd
+    popen_env = env
+    if _kanban_interactive_surface_enabled():
+        popen_cmd, popen_env = _prepare_interactive_worker_runtime(
+            board=resolved_board,
+            task_id=task.id,
+            cmd=cmd,
+            env=env,
+            db_path=str(kanban_db_path(board=board)),
+        )
+
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
+            popen_cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL,
             stdout=log_f,
             stderr=subprocess.STDOUT,
-            env=env,
+            env=popen_env,
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
