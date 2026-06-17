@@ -442,10 +442,26 @@ class GatewaySlashCommandsMixin:
         cache_read_tokens = _int_value(session_row.get("cache_read_tokens"))
         cache_write_tokens = _int_value(session_row.get("cache_write_tokens"))
 
-        # context_tokens: prefer the last API-reported prompt size, not cumulative input.
-        # Fallback to 0 (not None) so _format_context shows "0/limit" instead of "unknown"
-        # on fresh sessions that haven't run an agent turn yet.
-        context_tokens = _int_value(getattr(session_entry, "last_prompt_tokens", 0)) or 0
+        # context_tokens: prefer the live agent's context_compressor (most accurate),
+        # then fall back to the session_entry's persisted last_prompt_tokens.
+        context_tokens = None
+        context_limit = None
+        if is_running:
+            cc = getattr(agent, "context_compressor", None)
+            if cc is not None:
+                context_tokens = _int_value(getattr(cc, "last_prompt_tokens", 0)) or None
+                context_limit = _int_value(getattr(cc, "context_length", 0)) or None
+
+        # Load gateway config for model/fallback/context info.
+        try:
+            cfg = _load_gateway_config()
+        except Exception:
+            cfg = {}
+
+        if context_tokens is None:
+            context_tokens = _int_value(getattr(session_entry, "last_prompt_tokens", 0)) or 0
+        if context_limit is None:
+            context_limit = _status_context_limit(cfg)
 
         # Count active tasks (agents + processes + background tasks).
         running_processes = 0
@@ -463,12 +479,6 @@ class GatewaySlashCommandsMixin:
         ])
         active_tasks = len(getattr(self, "_running_agents", {}) or {}) + running_processes + background_tasks
 
-        # Load gateway config for model/fallback/context info.
-        try:
-            cfg = _load_gateway_config()
-        except Exception:
-            cfg = {}
-
         snapshot = {
             "version": hermes_cli.__version__,
             "commit": _status_git_short_sha(),
@@ -482,7 +492,7 @@ class GatewaySlashCommandsMixin:
             "cache_read_tokens": cache_read_tokens,
             "cache_write_tokens": cache_write_tokens,
             "context_tokens": context_tokens,
-            "context_limit": _status_context_limit(cfg),
+            "context_limit": context_limit,
             "compactions": session_row.get("compression_count", 0),
             "session_id": session_entry.session_id,
             "active_tasks": active_tasks,
