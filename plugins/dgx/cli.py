@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -593,8 +594,6 @@ def _print_gpu_lines(out: str) -> None:
 
 def _cmd_watch(interval: int = 2) -> int:
     """Live-refresh nvidia-smi every *interval* seconds until Ctrl+C."""
-    import time
-
     dgx = load_dgx_config()
     host = dgx["host"]
     user = dgx["ssh_user"]

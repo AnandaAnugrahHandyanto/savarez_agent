@@ -1,11 +1,12 @@
 """Tests for plugins/dgx/cli.py
 
-Current functionality (green): HTTP helpers, SSH helpers, probe functions,
-argparse wiring, dispatch, endpoint/use/models/status commands.
+Covers the shipped functionality: HTTP/SSH helpers, probe functions, argparse
+wiring, dispatch, and the setup/status/models/use/endpoint/pull/rm/ps/push/
+doctor/watch/formation/nim/node commands. All tests are live (not xfail).
 
-Planned functionality (red — TDD work items): pull, rm, ps, run, push,
-doctor, watch, agent tools. These are marked xfail with the tier they
-belong to. A passing xfail means the feature shipped; flip to a real test.
+Note: `hermes dgx run` (arbitrary remote shell) and the `dgx_run` agent tool
+were intentionally removed — free-form remote execution goes through the host
+terminal tool, which is gated by the dangerous-command approval system.
 """
 
 from __future__ import annotations
