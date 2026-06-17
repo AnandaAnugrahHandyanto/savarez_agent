@@ -92,6 +92,7 @@ CONNECT_TIMEOUT_SECONDS = 20.0
 REQUEST_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+RECONNECT_ATTEMPT_TIMEOUT_SECONDS = CONNECT_TIMEOUT_SECONDS * 2
 
 DEDUP_MAX_SIZE = 1000
 
@@ -347,16 +348,40 @@ class WeComAdapter(BasePlatformAdapter):
                 self._fail_pending_responses(RuntimeError("WeCom connection interrupted"))
 
                 delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
-                backoff_idx += 1
-                await asyncio.sleep(delay)
-
-                try:
-                    await self._open_connection()
+                attempt = backoff_idx + 1
+                if await self._reconnect_once(delay=delay, attempt=attempt):
                     backoff_idx = 0
-                    self._mark_connected()
-                    logger.info("[%s] Reconnected", self.name)
-                except Exception as reconnect_exc:
-                    logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+                else:
+                    backoff_idx += 1
+
+    async def _reconnect_once(self, *, delay: float, attempt: int) -> bool:
+        """Reconnect once with bounded timing and explicit observability."""
+        logger.info("[%s] Reconnecting in %ss (attempt %d)", self.name, delay, attempt)
+        await asyncio.sleep(delay)
+        if not self._running:
+            return False
+        try:
+            await asyncio.wait_for(
+                self._open_connection(),
+                timeout=RECONNECT_ATTEMPT_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] Reconnect failed: timed out after %.1fs",
+                self.name,
+                RECONNECT_ATTEMPT_TIMEOUT_SECONDS,
+                exc_info=True,
+            )
+            return False
+        except Exception as reconnect_exc:
+            logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc, exc_info=True)
+            return False
+
+        self._mark_connected()
+        logger.info("[%s] Reconnected", self.name)
+        return True
 
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""
