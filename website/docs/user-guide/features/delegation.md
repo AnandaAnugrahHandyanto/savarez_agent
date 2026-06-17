@@ -18,6 +18,32 @@ delegate_task(
 )
 ```
 
+Single-task delegation is synchronous by default: the parent agent waits for
+the child summary before continuing the current turn.
+
+## Background Task
+
+Use `background=True` when a single delegated task should keep running while the
+parent continues the conversation:
+
+```python
+delegate_task(
+    goal="Investigate the flaky CI failure and report the likely root cause",
+    context="Repo: /home/user/myproject. Failing job: test-linux. Start by reading the latest pytest logs.",
+    toolsets=["terminal", "file"],
+    background=True,
+)
+```
+
+Background delegation returns immediately with a `delegation_id`. The child gets
+the same isolated context and terminal-session treatment as normal delegation,
+but its final result is delivered back into the conversation when it finishes.
+Do **not** poll or wait after dispatching; keep working and handle the injected
+result when it arrives.
+
+Background delegation is only for a **single `goal`**. It cannot be combined
+with the `tasks` batch array.
+
 ## Parallel Batch
 
 Up to 3 concurrent subagents by default (configurable, no hard ceiling):
@@ -29,6 +55,9 @@ delegate_task(tasks=[
     {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
 ])
 ```
+
+Batch delegation is synchronous: the parent waits for all batch children to
+finish, and interrupting the parent interrupts the active children.
 
 ## How Subagent Context Works
 
@@ -226,18 +255,39 @@ delegate_task(
 
 ## Lifetime and Durability
 
-:::warning delegate_task is synchronous — not durable
-`delegate_task` runs **inside the parent's current turn**. It blocks the parent until every child finishes (or is cancelled). It is **not** a background job queue:
+`delegate_task` now has two lifetime modes:
 
-- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
-- Children do **not** continue running after the parent turn ends.
-- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
+### Synchronous delegation
 
-For **durable long-running work** that must survive interrupts or outlive the current turn, use:
+This is the default for single-task calls and the only mode for batch calls. It
+runs **inside the parent's current turn** and blocks the parent until every child
+finishes or is cancelled.
 
-- `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
-- `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
-:::
+- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all
+  active synchronous children are cancelled and return `status="interrupted"`.
+- Cancelled children return a structured result (`status="interrupted"`,
+  `exit_reason="interrupted"`), but because the parent was interrupted too, that
+  result often never makes it into a user-visible reply.
+
+### Asynchronous/background delegation
+
+`delegate_task(..., background=True)` is a lightweight background agent run for
+one independent reasoning task. It returns immediately with a `delegation_id`,
+continues after the current turn, and re-injects its final result into the
+conversation when done.
+
+Use background delegation for work that still needs an LLM agent — research,
+code review, build investigation, or multi-step diagnosis — when the user should
+not have to wait in the current turn.
+
+### Choosing the right background system
+
+| Need | Use |
+|---|---|
+| Reasoning-heavy subtask and parent should wait | `delegate_task(...)` |
+| Reasoning-heavy subtask and parent should keep going | `delegate_task(..., background=True)` |
+| Long-running shell command with no LLM judgment | `terminal(background=True, notify_on_complete=True)` |
+| Durable scheduled or recurring work that survives restarts | `cronjob(action="create")` |
 
 ## Key Properties
 

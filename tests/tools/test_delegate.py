@@ -98,6 +98,14 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn(f"up to {max_children}", desc)
         # Top-level description names the user's spawn-depth limit explicitly.
         self.assertIn(f"max_spawn_depth={max_depth}", desc)
+        # Top-level description distinguishes sync and background delegation.
+        self.assertIn("Synchronous delegation (default)", desc)
+        self.assertIn("background=True", desc)
+        self.assertIn("delegation_id", desc)
+        self.assertIn("terminal(background=True, notify_on_complete=True)", desc)
+        self.assertIn("cronjob (action='create')", desc)
+        self.assertNotIn("Children cannot continue in the background", desc)
+        self.assertNotIn("delegate_task runs SYNCHRONOUSLY", desc)
         # tasks parameter description repeats the concurrency cap.
         self.assertIn(f"up to {max_children}", tasks_desc)
         # role parameter description names the spawn-depth limit.
