@@ -932,7 +932,43 @@ def _normalize_share_chat_message(payload: Dict[str, Any]) -> FeishuNormalizedMe
     )
 
 
+_LARK_CARD_RE = re.compile(
+    r"<card(?:\s+title=\"(?P<title>[^\"]*)\")?\s*>"
+    r"\s*(?P<body>.*?)"
+    r"\s*</card>",
+    re.DOTALL,
+)
+
 def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -> FeishuNormalizedMessage:
+    # Handle lark-cli XML card format: <card title="...">markdown</card>
+    # lark-cli sends interactive cards in this XML format, which the Feishu
+    # API returns verbatim.  It is NOT valid JSON, so _load_feishu_payload
+    # stores it as {"text": "<card ...>"}.
+    raw_text = str(payload.get("text", "") or "").strip()
+    if raw_text and raw_text.startswith("<card"):
+        lark_match = _LARK_CARD_RE.search(raw_text)
+        if lark_match:
+            title = (lark_match.group("title") or "").strip()
+            body = (lark_match.group("body") or "").strip()
+            lines: List[str] = []
+            if title:
+                lines.append(title)
+            if body:
+                # Split on markdown horizontal rules and section headers
+                # for a cleaner reading order, mirroring how sections appear
+                # in the original card.
+                for part in body.split("\n---\n"):
+                    part = part.strip()
+                    if part:
+                        lines.append(part)
+            text_content = "\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT
+            return FeishuNormalizedMessage(
+                raw_type=message_type,
+                text_content=text_content,
+                relation_kind="interactive",
+                metadata={"title": title or None, "format": "lark_xml"},
+            )
+
     card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
     title = _first_non_empty_text(
         _find_header_title(card_payload),
@@ -4097,11 +4133,19 @@ class FeishuAdapter(BasePlatformAdapter):
             body = getattr(parent, "body", None)
             msg_type = getattr(parent, "msg_type", "") or ""
             raw_content = getattr(body, "content", "") or ""
+            logger.info(
+                "[Feishu] Fetched parent msg %s: msg_type=%s raw_content_prefix=%r",
+                message_id, msg_type, (raw_content or "")[:300],
+            )
             parent_mentions = getattr(parent, "mentions", None) if parent else None
             text = self._extract_text_from_raw_content(
                 msg_type=msg_type,
                 raw_content=raw_content,
                 mentions=parent_mentions,
+            )
+            logger.info(
+                "[Feishu] Extracted reply_to_text for %s: %r",
+                message_id, (text or "")[:300],
             )
             self._message_text_cache[message_id] = text
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:

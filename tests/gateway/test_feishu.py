@@ -197,6 +197,63 @@ class TestFeishuMessageNormalization(unittest.TestCase):
         self.assertIn("Alice  12  🟢", normalized.text_content)
         self.assertIn("Bob  45  🔴", normalized.text_content)
 
+    def test_normalize_interactive_card_handles_lark_cli_xml_format(self):
+        """lark-cli sends interactive cards as `<card title=\"...\">markdown</card>`
+        XML instead of JSON.  The Feishu API returns this format verbatim,
+        and ``_load_feishu_payload`` falls back to ``{\"text\": \"<card ...>\"}``.
+        ``normalize_feishu_message`` must extract title and body sections
+        from this format so that ``reply_to_text`` includes actual card
+        content — not just the ``[Interactive message]`` fallback."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        xml_card = (
+            '<card title=\"☀️ KB Morning Brief\">\n'
+            '**📌 Top Items**\n\n'
+            '1️⃣ Item one\n'
+            '2️⃣ Item two\n'
+            '---\n'
+            '**🚨 Risks**\n\n'
+            'Risk one\n'
+            '---\n'
+            '**🔔 Actions**\n\n'
+            '1️⃣ Action one\n'
+            '2️⃣ Action two\n'
+            '</card>'
+        )
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=xml_card,
+        )
+
+        self.assertEqual(normalized.relation_kind, "interactive")
+        self.assertEqual(normalized.metadata.get("format"), "lark_xml")
+        self.assertIn("☀️ KB Morning Brief", normalized.text_content)
+        self.assertIn("📌 Top Items", normalized.text_content)
+        self.assertIn("🚨 Risks", normalized.text_content)
+        self.assertIn("🔔 Actions", normalized.text_content)
+        self.assertIn("Action one", normalized.text_content)
+        # Must NOT be the fallback placeholder
+        self.assertNotEqual(normalized.text_content, "[Interactive message]")
+
+    def test_normalize_interactive_card_handles_xml_without_title(self):
+        """lark-cli cards without a title attribute should still parse body."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        xml_card = (
+            '<card>\n'
+            '**Just body content**\n'
+            '</card>'
+        )
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=xml_card,
+        )
+
+        self.assertIn("Just body content", normalized.text_content)
+        self.assertNotEqual(normalized.text_content, "[Interactive message]")
+
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {
