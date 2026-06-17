@@ -1096,6 +1096,24 @@ class TestHFCacheHelpers:
         dgx = {"vllm_port": 8900, "vllm_32b_port": 30881, "vllm_servers": []}
         assert _next_vllm_port(dgx) == 8901
 
+    def test_next_vllm_port_skips_ports_listening_on_dgx(self, monkeypatch):
+        # Regression: a port occupied on the DGX by an untracked process is
+        # invisible to local config; probe the box so we don't hand out 8900
+        # when something is already bound there.
+        from plugins.dgx.cli import _next_vllm_port
+        dgx = {"vllm_port": 30800, "vllm_32b_port": 30881, "vllm_servers": [],
+               "host": "10.0.0.1", "ssh_user": "dgx"}
+        ss_out = "LISTEN 0 128 0.0.0.0:8900 0.0.0.0:*\nLISTEN 0 128 [::]:22 [::]:*"
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", lambda *a, **k: (True, ss_out))
+        assert _next_vllm_port(dgx) == 8901
+
+    def test_next_vllm_port_ignores_dgx_probe_failure(self, monkeypatch):
+        from plugins.dgx.cli import _next_vllm_port
+        dgx = {"vllm_port": 30800, "vllm_32b_port": 30881, "vllm_servers": [],
+               "host": "10.0.0.1", "ssh_user": "dgx"}
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", lambda *a, **k: (False, "refused"))
+        assert _next_vllm_port(dgx) == 8900   # falls back to local config only
+
     # --- _list_hf_models ---
 
     def test_list_hf_models_parses_directory_names(self, monkeypatch):

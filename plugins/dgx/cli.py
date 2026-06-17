@@ -387,16 +387,49 @@ def _find_vllm_bin(user: str, host: str) -> Optional[str]:
     return path or None
 
 
+def _listening_ports(user: str, host: str) -> set:
+    """Best-effort set of TCP ports currently LISTENing on the DGX.
+
+    Returns an empty set on any SSH/parse failure — callers treat it as
+    advisory and fall back to local config only.
+    """
+    ok, out = _ssh_run(
+        user, host,
+        "ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null",
+        timeout=6,
+    )
+    ports: set = set()
+    if not ok or not out:
+        return ports
+    for line in out.splitlines():
+        # Both `ss -ltnH` and `netstat -ltn` put the local address:port in a
+        # single field (e.g. 0.0.0.0:8900, [::]:22). Take the port off the
+        # first field that has one.
+        for field in line.split():
+            if ":" in field:
+                tail = field.rsplit(":", 1)[-1]
+                if tail.isdigit():
+                    ports.add(int(tail))
+                break
+    return ports
+
+
 def _next_vllm_port(dgx: Dict[str, Any]) -> int:
     """Return the next unassigned vLLM port.
 
     Starts at 8900 to avoid the k3s NodePort range (30000-32767) which may
     already have services mapped on the DGX. The configured vllm_port and
     vllm_32b_port are static endpoints; dynamically-served HF models get
-    ports from 8900 upward.
+    ports from 8900 upward. When a DGX host is known, also skip ports already
+    LISTENing on the box (untracked servers, unrelated services) so we don't
+    hand out a port that would fail to bind.
     """
     used = {dgx.get("vllm_port", 0), dgx.get("vllm_32b_port", 0)}
     used.update(s.get("port", 0) for s in (dgx.get("vllm_servers") or []))
+    node = dgx.get("_active_node", dgx)
+    host, user = node.get("host"), node.get("ssh_user")
+    if host:
+        used |= _listening_ports(user, host)
     port = 8900
     while port in used:
         port += 1
