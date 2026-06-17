@@ -2252,3 +2252,66 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+# ---------------------------------------------------------------------------
+# Resilience: one corrupt board must not take down the whole Kanban panel.
+# Regression for the recurring dashboard "500: Internal Server Error" when a
+# single board's SQLite DB went malformed (it 500'd the entire panel).
+# ---------------------------------------------------------------------------
+
+
+def test_get_board_corrupt_db_returns_503_not_500(client, monkeypatch):
+    """Viewing a board whose DB is corrupt returns a clean per-board 503,
+    not an unhandled 500 that makes the whole dashboard look dead."""
+    real_connect = kb.connect
+
+    def fake_connect(*args, board=None, **kw):
+        if board == "corruptboard":
+            raise kb.KanbanDbCorruptError(
+                Path("/tmp/x/kanban.db"),
+                None,
+                "integrity_check returned 'wrong # of entries in index idx_events_task'",
+            )
+        return real_connect(*args, board=board, **kw)
+
+    monkeypatch.setattr(kb, "connect", fake_connect)
+    monkeypatch.setattr(kb, "board_exists", lambda s: True)
+
+    r = client.get("/api/plugins/kanban/board?board=corruptboard")
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert detail["code"] == "board_db_corrupt"
+    assert detail["board"] == "corruptboard"
+
+
+def test_boards_list_survives_one_corrupt_board(client, monkeypatch):
+    """/boards lists healthy boards and flags the corrupt one as unhealthy,
+    never failing the whole picker."""
+    # A healthy board with a task.
+    good = kb.connect(board="goodboard")
+    try:
+        kb.create_task(good, title="still-works")
+    finally:
+        good.close()
+    # A board that exists on disk but whose DB is corrupt.
+    kb.connect(board="corruptboard").close()
+
+    real_connect = kb.connect
+
+    def fake_connect(*args, board=None, **kw):
+        if board == "corruptboard":
+            raise kb.KanbanDbCorruptError(Path("/tmp/x/kanban.db"), None, "malformed")
+        return real_connect(*args, board=board, **kw)
+
+    monkeypatch.setattr(kb, "connect", fake_connect)
+
+    r = client.get("/api/plugins/kanban/boards?include_archived=true")
+    assert r.status_code == 200  # the list itself never 500s
+    boards = {b["slug"]: b for b in r.json()["boards"]}
+
+    assert boards["goodboard"]["healthy"] is True
+    assert boards["goodboard"]["total"] >= 1
+    assert boards["corruptboard"]["healthy"] is False
+    assert boards["corruptboard"].get("error") == "board_db_corrupt"
+    assert boards["corruptboard"]["counts"] == {}
