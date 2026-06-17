@@ -66,6 +66,34 @@ def test_tool_search_sorts_missing_raw_score_after_negative_scores():
     assert result["total"] == 3
 
 
+def test_tool_search_uses_limit_and_routes_deep_to_search_endpoint():
+    provider = OpenVikingMemoryProvider()
+    provider._session_id = "session-123"
+    provider._client = MagicMock()
+    provider._client.post.return_value = {"result": {"memories": [], "resources": [], "skills": []}}
+
+    # fast mode → /find with limit
+    result = json.loads(provider._tool_search({
+        "query": "ranking",
+        "mode": "fast",
+        "scope": "viking://resources/docs",
+        "limit": 7,
+    }))
+    provider._client.post.assert_called_with("/api/v1/search/find", {
+        "query": "ranking",
+        "target_uri": "viking://resources/docs",
+        "limit": 7,
+    })
+
+    # deep mode → /search with session_id
+    result = json.loads(provider._tool_search({"query": "connect facts", "mode": "deep"}))
+    provider._client.post.assert_called_with("/api/v1/search/search", {
+        "query": "connect facts",
+        "session_id": "session-123",
+    })
+    assert result["results"] == []
+
+
 def test_tool_add_resource_uploads_existing_local_file(tmp_path):
     sample = tmp_path / "sample.md"
     sample.write_text("# Local resource\n", encoding="utf-8")

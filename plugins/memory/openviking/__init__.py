@@ -254,6 +254,10 @@ SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "Viking URI prefix to scope search (e.g. 'viking://resources/docs/').",
             },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default: server decides, typically 10).",
+            },
         },
         "required": ["query"],
     },
@@ -764,16 +768,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         payload: Dict[str, Any] = {"query": query}
         mode = args.get("mode", "auto")
-        if mode != "auto":
-            payload["mode"] = mode
         if args.get("scope"):
             payload["target_uri"] = args["scope"]
-        # v0.4.1+: server rejects top_k as extra input; limit is not supported
-        # The server returns a default number of results (typically 10)
-        # if args.get("limit"):
-        #     payload["top_k"] = args["limit"]
+        # v0.4.1+: FindRequest accepts `limit`, rejects `top_k` as extra input
+        if args.get("limit"):
+            payload["limit"] = args["limit"]
+        # Route deep mode to the dedicated search endpoint with session context
+        endpoint = "/api/v1/search/search" if mode == "deep" else "/api/v1/search/find"
+        if endpoint == "/api/v1/search/search" and self._session_id:
+            payload["session_id"] = self._session_id
 
-        resp = self._client.post("/api/v1/search/find", payload)
+        resp = self._client.post(endpoint, payload)
         result = resp.get("result", {})
 
         # Format results for the model — keep it concise
