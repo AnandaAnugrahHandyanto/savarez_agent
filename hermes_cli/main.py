@@ -5167,6 +5167,21 @@ def _electron_dist_ok(project_root: Path) -> bool:
         return False
 
 
+def _electron_pkg_staged_missing_dist(project_root: Path) -> bool:
+    """True when electron package staged but its dist is missing.
+
+    npm runs postinstall scripts after staging package files on disk. For the
+    blocked-download failure mode, ``electron/package.json`` + ``install.js``
+    exist but ``dist/`` is missing because ``install.js`` failed.
+    """
+    electron_dir = _electron_dir(project_root)
+    return (
+        (electron_dir / "package.json").is_file()
+        and (electron_dir / "install.js").is_file()
+        and not _electron_dist_ok(project_root)
+    )
+
+
 def _redownload_electron_dist(
     project_root: Path,
     env: dict,
@@ -5442,44 +5457,28 @@ def cmd_gui(args: argparse.Namespace):
             nixos_env = _nixos_build_env()
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
-                # The most common dependency-install failure is electron's
-                # postinstall binary download being blocked/throttled: its
-                # install.js does `process.exit(1)` on a failed download, which
-                # fails the whole `npm ci`/`npm install` (#47266, #47917, #48021).
-                # npm runs postinstall scripts LAST — after every package is
-                # already staged on disk — so when the binary download is the
-                # casualty the electron package itself (package.json, install.js)
-                # is present and only its dist/ is missing. Bailing here is what
-                # made the mirror self-heal further down dead code on a blocked
-                # network: that self-heal only runs after a failed `pack`, but
-                # the install step exits first so `pack` is never reached.
-                #
-                # If the electron package staged (so npm got far enough to be a
-                # download casualty, not a genuine dependency-resolution error),
-                # try to repopulate the dist via electron's own downloader
-                # (canonical first, then the public mirror) and carry on to the
-                # build. Even if that can't fetch it, `npm run pack` now resolves
-                # electronDist dynamically and lets electron-builder fetch
-                # Electron itself, so the pack-time mirror fallback gets a final
-                # shot. Hard-fail only when electron never staged at all.
-                electron_pkg = _electron_dir(PROJECT_ROOT) / "package.json"
-                if not electron_pkg.is_file():
+                # npm runs postinstall scripts LAST. When Electron's binary
+                # download is blocked/throttled (#47266/#47917/#48021), the
+                # package files are staged (package.json + install.js) but dist/
+                # is missing. In that specific shape, attempt a best-effort
+                # dist repair and continue to pack; otherwise, fail fast so
+                # unrelated install errors aren't mislabeled as Electron issues.
+                if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")
                     print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
                     sys.exit(install_result.returncode or 1)
-                if not _electron_dist_ok(PROJECT_ROOT):
-                    repaired = _redownload_electron_dist(PROJECT_ROOT, env)
-                    if not repaired and not env.get("ELECTRON_MIRROR"):
-                        repaired = _redownload_electron_dist(
-                            PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR
-                        )
-                    if repaired:
-                        print("  ⚠ Dependency install failed on the Electron binary "
-                              "download; repopulated the Electron dist and continuing.")
-                    else:
-                        print("  ⚠ Dependency install failed on the Electron binary "
-                              "download; continuing to the build so electron-builder "
-                              "can fetch Electron itself.")
+                repaired = _redownload_electron_dist(PROJECT_ROOT, env)
+                if not repaired and not env.get("ELECTRON_MIRROR"):
+                    repaired = _redownload_electron_dist(
+                        PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR
+                    )
+                if repaired:
+                    print("  ⚠ Dependency install failed with a missing Electron dist; "
+                          "repopulated it and continuing.")
+                else:
+                    print("  ⚠ Dependency install failed with a missing Electron dist; "
+                          "continuing to the build so electron-builder can attempt "
+                          "the Electron fetch itself.")
 
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
@@ -5508,18 +5507,15 @@ def cmd_gui(args: argparse.Namespace):
                 # verification, which is the real source of truth. If the
                 # failure was something else, the clean re-download is harmless
                 # and the retry fails the same way.
-                purged = _purge_electron_build_cache(desktop_dir)
-                # The build reuses the already-unpacked electron dist when it is
-                # present (resolved dynamically by scripts/run-electron-builder.cjs,
-                # #38673), so purging the build cache + re-running pack can't by
-                # itself repopulate a missing/partial dist. When the dist is
-                # actually gone, re-run electron's own downloader so the retry has
-                # a binary to reuse. Gated on the dist check so an unrelated build
-                # failure (tsc/vite) doesn't trigger a pointless ~200 MB refetch.
+                # Only run the Electron cache repair path when Electron dist is
+                # actually missing/corrupt. This avoids retrying unrelated build
+                # failures (e.g., tsc/vite) under an Electron-specific narrative.
+                purged: list[Path] = []
                 restored = False
                 if not _electron_dist_ok(PROJECT_ROOT):
+                    purged = _purge_electron_build_cache(desktop_dir)
                     restored = _redownload_electron_dist(PROJECT_ROOT, env)
-                if purged or restored:
+                if restored:
                     print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
                     for p in purged:
                         print(f"    - {p}")

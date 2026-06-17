@@ -485,13 +485,15 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
+         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
+         patch("hermes_cli.main._redownload_electron_dist", return_value=True), \
          patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail, pack_ok, launch_ok]) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
     mock_purge.assert_called_once()
-    # pack(fail) → purge → pack(ok) → launch = 3 subprocess.run calls
+    # pack(fail) → repair succeeds → pack(ok) → launch = 3 subprocess.run calls
     assert mock_run.call_count == 3
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "run", "pack"]
@@ -578,6 +580,7 @@ def test_gui_install_failure_self_heals_electron_and_continues(tmp_path, monkeyp
     # electron package staged on disk (postinstall download was the casualty).
     (root / "apps" / "desktop" / "node_modules" / "electron").mkdir(parents=True)
     (root / "apps" / "desktop" / "node_modules" / "electron" / "package.json").write_text("{}", encoding="utf-8")
+    (root / "apps" / "desktop" / "node_modules" / "electron" / "install.js").write_text("", encoding="utf-8")
 
     install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
@@ -618,6 +621,31 @@ def test_gui_install_failure_hard_fails_when_electron_not_staged(tmp_path, monke
 
     assert exc.value.code == 1
     mock_run.assert_not_called()  # build never started
+    assert "Desktop dependency install failed" in capsys.readouterr().out
+
+
+def test_gui_install_failure_hard_fails_when_electron_dist_exists(tmp_path, monkeypatch, capsys):
+    """If npm install fails but Electron dist is already present, don't classify
+    it as the blocked-download shape; fail fast as a generic install error."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+    electron_dir = root / "apps" / "desktop" / "node_modules" / "electron"
+    electron_dir.mkdir(parents=True)
+    (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+    (electron_dir / "install.js").write_text("", encoding="utf-8")
+
+    install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
+         patch("hermes_cli.main._electron_dist_ok", return_value=True), \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    mock_run.assert_not_called()
     assert "Desktop dependency install failed" in capsys.readouterr().out
 
 

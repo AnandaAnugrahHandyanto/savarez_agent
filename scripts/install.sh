@@ -2517,24 +2517,19 @@ install_desktop() {
     #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
     #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
+    local electron_dir
+    electron_dir="$(_electron_dir "$INSTALL_DIR")"
     if ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ); then
         log_success "Desktop workspace dependencies installed"
-    elif [ -f "$(_electron_dir "$INSTALL_DIR")/package.json" ]; then
-        # npm staged every package and then failed in a postinstall script —
-        # almost always electron's install.js doing `process.exit(1)` on a
-        # blocked/throttled binary download (#47266, #47917, #48021). The whole
-        # tree is present; only electron's dist/ is missing. Repopulate it via
-        # electron's own downloader (canonical, then the public mirror) and carry
-        # on to the build; even if that fails, `npm run pack` resolves
-        # electronDist dynamically and lets electron-builder fetch Electron
-        # itself, so the build-stage fallback below gets a final shot. Bailing
-        # here is what made that fallback unreachable on a blocked network.
-        log_warn "Desktop dependency install failed on the Electron binary download; self-healing..."
-        if ! _electron_dist_ok "$INSTALL_DIR"; then
-            _restore_electron_dist "$INSTALL_DIR" \
-                || ( [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" ) \
-                || true
-        fi
+    elif [ -f "$electron_dir/package.json" ] && [ -f "$electron_dir/install.js" ] && ! _electron_dist_ok "$INSTALL_DIR"; then
+        # npm runs postinstall scripts after staging package files. For the
+        # blocked Electron download case, package.json + install.js are present
+        # but dist/ is missing. Heal that specific shape and continue; otherwise
+        # fail fast so unrelated install errors are not mislabeled as Electron.
+        log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+        _restore_electron_dist "$INSTALL_DIR" \
+            || ( [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" ) \
+            || true
     else
         log_error "Desktop workspace npm install failed"
         # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
@@ -2563,20 +2558,16 @@ install_desktop() {
         pack_ok=true
     else
         # (b) Corrupt cached Electron zip is the most common self-healable cause.
-        local purged
-        purged="$(clear_electron_build_cache "$desktop_dir")"
-        # The build reuses the already-unpacked electron dist when present
-        # (resolved dynamically by scripts/run-electron-builder.cjs, #38673), so
-        # purging the build cache + re-running pack can't by itself repopulate a
-        # missing/partial dist. When the dist is actually gone, re-run electron's
-        # own downloader so the retry has a binary to reuse. Gated on the dist
-        # check so an unrelated build failure (tsc/vite) doesn't trigger a
-        # pointless ~200MB refetch.
+        local purged=""
+        # Only run Electron cache repair when dist is actually missing/corrupt.
+        # This avoids retrying unrelated build failures (tsc/vite) under an
+        # Electron-specific narrative.
         local restored=false
         if ! _electron_dist_ok "$INSTALL_DIR"; then
+            purged="$(clear_electron_build_cache "$desktop_dir")"
             if _restore_electron_dist "$INSTALL_DIR"; then restored=true; fi
         fi
-        if [ -n "$purged" ] || [ "$restored" = true ]; then
+        if [ "$restored" = true ]; then
             log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
             if _desktop_pack "$desktop_dir"; then
                 pack_ok=true

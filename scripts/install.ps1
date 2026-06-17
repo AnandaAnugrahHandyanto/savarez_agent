@@ -2335,25 +2335,20 @@ function Install-Desktop {
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
-            # npm runs postinstall scripts LAST, after every package is staged on
-            # disk. The most common failure here is electron's install.js doing
-            # `process.exit(1)` on a blocked/throttled binary download (#47266,
-            # #47917, #48021): the whole tree is present and only electron's dist\
-            # is missing. If the electron package staged, repopulate its dist via
-            # electron's own downloader (canonical, then the public mirror) and
-            # carry on to the build; even if that can't fetch it, `npm run pack`
-            # resolves electronDist dynamically and lets electron-builder fetch
-            # Electron itself, so the build-stage mirror fallback gets a final
-            # shot. Bailing here is what made that fallback unreachable on a
-            # blocked network. Only hard-fail when electron never staged at all.
-            $electronPkg = Join-Path (Get-ElectronDir -InstallDir $InstallDir) 'package.json'
-            if (Test-Path -LiteralPath $electronPkg) {
-                Write-Warn "Desktop dependency install failed on the Electron binary download; self-healing..."
-                if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
-                    if (-not (Restore-ElectronDist -InstallDir $InstallDir)) {
-                        if (-not $env:ELECTRON_MIRROR) {
-                            Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror | Out-Null
-                        }
+            # npm runs postinstall scripts after staging package files. For the
+            # blocked Electron download case, package.json + install.js exist but
+            # dist is missing. Heal that specific shape and continue; otherwise
+            # fail fast so unrelated install failures aren't mislabeled.
+            $electronDir = Get-ElectronDir -InstallDir $InstallDir
+            $electronPkg = Join-Path $electronDir 'package.json'
+            $electronInstaller = Join-Path $electronDir 'install.js'
+            if ((Test-Path -LiteralPath $electronPkg) -and
+                (Test-Path -LiteralPath $electronInstaller) -and
+                (-not (Test-ElectronDist -InstallDir $InstallDir))) {
+                Write-Warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+                if (-not (Restore-ElectronDist -InstallDir $InstallDir)) {
+                    if (-not $env:ELECTRON_MIRROR) {
+                        Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror | Out-Null
                     }
                 }
             } else {
@@ -2412,19 +2407,16 @@ function Install-Desktop {
             # Purge the cached download + any stale unpacked output and retry
             # once; @electron/get re-downloads with its own SHASUM check. Without
             # this a corrupt download hard-fails the whole installer.
-            $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-            # The build reuses the already-unpacked electron dist when present
-            # (resolved dynamically by scripts\run-electron-builder.cjs, #38673),
-            # so purging the build cache + re-running pack can't by itself
-            # repopulate a missing/partial dist. When the dist is actually gone,
-            # re-run electron's own downloader so the retry has a binary to reuse.
-            # Gated on the dist check so an unrelated build failure (tsc/vite)
-            # doesn't trigger a pointless ~200MB refetch.
+            # Only run Electron cache repair when dist is actually missing/corrupt.
+            # This avoids retrying unrelated build failures (tsc/vite) under an
+            # Electron-specific narrative.
+            $purged = @()
             $restored = $false
             if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
                 $restored = Restore-ElectronDist -InstallDir $InstallDir
             }
-            if ($purged.Count -gt 0 -or $restored) {
+            if ($restored) {
                 Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
