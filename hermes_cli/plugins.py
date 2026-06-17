@@ -153,6 +153,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Media-sent hook. Fired by a platform adapter after each media file is
+    # delivered, so plugins can map a sent message to its source file (e.g.
+    # an image-rating feedback loop resolving later reactions). Observer only.
+    # Kwargs: platform: str, chat_id, message_id, media_path: str.
+    "on_media_sent",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

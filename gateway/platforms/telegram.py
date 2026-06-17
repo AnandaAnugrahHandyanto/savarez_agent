@@ -3797,6 +3797,28 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
 
+    def _emit_media_sent(self, chat_id: Any, media: Any, sent: Any) -> None:
+        """Fire the ``on_media_sent`` plugin hook for each delivered album photo.
+
+        ``media`` is the InputMediaPhoto list (``.media`` is the open file handle
+        whose ``.name`` is the local path); ``sent`` is the Message list returned
+        by send_media_group, in the same order. Fully defensive: any failure here
+        must never affect message delivery.
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook as _ih, has_hook as _hh
+            if not _hh("on_media_sent"):
+                return
+            for _m, _msg in zip(media or [], sent or []):
+                _fh = getattr(_m, "media", None)
+                _path = getattr(_fh, "name", None) if not isinstance(_fh, str) else None
+                _mid = getattr(_msg, "message_id", None)
+                if _path and _mid:
+                    _ih("on_media_sent", platform=self.name, chat_id=chat_id,
+                        message_id=_mid, media_path=str(_path))
+        except Exception as e:  # pragma: no cover - observ-only, never fatal
+            logger.debug("[%s] on_media_sent emit failed: %s", self.name, e)
+
     async def send_multiple_images(
         self,
         chat_id: str,
@@ -3901,7 +3923,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         except Exception:
                             pass
 
-                await self._send_with_dm_topic_reply_anchor_retry(
+                _sent = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_media_group,
                     {
                         "chat_id": int(chat_id),
@@ -3915,6 +3937,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "media group",
                     reset_media=_reset_opened_files,
                 )
+                self._emit_media_sent(chat_id, media, _sent)
             except Exception as e:
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s",
@@ -3974,6 +3997,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "photo",
                     reset_media=lambda: image_file.seek(0),
                 )
+            try:
+                from hermes_cli.plugins import invoke_hook as _ih, has_hook as _hh
+                if _hh("on_media_sent"):
+                    _ih("on_media_sent", platform=self.name, chat_id=chat_id,
+                        message_id=msg.message_id, media_path=image_path)
+            except Exception:
+                pass
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             error_str = str(e)
