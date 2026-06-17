@@ -9,7 +9,6 @@ Wires ``hermes dgx <subcommand>``:
   pull      — pull a model into Ollama on the DGX (streaming)
   rm        — remove a model from Ollama on the DGX
   ps        — show models currently loaded in GPU memory
-  run       — run an arbitrary command on the DGX over SSH (streaming)
   push      — rsync local files to the DGX workspace
   doctor    — comprehensive health check: SSH, GPU, endpoints
   watch     — live nvidia-smi refresh until Ctrl+C
@@ -113,9 +112,6 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 
     subs.add_parser("ps", help="Show models currently loaded in GPU memory")
 
-    run_p = subs.add_parser("run", help="Run a command on the DGX over SSH (streaming)")
-    run_p.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to run")
-
     push_p = subs.add_parser("push", help="rsync local files to the DGX workspace")
     push_p.add_argument("local", help="Local path to sync")
     push_p.add_argument("remote", nargs="?", default=None,
@@ -216,12 +212,6 @@ def dgx_command(args: argparse.Namespace) -> int:
         return _cmd_rm(model=args.model, force=getattr(args, "force", False))
     if sub == "ps":
         return _cmd_ps()
-    if sub == "run":
-        cmd = " ".join(args.cmd) if args.cmd else ""
-        if not cmd:
-            print("usage: hermes dgx run <command>")
-            return 2
-        return _cmd_run(cmd)
     if sub == "push":
         return _cmd_push(local=args.local, remote=args.remote)
     if sub == "doctor":
@@ -443,16 +433,6 @@ def _cmd_ps() -> int:
     for line in lines:
         print(f"  {line}")
     return 0
-
-
-# ---------------------------------------------------------------------------
-# hermes dgx run
-# ---------------------------------------------------------------------------
-
-def _cmd_run(cmd: str) -> int:
-    dgx = load_dgx_config()
-    rc = _ssh_stream(dgx["ssh_user"], dgx["host"], cmd)
-    return rc
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +713,7 @@ def _cmd_models() -> int:
         found_any = True
     else:
         print("HuggingFace cache  (empty)")
-        print("  Download: hermes dgx run \"hf download <org/model-id>\"")
+        print("  Download it on the DGX: hf download <org/model-id>")
     print()
 
     return 0 if found_any else 1
@@ -756,8 +736,8 @@ def _cmd_models_add(model: Optional[str], port: Optional[int] = None,
     # HuggingFace model → serve via vLLM
     vllm_bin = _find_vllm_bin(dgx["ssh_user"], dgx["host"])
     if not vllm_bin:
-        print("vllm not found on DGX — install with:")
-        print("  hermes dgx run \"pip install --break-system-packages vllm\"")
+        print("vllm not found on DGX — install it there with:")
+        print("  pip install --break-system-packages vllm")
         return 1
 
     use_port = port or _next_vllm_port(dgx)
@@ -837,7 +817,7 @@ def _cmd_models_rm(model: Optional[str], force: bool = False,
         entry = next((s for s in servers if s.get("model") == model), None)
         if not entry:
             print(f"No tracked vLLM server for {model}.")
-            print(f"Try: hermes dgx run \"pkill -f 'vllm serve {model}'\"")
+            print(f"Stop it manually on the DGX: pkill -f 'vllm serve {model}'")
             return 1
         port = entry["port"]
         if not force:
@@ -1075,7 +1055,7 @@ def _cmd_setup() -> int:
         summary = ", ".join(shown) + (f" +{extra} more" if extra else "")
         print(f"\r  HF cache: {len(hf_models)} model(s) — {summary}            ")
     else:
-        print(f"\r  HF cache: empty — download with: hermes dgx run \"hf download <org/model>\"")
+        print(f"\r  HF cache: empty — download models on the DGX with: hf download <org/model>")
     print()
 
     # --- Choose default endpoint ---

@@ -1,11 +1,14 @@
 """Agent tools for the dgx plugin.
 
-Registers three tools so the agent can manage the DGX mid-conversation
+Registers two tools so the agent can manage the DGX mid-conversation
 without the user needing to run CLI commands manually:
 
   dgx_gpu_status   — current GPU memory + loaded models
-  dgx_run          — run a command on the DGX, return stdout
   dgx_pull_model   — pull an Ollama model onto the DGX
+
+There is intentionally NO ``dgx_run`` (arbitrary remote shell) tool: free-form
+command execution must go through the host terminal tool, which applies the
+dangerous-command approval gate. A bespoke SSH-exec tool would bypass it.
 """
 
 from __future__ import annotations
@@ -25,30 +28,6 @@ DGX_GPU_STATUS_SCHEMA = {
         "type": "object",
         "properties": {},
         "required": [],
-    },
-}
-
-DGX_RUN_SCHEMA = {
-    "name": "dgx_run",
-    "description": (
-        "Run a shell command on the DGX Spark over SSH and return its output. "
-        "Use for CUDA compilation, Python training scripts, model evaluation, "
-        "disk usage checks, or any task that needs the DGX GPU or ARM Grace CPU."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "Shell command to execute on the DGX (run via bash -c).",
-            },
-            "timeout": {
-                "type": "integer",
-                "description": "Timeout in seconds (default 120, max 600).",
-                "default": 120,
-            },
-        },
-        "required": ["command"],
     },
 }
 
@@ -108,20 +87,6 @@ def handle_dgx_gpu_status(**_kwargs) -> str:
         parts.append("Loaded models: none")
 
     return "\n\n".join(parts)
-
-
-def handle_dgx_run(command: str, timeout: int = 120, **_kwargs) -> str:
-    from plugins.dgx._dgx_config import load_dgx_config
-    from plugins.dgx.cli import _ssh_run
-
-    dgx = load_dgx_config()
-    node = dgx.get("_active_node", dgx)
-    host, user = node["host"], node["ssh_user"]
-    clamped = min(max(int(timeout), 1), 600)
-    ok, out = _ssh_run(user, host, command, timeout=clamped)
-    if ok:
-        return out or "(command completed with no output)"
-    return f"Command failed on {host}:\n{out}"
 
 
 def handle_dgx_pull_model(model: str, **_kwargs) -> str:

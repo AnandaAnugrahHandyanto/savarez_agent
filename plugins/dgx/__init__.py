@@ -1,9 +1,14 @@
 """dgx plugin — manage NVIDIA DGX Spark inference endpoints from Hermes Agent.
 
 CLI subcommands: setup, status, models, use, endpoint, pull, rm, ps,
-                 run, push, doctor, watch, formation, nim, node
+                 push, doctor, watch, formation, nim, node
 
-Agent tools: dgx_gpu_status, dgx_run, dgx_pull_model
+Agent tools: dgx_gpu_status, dgx_pull_model
+
+Note: there is deliberately no agent-callable "run arbitrary command on the
+DGX" tool. Free-form remote shell belongs to the host terminal tool (which
+routes through the dangerous-command approval gate); duplicating it here
+would let a model run unguarded commands on the GPU host over SSH.
 """
 
 from __future__ import annotations
@@ -12,15 +17,12 @@ from plugins.dgx.cli import dgx_command, register_cli as _register_dgx_cli
 from plugins.dgx.tools import (
     DGX_GPU_STATUS_SCHEMA,
     DGX_PULL_MODEL_SCHEMA,
-    DGX_RUN_SCHEMA,
     handle_dgx_gpu_status,
     handle_dgx_pull_model,
-    handle_dgx_run,
 )
 
 _TOOLS = (
     ("dgx_gpu_status",  DGX_GPU_STATUS_SCHEMA,  handle_dgx_gpu_status,  "🖥️"),
-    ("dgx_run",         DGX_RUN_SCHEMA,         handle_dgx_run,         "⚡"),
     ("dgx_pull_model",  DGX_PULL_MODEL_SCHEMA,  handle_dgx_pull_model,  "📥"),
 )
 

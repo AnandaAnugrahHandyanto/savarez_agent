@@ -285,16 +285,14 @@ class TestArgparseWiring:
 
     # --- Tier 2: implemented ---
 
-    def test_run_subcommand_parses_cmd_arg(self):
+    def test_run_subcommand_removed(self):
+        # Regression: the `dgx run` arbitrary-command subcommand was removed.
+        # Free-form remote shell belongs to the host terminal tool (gated by
+        # the dangerous-command approval system), not a bespoke unguarded
+        # SSH-exec path. argparse must now reject `run` as an unknown command.
         p = self._parser()
-        ns = p.parse_args(["run", "nvidia-smi"])
-        assert ns.dgx_command == "run"
-        assert "nvidia-smi" in ns.cmd
-
-    def test_run_subcommand_passes_through_flags(self):
-        p = self._parser()
-        ns = p.parse_args(["run", "nvidia-smi", "--query-gpu=name", "--format=csv"])
-        assert "--query-gpu=name" in ns.cmd
+        with pytest.raises(SystemExit):
+            p.parse_args(["run", "nvidia-smi"])
 
     def test_push_subcommand_parses_local_path(self):
         p = self._parser()
@@ -597,28 +595,6 @@ class TestTier1Ps:
 # Tier 2 feature tests (red)
 # ---------------------------------------------------------------------------
 
-class TestTier2Run:
-    def test_run_executes_command_via_ssh(self, mock_config, monkeypatch):
-        from plugins.dgx.cli import _cmd_run
-        calls = []
-        monkeypatch.setattr("plugins.dgx.cli._ssh_stream", lambda u, h, cmd, **k: calls.append(cmd) or 0)
-        ret = _cmd_run("echo hello")
-        assert any("echo hello" in c for c in calls)
-        assert ret == 0
-
-    def test_run_returns_nonzero_on_failure(self, mock_config, monkeypatch):
-        from plugins.dgx.cli import _cmd_run
-        monkeypatch.setattr("plugins.dgx.cli._ssh_stream", lambda *a, **k: 1)
-        assert _cmd_run("bad-cmd") != 0
-
-    def test_run_passes_full_command_including_flags(self, mock_config, monkeypatch):
-        from plugins.dgx.cli import _cmd_run
-        calls = []
-        monkeypatch.setattr("plugins.dgx.cli._ssh_stream", lambda u, h, cmd, **k: calls.append(cmd) or 0)
-        _cmd_run("nvidia-smi --query-gpu=name --format=csv")
-        assert any("--query-gpu=name" in c for c in calls)
-
-
 class TestTier2Push:
     def test_push_calls_rsync(self, mock_config, monkeypatch, tmp_path):
         from plugins.dgx.cli import _cmd_push
@@ -763,25 +739,20 @@ class TestTier3AgentTools:
     def test_dgx_gpu_status_tool_registered(self):
         assert "dgx_gpu_status" in self._registered_tools()
 
-    def test_dgx_run_tool_registered(self):
-        assert "dgx_run" in self._registered_tools()
+    def test_dgx_run_tool_not_registered(self):
+        # Regression: dgx_run was an unguarded arbitrary-RCE agent tool — a
+        # model could run any shell command on the DGX over SSH, bypassing the
+        # host's dangerous-command approval gate. It must NOT be registered.
+        assert "dgx_run" not in self._registered_tools()
 
     def test_dgx_pull_model_tool_registered(self):
         assert "dgx_pull_model" in self._registered_tools()
 
-    def test_handle_dgx_run_calls_ssh(self, mock_config, monkeypatch):
-        from plugins.dgx.tools import handle_dgx_run
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
-                            lambda u, h, cmd, **k: (True, "hello from dgx"))
-        out = handle_dgx_run(command="echo hello")
-        assert "hello from dgx" in out
-
-    def test_handle_dgx_run_returns_error_on_failure(self, mock_config, monkeypatch):
-        from plugins.dgx.tools import handle_dgx_run
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
-                            lambda *a, **k: (False, "connection refused"))
-        out = handle_dgx_run(command="bad-cmd")
-        assert "failed" in out.lower()
+    def test_handle_dgx_run_removed(self):
+        # The handler is gone too — importing it must fail.
+        import plugins.dgx.tools as dgx_tools
+        assert not hasattr(dgx_tools, "handle_dgx_run")
+        assert not hasattr(dgx_tools, "DGX_RUN_SCHEMA")
 
     def test_handle_dgx_pull_model_success(self, mock_config, monkeypatch):
         from plugins.dgx.tools import handle_dgx_pull_model
@@ -801,17 +772,13 @@ class TestTier3AgentTools:
         from plugins.dgx.tools import handle_dgx_gpu_status
         monkeypatch.setattr("plugins.dgx.cli._ssh_run",
                             lambda u, h, cmd, **k: (True, "0, A100, 20480, 40960, 50")
-                            if "nvidia-smi" in cmd else (True, ""))
+                            if "nvidia-smi" in cmd else (True, "model:latest"))
         out = handle_dgx_gpu_status()
-        assert "GPU" in out
-
-    def test_handle_dgx_run_clamps_timeout(self, mock_config, monkeypatch):
-        calls = []
-        from plugins.dgx.tools import handle_dgx_run
-        monkeypatch.setattr("plugins.dgx.cli._ssh_run",
-                            lambda u, h, cmd, timeout=10, **k: calls.append(timeout) or (True, ""))
-        handle_dgx_run(command="sleep 1", timeout=9999)
-        assert calls[0] <= 600
+        # Assert the actual GPU data line is present, not just the constant
+        # "GPU" label (which the failure branch also emits) — see the test-
+        # quality finding: `assert "GPU" in out` passed even when SSH failed.
+        assert "A100" in out
+        assert "40960" in out
 
 
 class TestTier3Formations:
