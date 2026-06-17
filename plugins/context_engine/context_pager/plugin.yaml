@@ -1,0 +1,39 @@
+name: context_pager
+description: "Semantic Dedup context engine — deduplicates repeated tool outputs and merges adjacent redundant turns to recover context window space."
+version: "1.0.0"
+author: "Hermes Agent Team"
+type: context_engine
+
+config_schema:
+  type: object
+  properties:
+    protect_last_n:
+      type: integer
+      default: 6
+      description: "Number of most recent turns to always preserve verbatim."
+    protect_first_n:
+      type: integer
+      default: 3
+      description: "Number of initial non-system turns to always preserve verbatim."
+    threshold_percent:
+      type: number
+      default: 0.75
+      description: "Fraction of context length at which compression triggers."
+    sqlite_path:
+      type: string
+      default: "~/.hermes/data/context_pager.db"
+      description: "Path to the local SQLite database for hash storage."
+    openviking:
+      type: object
+      default:
+        enabled: true
+      description: "OpenViking archival settings."
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: "When true, archive full turn data to OpenViking."
+    fallback_compressor:
+      type: boolean
+      default: false
+      description: "When true, fire the built-in ContextCompressor (LLM summarization) as Stage 2 after dedup if still over the token threshold."

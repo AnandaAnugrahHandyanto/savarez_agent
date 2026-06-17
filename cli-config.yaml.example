@@ -354,6 +354,44 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 
 # =============================================================================
+# Context Engine Selection
+# =============================================================================
+# Hermes supports pluggable context engines that control how conversations
+# are compressed when approaching the model's token limit.
+#
+# Available engines:
+#   - "compressor" (default): LLM-based summarization of middle turns
+#   - "context_pager":       Lossless hash-dedup + optional LLM fallback
+#
+# New engines are auto-discovered from plugins/context_engine/<name>/.
+#
+context:
+  # Select the active context engine (default: "compressor")
+  engine: compressor
+
+  # Context Pager-specific settings (only applies when engine: context_pager).
+  # Context Pager replaces duplicate tool output with stub references,
+  # saving tokens at zero LLM cost. The Stage 2 fallback (LLM summarization)
+  # is optional and only fires when dedup alone doesn't keep context under
+  # the threshold.
+  context_pager:
+    # Number of initial messages to always protect from dedup (default: 3)
+    protect_first_n: 3
+
+    # Number of trailing messages to always protect from dedup (default: 6)
+    protect_last_n: 6
+
+    # Trigger compression when context reaches this fraction of the model's
+    # context window (default: 0.75 = 75%). Same semantics as compression.threshold.
+    threshold_percent: 0.75
+
+    # When true, Context Pager falls back to the built-in LLM summarizer
+    # (ContextCompressor) if dedup alone doesn't keep context under the
+    # threshold. WARNING: this fires a paid LLM call per compression.
+    # Default: false (dedup only, no LLM cost).
+    fallback_compressor: false
+
+# =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================
 # When conversation approaches model's context limit, middle turns are
