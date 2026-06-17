@@ -49,11 +49,28 @@ RUN apt-get update && \
 # checksum lookup happens during build, so a compromised release artifact
 # fails the build loudly instead of silently producing a tampered image.
 ARG TARGETARCH
+ARG KUBECTL_VERSION=v1.36.2
 ARG S6_OVERLAY_VERSION=3.2.3.0
 ARG S6_OVERLAY_NOARCH_SHA256=b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf
 ARG S6_OVERLAY_X86_64_SHA256=a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563
 ARG S6_OVERLAY_AARCH64_SHA256=0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581
 ARG S6_OVERLAY_SYMLINKS_SHA256=a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e
+
+# Kubernetes CLI for cluster inspection/ops from Hermes terminal sessions.
+# Download directly from dl.k8s.io so we are not tied to Debian packaging lag;
+# checksum verification keeps the pinned binary supply-chain checked.
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64|arm64) kubectl_arch="${TARGETARCH:-amd64}" ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH} for kubectl" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLO --retry 3 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${kubectl_arch}/kubectl"; \
+    curl -fsSLO --retry 3 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${kubectl_arch}/kubectl.sha256"; \
+    printf '%s  kubectl\n' "$(cat kubectl.sha256)" | sha256sum -c -; \
+    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl; \
+    rm kubectl kubectl.sha256; \
+    kubectl version --client=true --output=yaml
+
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz /tmp/
 RUN set -eu; \
