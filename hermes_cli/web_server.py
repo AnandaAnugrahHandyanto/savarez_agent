@@ -1652,6 +1652,24 @@ async def get_status():
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
 
+    # Cross-container liveness: when the local PID check fails
+    # (gateway lives in a different container with host-network
+    # mode and shares only the HERMES_HOME volume), fall back to
+    # the runtime status file before treating the gateway as down.
+    # The runtime file is written by the gateway on every state
+    # transition; terminal states ("stopped", "startup_failed",
+    # "draining") are written on shutdown, so a "running" or
+    # "starting" value here means the gateway process in the
+    # other container is alive. This is the same trust the
+    # GATEWAY_HEALTH_URL health-probe fallback uses, but for the
+    # case where operators share a HERMES_HOME volume rather
+    # than an HTTP health URL.
+    if not gateway_running and runtime:
+        runtime_state = runtime.get("gateway_state")
+        if runtime_state in {"running", "starting"} and runtime.get("pid"):
+            gateway_running = True
+            gateway_pid = runtime.get("pid")
+
     if runtime:
         gateway_state = runtime.get("gateway_state")
         gateway_platforms = runtime.get("platforms") or {}
