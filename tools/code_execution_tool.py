@@ -68,11 +68,44 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "terminal",
 ])
 
-# Resource limit defaults (overridable via config.yaml → code_execution.*)
+# Resource limit defaults (overridable via config.yaml → code_execution.*).
+# Non-positive configured values (0 / negative) explicitly disable that cap.
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
+
+
+def _is_unbounded_resource_limit(value) -> bool:
+    """Return True when a configured execute_code resource limit is disabled."""
+    if value is None:
+        return False
+    try:
+        return int(value) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _tool_call_limit_reached(used: int, max_tool_calls, default: int = DEFAULT_MAX_TOOL_CALLS) -> bool:
+    """Return True if the execute_code RPC tool-call cap is exhausted."""
+    limit = default if max_tool_calls is None else max_tool_calls
+    if _is_unbounded_resource_limit(limit):
+        return False
+    try:
+        return used >= int(limit)
+    except (TypeError, ValueError):
+        return used >= default
+
+
+def _timeout_or_none(value, default: int = DEFAULT_TIMEOUT):
+    """Normalize execute_code timeout config; non-positive means no timeout."""
+    timeout = default if value is None else value
+    if _is_unbounded_resource_limit(timeout):
+        return None
+    try:
+        return int(timeout)
+    except (TypeError, ValueError):
+        return default
 
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
@@ -533,8 +566,8 @@ def _rpc_server_loop(
                     conn.sendall((resp + "\n").encode())
                     continue
 
-                # Enforce tool call limit
-                if tool_call_counter[0] >= max_tool_calls:
+                # Enforce tool call limit unless explicitly unbounded.
+                if _tool_call_limit_reached(tool_call_counter[0], max_tool_calls):
                     resp = json.dumps({
                         "error": (
                             f"Tool call limit reached ({max_tool_calls}). "
@@ -810,8 +843,8 @@ def _rpc_poll_loop(
                             f"Available: {available}"
                         )
                     })
-                # Enforce tool call limit
-                elif tool_call_counter[0] >= max_tool_calls:
+                # Enforce tool call limit unless explicitly unbounded.
+                elif _tool_call_limit_reached(tool_call_counter[0], max_tool_calls):
                     tool_result = json.dumps({
                         "error": (
                             f"Tool call limit reached ({max_tool_calls}). "
@@ -887,7 +920,7 @@ def _execute_remote(
     """
 
     _cfg = _load_config()
-    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
+    timeout = _timeout_or_none(_cfg.get("timeout"), DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     session_tools = set(enabled_tools) if enabled_tools else set()
@@ -1129,7 +1162,7 @@ def execute_code(
 
     # Resolve config
     _cfg = _load_config()
-    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
+    timeout = _timeout_or_none(_cfg.get("timeout"), DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     # Determine which tools the sandbox can call
@@ -1295,7 +1328,7 @@ def execute_code(
         )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
-        deadline = time.monotonic() + timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         stderr_chunks: list = []
 
         # Background readers to avoid pipe buffer deadlocks.
@@ -1385,7 +1418,7 @@ def execute_code(
                 status = "interrupted"
                 break
             now = time.monotonic()
-            if now > deadline:
+            if deadline is not None and now > deadline:
                 _kill_process_group(proc, escalate=True)
                 status = "timeout"
                 break
@@ -1397,7 +1430,12 @@ def execute_code(
                 except Exception:
                     pass
             try:
-                proc.wait(timeout=min(poll_interval, max(0.0, deadline - now)))
+                wait_timeout = (
+                    poll_interval
+                    if deadline is None
+                    else min(poll_interval, max(0.0, deadline - now))
+                )
+                proc.wait(timeout=wait_timeout)
             except subprocess.TimeoutExpired:
                 pass
             poll_interval = min(0.2, poll_interval * 1.5)

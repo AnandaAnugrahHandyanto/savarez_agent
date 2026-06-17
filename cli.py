@@ -3375,9 +3375,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Max turns priority: CLI arg > config file > env var > default
         if max_turns is not None:  # CLI arg was explicitly set
             self.max_turns = max_turns
-        elif CLI_CONFIG["agent"].get("max_turns"):
+        elif CLI_CONFIG["agent"].get("max_turns") is not None:
             self.max_turns = CLI_CONFIG["agent"]["max_turns"]
-        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
+        elif CLI_CONFIG.get("max_turns") is not None:  # Backwards compat: root-level max_turns
             self.max_turns = CLI_CONFIG["max_turns"]
         elif os.getenv("HERMES_MAX_ITERATIONS"):
             try:
@@ -7837,9 +7837,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return existing
 
         try:
+            from hermes_cli.goals import resolve_goal_max_turns
+
             cfg = load_config() or {}
             goals_cfg = cfg.get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            max_turns = resolve_goal_max_turns(goals_cfg)
         except Exception:
             max_turns = 20
 
@@ -10548,8 +10550,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
                 _api_calls = result.get("api_calls", 0)
-                if _api_calls >= getattr(self.agent, "max_iterations", 90):
-                    _max_iter = getattr(self.agent, "max_iterations", 90)
+                _max_iter = getattr(self.agent, "max_iterations", 90)
+                if _max_iter and _max_iter > 0 and _api_calls >= _max_iter:
                     _cprint(
                         f"\n{_DIM}⚠ Iteration budget reached "
                         f"({_api_calls}/{_max_iter}) — "
@@ -13433,7 +13435,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     if not goal_text:
         return
 
-    max_turns = task.goal_max_turns or _DEF_TURNS
+    max_turns = task.goal_max_turns if task.goal_max_turns is not None else _DEF_TURNS
 
     def _run_turn(prompt: str) -> str:
         result = cli.agent.run_conversation(

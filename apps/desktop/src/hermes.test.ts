@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { getSessionMessages, listAllProfileSessions, listSessions, transcribeAudio } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -56,5 +56,23 @@ describe('Hermes REST session helpers', () => {
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
     })
+  })
+
+  it('uses a longer timeout for desktop voice transcription', async () => {
+    api.mockResolvedValue({ ok: true, provider: 'test', transcript: 'hej' })
+
+    await transcribeAudio('data:audio/webm;base64,aGVsbG8=', 'audio/webm')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: {
+          data_url: 'data:audio/webm;base64,aGVsbG8=',
+          mime_type: 'audio/webm'
+        },
+        method: 'POST',
+        path: '/api/audio/transcribe',
+        timeoutMs: 30 * 60_000
+      })
+    )
   })
 })

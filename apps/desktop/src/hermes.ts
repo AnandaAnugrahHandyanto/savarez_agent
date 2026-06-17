@@ -44,6 +44,11 @@ import type {
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// Local/remote STT can legitimately take far longer than the generic Electron
+// REST proxy default (15s), especially when the local CPU Whisper model is
+// warming up. Keep the generic default short, but give dictation enough room to
+// finish instead of surfacing a broken "Timed out ... 15000ms" notification.
+const AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_MS = 30 * 60_000
 
 export type {
   ActionResponse,
@@ -730,6 +735,7 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
   return window.hermesDesktop.api<AudioTranscriptionResponse>({
     path: '/api/audio/transcribe',
     method: 'POST',
+    timeoutMs: AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_MS,
     body: {
       data_url: dataUrl,
       mime_type: mimeType
