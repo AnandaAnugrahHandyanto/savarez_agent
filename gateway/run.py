@@ -1675,10 +1675,9 @@ def _status_system_uptime_seconds() -> int | None:
 
 
 def _status_model_label(config: dict) -> str:
-    """Extract model label from config. Never exposes api_key or base_url."""
-    provider = config.get("provider", "")
+    """Extract model label from config. Shows only model name, never exposes api_key or base_url."""
     model = config.get("model", "") or config.get("default", "")
-    return f"{provider}/{model}" if provider and model else (model or provider or "unknown")
+    return model or "unknown"
 
 
 def _status_context_limit(config: dict) -> int | None:
