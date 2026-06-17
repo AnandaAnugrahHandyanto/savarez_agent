@@ -193,6 +193,97 @@ class TestCronCreateLifecycleBlock:
 # Defense 1: gateway stop/restart refuse inside gateway
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# _is_running_inside_gateway() unit tests
+# ---------------------------------------------------------------------------
+
+class TestIsRunningInsideGateway:
+    """Verify _is_running_inside_gateway() dual detection and error handling."""
+
+    # Scenario 1: _HERMES_GATEWAY=1 → immediate True, no ancestry check
+    def test_env_var_set_returns_true_immediately(self, monkeypatch):
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        from hermes_cli.gateway import _is_running_inside_gateway
+
+        # Prove get_running_pid is never called by monkeypatching it to blow up
+        import hermes_cli.gateway as gw
+        monkeypatch.setattr(gw, "_is_pid_ancestor_of_current_process",
+                            lambda pid: exec('raise AssertionError("should not be called")'))
+        assert _is_running_inside_gateway() is True
+
+    # Scenario 2: env var unset + ancestor → True
+    def test_env_var_unset_ancestor_match_returns_true(self, monkeypatch):
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        from hermes_cli.gateway import _is_running_inside_gateway
+        import hermes_cli.gateway as gw
+
+        grandparent_pid = os.getppid()  # real parent will work as ancestor on real system
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: grandparent_pid)
+        monkeypatch.setattr(gw, "_is_pid_ancestor_of_current_process",
+                            lambda pid: True)
+        assert _is_running_inside_gateway() is True
+
+    # Scenario 3: env var unset + no ancestor match → False
+    def test_env_var_unset_no_ancestor_returns_false(self, monkeypatch):
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        from hermes_cli.gateway import _is_running_inside_gateway
+        import hermes_cli.gateway as gw
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 99999)
+        monkeypatch.setattr(gw, "_is_pid_ancestor_of_current_process",
+                            lambda pid: False)
+        assert _is_running_inside_gateway() is False
+
+    # Scenario 4: get_running_pid() returns None → False
+    def test_get_running_pid_returns_none(self, monkeypatch):
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        from hermes_cli.gateway import _is_running_inside_gateway
+        import hermes_cli.gateway as gw
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        # _is_pid_ancestor should never be called when gw_pid is None
+        monkeypatch.setattr(gw, "_is_pid_ancestor_of_current_process",
+                            lambda pid: exec('raise AssertionError("should not be called")'))
+        assert _is_running_inside_gateway() is False
+
+    # Scenario 5: ImportError from gateway.status → False (graceful)
+    def test_import_error_returns_false(self, monkeypatch):
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        from hermes_cli.gateway import _is_running_inside_gateway
+
+        # Simulate gateway.status being unavailable by making the import fail
+        import builtins
+        _original_import = builtins.__import__
+
+        def _failing_import(name, *args, **kwargs):
+            if name == "gateway.status" or name.startswith("gateway.status"):
+                raise ImportError("No module named 'gateway.status'")
+            return _original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _failing_import)
+        assert _is_running_inside_gateway() is False
+
+    # Scenario 6: get_running_pid() throws FileNotFoundError → False
+    def test_get_running_pid_file_not_found(self, monkeypatch):
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        from hermes_cli.gateway import _is_running_inside_gateway
+
+        monkeypatch.setattr("gateway.status.get_running_pid",
+                            lambda: exec('raise FileNotFoundError("PID file missing")'))
+        assert _is_running_inside_gateway() is False
+
+    # Scenario 7: _is_pid_ancestor_of_current_process() throws unexpected exception → False (fail-safe)
+    def test_ancestor_check_unexpected_exception(self, monkeypatch):
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        from hermes_cli.gateway import _is_running_inside_gateway
+        import hermes_cli.gateway as gw
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
+        monkeypatch.setattr(gw, "_is_pid_ancestor_of_current_process",
+                            lambda pid: exec('raise RuntimeError("unexpected failure")'))
+        assert _is_running_inside_gateway() is False
+
+
 class TestGatewaySelfTargetingGuard:
     """Verify hermes gateway stop/restart refuse when _HERMES_GATEWAY=1."""
 
