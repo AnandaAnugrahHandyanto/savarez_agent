@@ -1586,6 +1586,13 @@ def _ensure_tui_node() -> None:
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
+    hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    try:
+        from hermes_cli.uninstall import remove_node_symlinks
+        remove_node_symlinks(Path(hermes_home))
+    except Exception:
+        pass
+
     if shutil.which("node") and shutil.which("npm"):
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
@@ -1595,7 +1602,6 @@ def _ensure_tui_node() -> None:
     if not helper.is_file():
         return
 
-    hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
     try:
         # Helper writes logs to stderr; we ask bash to print `command -v node`
         # on stdout once ensure_node succeeds. Subshell PATH edits don't leak
@@ -1623,7 +1629,7 @@ def _ensure_tui_node() -> None:
     if resolved:
         extras.append(Path(resolved).resolve().parent)
 
-    extras.extend([Path(hermes_home) / "node" / "bin", Path.home() / ".local" / "bin"])
+    extras.append(Path(hermes_home) / "node" / "bin")
 
     for extra in extras:
         s = str(extra)
@@ -7625,8 +7631,38 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
-def _update_node_dependencies() -> None:
+def _cleanup_legacy_node_symlinks() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.uninstall import remove_node_symlinks
+
+        hermes_home = get_hermes_home()
+        remove_node_symlinks(hermes_home)
+    except Exception:
+        hermes_home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+    return hermes_home
+
+
+def _resolve_update_npm() -> str | None:
+    hermes_home = _cleanup_legacy_node_symlinks()
+
     npm = shutil.which("npm")
+    if npm:
+        return npm
+
+    # Match the per-platform managed-Node layout: POSIX keeps npm under
+    # node/bin/, the Windows portable zip puts npm.cmd directly in node/.
+    if sys.platform == "win32":
+        private_npm = hermes_home / "node" / "npm.cmd"
+    else:
+        private_npm = hermes_home / "node" / "bin" / "npm"
+    if private_npm.is_file() and os.access(private_npm, os.X_OK):
+        return str(private_npm)
+    return None
+
+
+def _update_node_dependencies() -> None:
+    npm = _resolve_update_npm()
     if not npm:
         return
 
@@ -8551,6 +8587,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     print("⚕ Updating Hermes Agent...")
     print()
+
+    # Update is the common self-healing entrypoint for older installs. Clean up
+    # legacy Hermes-owned node/npm/npx PATH shims before any early return (for
+    # example the "Already up to date" path below).
+    _cleanup_legacy_node_symlinks()
 
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and
