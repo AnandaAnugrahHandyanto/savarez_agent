@@ -965,7 +965,24 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             )
         argv = [_bash, str(path)]
     else:
-        argv = [sys.executable, str(path)]
+        if sys.platform == "win32":
+            # On Windows, wrap Python scripts so hermes_bootstrap is
+            # imported first.  The bootstrap monkey-patches subprocess.Popen
+            # to inject CREATE_NO_WINDOW -- without it, any subprocess call
+            # inside the script (e.g. spawning pwsh) flashes a console
+            # window because the cron child process does not load bootstrap
+            # on its own.
+            _script_path = str(path).replace("\\", "\\\\")
+            argv = [
+                sys.executable, "-c",
+                (
+                    "import hermes_bootstrap; "
+                    f"exec(compile(open(r'{_script_path}').read(),"
+                    f" r'{_script_path}', 'exec'))"
+                ),
+            ]
+        else:
+            argv = [sys.executable, str(path)]
 
     try:
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
