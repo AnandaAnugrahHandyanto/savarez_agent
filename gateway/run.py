@@ -14685,6 +14685,48 @@ class GatewayRunner:
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 
+        def _looks_like_internal_interim_note(text: str) -> bool:
+            """Return True for terse agent scratchpad notes that should stay in logs.
+
+            Some providers emit planning fragments through the interim-assistant
+            callback (for example, "Need patch." or "Run tests.").  Chat
+            gateways must not turn those into user-visible bubbles.
+            """
+            candidate = str(text or "").strip()
+            if not candidate:
+                return True
+            if "\n" in candidate or len(candidate) > 120:
+                return False
+            lowered = candidate.lower().rstrip(".!… ")
+            internal_prefixes = (
+                "need ",
+                "run ",
+                "now ",
+                "use ",
+                "maybe ",
+                "patch ",
+                "commit ",
+                "restart ",
+                "test ",
+                "smoke ",
+            )
+            internal_phrases = (
+                "need patch",
+                "run commit",
+                "run tests",
+                "now restart gateway",
+                "need maybe",
+                "need introduce",
+                "need all tests",
+            )
+            if lowered in internal_phrases:
+                return True
+            # Keep this intentionally narrow: only imperative, short,
+            # punctuation-light fragments with no human-facing connective text.
+            if lowered.startswith(internal_prefixes) and len(lowered.split()) <= 6:
+                return True
+            return False
+
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
@@ -14853,6 +14895,9 @@ class GatewayRunner:
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
+                    return
+                if not already_streamed and _looks_like_internal_interim_note(text):
+                    logger.debug("suppressed internal interim assistant note")
                     return
                 if _stream_consumer is not None:
                     if already_streamed:
@@ -15571,9 +15616,18 @@ class GatewayRunner:
                     except Exception:
                         pass
                 try:
+                    _language = str(display_config.get("language") or "").strip().lower()
+                    if _language in {"ko", "kr", "korean", "한국어"}:
+                        if _elapsed_mins <= 0:
+                            _elapsed_text = "1분 미만"
+                        else:
+                            _elapsed_text = f"{_elapsed_mins}분"
+                        _notice = f"⏳ 아직 작업 중이에요. ({_elapsed_text} 경과)"
+                    else:
+                        _notice = f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})"
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        _notice,
                         metadata=_status_thread_metadata,
                     )
                     if (

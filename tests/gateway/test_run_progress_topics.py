@@ -466,6 +466,45 @@ class CommentaryAgent:
         }
 
 
+class InternalNoteCommentaryAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("Need patch.", already_streamed=False)
+            self.interim_assistant_callback("Run commit.", already_streamed=False)
+            self.interim_assistant_callback("Now restart gateway.", already_streamed=False)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SlowActivityAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def get_activity_summary(self):
+        return {
+            "api_call_count": 7,
+            "max_iterations": 60,
+            "current_tool": "terminal",
+            "last_activity_desc": "running tool",
+            "seconds_since_activity": 0.0,
+        }
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.08)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class PreviewedResponseAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -655,6 +694,38 @@ async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch
 
     assert result.get("already_sent") is not True
     assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_internal_interim_notes_even_when_enabled(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        InternalNoteCommentaryAgent,
+        session_id="sess-internal-notes-suppressed",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert result.get("already_sent") is not True
+    assert not any(text in {"Need patch.", "Run commit.", "Now restart gateway."} for text in sent_texts)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_long_running_notice_uses_korean_when_display_language_ko(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.02")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SlowActivityAgent,
+        session_id="sess-korean-notice",
+        config_data={"display": {"language": "ko"}},
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert result["final_response"] == "done"
+    assert any("작업 중" in text for text in sent_texts)
+    assert not any("Still working" in text or "elapsed" in text or "iteration" in text for text in sent_texts)
 
 
 @pytest.mark.asyncio
