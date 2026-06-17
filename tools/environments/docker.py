@@ -557,13 +557,59 @@ def _critical_egress_env_names(env_overrides: dict[str, str]) -> set[str]:
     return critical
 
 
+def _mount_target_path(spec: str, *, is_mount_flag: bool) -> str:
+    """Extract the in-container destination path from a -v/--mount spec.
+
+    ``-v`` / ``--volume`` use ``src:dst[:opts]`` (dst is the 2nd
+    colon-delimited field; account for Windows ``C:\\path`` sources).
+    ``--mount`` uses ``key=value`` comma lists with ``target=``/``dst=``/
+    ``destination=``.
+    Returns the normalized container path, or "" if it can't be parsed.
+    """
+    if is_mount_flag:
+        for part in spec.split(","):
+            k, _, v = part.partition("=")
+            if k.strip() in ("target", "dst", "destination"):
+                return os.path.normpath(v.strip())
+        return ""
+    # -v / --volume: src:dst[:opts].  Split into at most 3 fields, but a
+    # Windows source like C:\Users\... contains a colon, so rsplit from the
+    # right keeping the trailing options is unreliable; instead detect a
+    # named volume / path source and take the field that looks like an
+    # absolute container path (starts with /).
+    fields = spec.split(":")
+    for f in fields[1:]:
+        if f.startswith("/"):
+            return os.path.normpath(f)
+    return ""
+
+
 def _extra_args_egress_collisions(
     extra_args: list[str], critical_names: set[str],
+    protected_mount_targets: frozenset[str] = frozenset(),
 ) -> list[str]:
-    """Return docker_extra_args entries that can override egress controls."""
+    """Return docker_extra_args entries that can override egress controls.
+
+    Catches three override vectors:
+      * env injection (-e/--env/--env-file) of a critical egress var,
+      * network mode changes (--network/--net),
+      * volume/mount (-v/--volume/--mount) onto a protected container path
+        (e.g. the egress CA cert) — a rogue bind mounted last would win
+        over the egress CA (weklund).
+    """
     collisions: list[str] = []
     env_flags = {"-e", "--env", "--env-file"}
     network_flags = {"--network", "--net"}
+    volume_flags = {"-v", "--volume", "--mount"}
+    _protected = {os.path.normpath(p) for p in protected_mount_targets}
+
+    def _check_mount(spec: str, *, is_mount_flag: bool, label: str) -> None:
+        if not _protected:
+            return
+        target = _mount_target_path(spec, is_mount_flag=is_mount_flag)
+        if target and target in _protected:
+            collisions.append(f"{label}->{target}")
+
     i = 0
     while i < len(extra_args):
         arg = extra_args[i]
@@ -577,6 +623,10 @@ def _extra_args_egress_collisions(
                     collisions.append(name)
             i += 2
             continue
+        if arg in volume_flags:
+            _check_mount(nxt, is_mount_flag=(arg == "--mount"), label=arg)
+            i += 2
+            continue
         if any(arg.startswith(f"{flag}=") for flag in env_flags):
             if arg.startswith("--env-file="):
                 collisions.append("--env-file")
@@ -584,6 +634,9 @@ def _extra_args_egress_collisions(
                 name = arg.split("=", 1)[1].split("=", 1)[0]
                 if name in critical_names:
                     collisions.append(name)
+        elif any(arg.startswith(f"{flag}=") for flag in volume_flags):
+            flag, _, spec = arg.partition("=")
+            _check_mount(spec, is_mount_flag=(flag == "--mount"), label=flag)
         elif arg in network_flags or any(arg.startswith(f"{flag}=") for flag in network_flags):
             collisions.append(arg)
         i += 1
@@ -1179,8 +1232,21 @@ class DockerEnvironment(BaseEnvironment):
                 continue
             validated_extra.append(arg)
         if egress_env_overrides:
+            # Protect the in-container egress CA path from a rogue
+            # -v/--mount in docker_extra_args (appended last, so Docker would
+            # resolve the last mount to that path and the rogue cert would win
+            # over the egress CA). Derive the target(s) from the egress volume
+            # args we built above rather than hardcoding.
+            _protected_targets = set()
+            for _vi, _va in enumerate(egress_volume_args):
+                if _va in ("-v", "--volume") and _vi + 1 < len(egress_volume_args):
+                    _t = _mount_target_path(
+                        egress_volume_args[_vi + 1], is_mount_flag=False)
+                    if _t:
+                        _protected_targets.add(_t)
             _extra_collisions = _extra_args_egress_collisions(
                 validated_extra, _critical_egress_names,
+                frozenset(_protected_targets),
             )
             if _extra_collisions:
                 _msg = (
@@ -1354,7 +1420,48 @@ class DockerEnvironment(BaseEnvironment):
         # Explicit docker_forward_env entries are an intentional opt-in and must
         # win over the generic Hermes secret blocklist. Only implicit passthrough
         # keys are filtered.
-        forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        implicit_passthrough = passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST
+
+        # weklund: the init-snapshot env path must not let an *implicit*
+        # passthrough key silently override the egress proxy posture.
+        # `_HERMES_PROVIDER_ENV_BLOCKLIST` only filters provider secrets
+        # (API keys/tokens) — it does NOT include the proxy-control vars
+        # (HTTPS_PROXY, SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, …). So when
+        # egress overrides are active, a skill- or config-registered
+        # passthrough of HTTPS_PROXY would land in `docker exec -e` at
+        # init_session() and shadow the container's base proxy settings in
+        # the login-shell snapshot, defeating egress isolation.
+        #
+        # Explicit docker_forward_env collisions are handled separately
+        # (fail-loud at container creation), so we only police the implicit
+        # set here. Mirror enforce_on_docker: drop the offending vars when
+        # enforcement is on, warn-and-keep when it's off.
+        try:
+            _egress_active = bool(_egress_proxy_args_for_docker()[1])
+        except Exception:  # noqa: BLE001 — best-effort; absence == not active
+            _egress_active = False
+        if _egress_active and implicit_passthrough:
+            _critical = _critical_egress_env_names({})
+            _egress_collisions = sorted(implicit_passthrough & _critical)
+            if _egress_collisions:
+                if _egress_enforce_on_docker():
+                    logger.warning(
+                        "Dropping implicit passthrough vars %s from the "
+                        "init-session env: they would override the enforced "
+                        "egress proxy posture. Add them to docker_forward_env "
+                        "to override explicitly, or disable enforce_on_docker.",
+                        _egress_collisions,
+                    )
+                    implicit_passthrough = implicit_passthrough - _critical
+                else:
+                    logger.warning(
+                        "Implicit passthrough vars %s will override egress "
+                        "proxy settings in the init-session snapshot "
+                        "(enforce_on_docker is disabled).",
+                        _egress_collisions,
+                    )
+
+        forward_keys = explicit_forward_keys | implicit_passthrough
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
             value = os.getenv(key)
