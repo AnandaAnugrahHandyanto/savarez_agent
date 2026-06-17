@@ -833,6 +833,99 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
     ]
 
 
+def test_live_session_payload_replays_failed_inflight_turn(server, monkeypatch):
+    """A failed turn whose terminal frame was lost must be replayable on resume."""
+
+    sid = "runtime-failed"
+    session = {
+        "agent": types.SimpleNamespace(model="test/model"),
+        "created_at": 123.0,
+        "history": [{"role": "user", "content": "before"}],
+        "history_lock": threading.RLock(),
+        "inflight_turn": {
+            "assistant": "partial answer",
+            "error": "provider crashed",
+            "recoverable": True,
+            "started_at": 100.0,
+            "status": "error",
+            "streaming": False,
+            "updated_at": 101.0,
+            "user": "question",
+        },
+        "last_active": 123.0,
+        "running": False,
+        "session_key": "20260409_010101_failed",
+        "transport": server._detached_ws_transport,
+    }
+    server._sessions[sid] = session
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    payload = server._live_session_payload(sid, session)
+
+    assert payload["running"] is False
+    assert payload["inflight"] == {
+        "assistant": "partial answer",
+        "error": "provider crashed",
+        "recoverable": True,
+        "started_at": 100.0,
+        "status": "error",
+        "streaming": False,
+        "updated_at": 101.0,
+        "user": "question",
+    }
+
+
+def test_emit_terminal_turn_error_completes_and_retains_partial(server, monkeypatch):
+    """Turn failures emit a terminal message.complete and keep partial state for replay."""
+
+    events = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
+    monkeypatch.setattr(server, "render_message", lambda text, cols: f"rendered:{text}" if text else "")
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {"calls": 1})
+
+    session = {
+        "agent": object(),
+        "cols": 96,
+        "history_lock": threading.RLock(),
+        "inflight_turn": {
+            "assistant": "partial answer",
+            "started_at": 100.0,
+            "streaming": True,
+            "updated_at": 101.0,
+            "user": "question",
+        },
+    }
+
+    server._emit_terminal_turn_error("runtime-failed", session, RuntimeError("provider crashed"))
+
+    assert events == [
+        (
+            "message.complete",
+            "runtime-failed",
+            {
+                "error": "provider crashed",
+                "partial": True,
+                "recoverable": True,
+                "rendered": "rendered:partial answer",
+                "status": "error",
+                "text": "partial answer",
+                "usage": {"calls": 1},
+            },
+        )
+    ]
+    retained = session["inflight_turn"]
+    assert retained["assistant"] == "partial answer"
+    assert retained["error"] == "provider crashed"
+    assert retained["recoverable"] is True
+    assert retained["status"] == "error"
+    assert retained["streaming"] is False
+
+
 def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(server, monkeypatch):
     """Reconnect + activate must reattach a parked live session before orphan reap."""
 

@@ -3964,6 +3964,40 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _turn_error_message(error: BaseException | str) -> str:
+    if isinstance(error, BaseException):
+        return str(error) or type(error).__name__
+    return str(error) or "turn failed"
+
+
+def _fail_inflight_turn(session: dict, error: BaseException | str) -> dict:
+    """Mark the current in-flight turn terminal-error but keep it replayable.
+
+    Normal completion clears ``inflight_turn`` because the response is now in
+    canonical history. Failures are different: the terminal frame can be lost on
+    a WS disconnect, and the response may not be committed. Keeping a compact
+    terminal snapshot lets ``session.resume`` replay the user's prompt, partial
+    assistant text, and error semantics instead of leaving Desktop stranded on a
+    spinner or hydrating from stale DB state.
+    """
+
+    now = time.time()
+    message = _turn_error_message(error)
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        turn = {"assistant": "", "streaming": False, "user": ""}
+    turn.setdefault("started_at", now)
+    turn["assistant"] = str(turn.get("assistant") or "")
+    turn["error"] = message
+    turn["recoverable"] = True
+    turn["status"] = "error"
+    turn["streaming"] = False
+    turn["updated_at"] = now
+    turn["user"] = str(turn.get("user") or "")
+    session["inflight_turn"] = turn
+    return turn
+
+
 def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -3971,13 +4005,69 @@ def _inflight_snapshot(session: dict) -> dict | None:
     user = str(turn.get("user") or "").strip()
     assistant = str(turn.get("assistant") or "")
     streaming = bool(turn.get("streaming"))
-    if not user and not assistant and not streaming:
+    status = str(turn.get("status") or ("streaming" if streaming else "")).strip()
+    error = str(turn.get("error") or "").strip()
+    recoverable = bool(turn.get("recoverable"))
+    if not user and not assistant and not streaming and not error:
         return None
-    return {
+    snapshot = {
         "assistant": assistant,
         "streaming": streaming,
         "user": user,
     }
+    for key in ("started_at", "updated_at"):
+        raw_value = turn.get(key)
+        if raw_value is None:
+            continue
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        snapshot[key] = value
+    if status:
+        snapshot["status"] = status
+    if error:
+        snapshot["error"] = error
+    if recoverable:
+        snapshot["recoverable"] = True
+    return snapshot
+
+
+def _emit_terminal_turn_error(sid: str, session: dict, error: BaseException | str) -> dict:
+    """Emit the terminal event for a failed turn and retain replay state."""
+
+    message = _turn_error_message(error)
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            _fail_inflight_turn(session, message)
+            snapshot = _inflight_snapshot(session) or {}
+    else:
+        _fail_inflight_turn(session, message)
+        snapshot = _inflight_snapshot(session) or {}
+
+    text = str(snapshot.get("assistant") or "")
+    partial = bool(text)
+    if not text:
+        text = f"Error: {message}"
+
+    agent = session.get("agent")
+    payload = {
+        "error": message,
+        "partial": partial,
+        "recoverable": True,
+        "status": "error",
+        "text": text,
+        "usage": _get_usage(agent) if agent is not None else {},
+    }
+    try:
+        rendered = render_message(text, int(session.get("cols", 80)))
+    except Exception:
+        rendered = ""
+    if rendered:
+        payload["rendered"] = rendered
+    _emit("message.complete", sid, payload)
+    return payload
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -5648,6 +5738,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
@@ -5691,18 +5782,15 @@ def _(rid, params: dict) -> dict:
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
         if err:
-            _emit(
-                "error",
+            _emit_terminal_turn_error(
                 sid,
-                {
-                    "message": err.get("error", {}).get(
-                        "message", "agent initialization failed"
-                    )
-                },
+                session,
+                err.get("error", {}).get("message", "agent initialization failed"),
             )
             with session["history_lock"]:
                 session["running"] = False
-                _clear_inflight_turn(session)
+                session["last_active"] = time.time()
+            _emit("session.info", sid, _session_info(session.get("agent"), session))
             return
         _run_prompt_submit(rid, sid, session, text)
 
@@ -5922,6 +6010,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        terminal_error_emitted = False
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -6255,7 +6344,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
-            _emit("error", sid, {"message": str(e)})
+            try:
+                _emit_terminal_turn_error(sid, session, e)
+                terminal_error_emitted = True
+            except Exception as emit_exc:
+                print(
+                    f"[gateway-turn] terminal error emit failed: "
+                    f"{type(emit_exc).__name__}: {emit_exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _emit("error", sid, {"message": str(e)})
         finally:
             try:
                 if approval_token is not None:
@@ -6268,7 +6367,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
-                _clear_inflight_turn(session)
+                if not terminal_error_emitted:
+                    _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
 
         # Chain a goal-continuation turn if the judge said so. We do

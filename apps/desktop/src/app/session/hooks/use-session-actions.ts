@@ -4,7 +4,7 @@ import type { NavigateFunction } from 'react-router-dom'
 
 import { deleteSession, getSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, preserveLocalAssistantErrors, textPart, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -171,6 +171,166 @@ function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: 
 
     return withAppendedText(preserved, previousImages.map(url => `\n${url}`).join(''))
   })
+}
+
+interface ResumeInflightTurn {
+  assistant?: string
+  error?: boolean | string
+  recoverable?: boolean
+  started_at?: number
+  status?: string
+  streaming?: boolean
+  updated_at?: number
+  user?: string
+}
+
+interface ResumeInflightMerge {
+  awaitingResponse: boolean
+  busy: boolean
+  messages: ChatMessage[]
+  sawAssistantPayload: boolean
+  streamId: string | null
+  turnStartedAt: number | null
+}
+
+function normalizeComparableText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function visibleText(message: ChatMessage): string {
+  return normalizeComparableText(chatMessageText(message))
+}
+
+function inflightErrorMessage(inflight: ResumeInflightTurn): string {
+  if (typeof inflight.error === 'string' && inflight.error.trim()) {
+    return inflight.error.trim()
+  }
+
+  return inflight.status === 'error' ? 'Hermes turn failed before it could finish.' : ''
+}
+
+function inflightEpochMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value * 1000 : null
+}
+
+export function mergeResumeInflightMessages(
+  baseMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  inflight: ResumeInflightTurn | null | undefined,
+  fallbackRunning = false
+): ResumeInflightMerge | null {
+  if (!inflight) {
+    return null
+  }
+
+  const userText = typeof inflight.user === 'string' ? inflight.user.trim() : ''
+  const assistantText = typeof inflight.assistant === 'string' ? inflight.assistant : ''
+  const error = inflightErrorMessage(inflight)
+  const isError = Boolean(error)
+  const streaming = Boolean(inflight.streaming || fallbackRunning) && !isError
+
+  if (!userText && !assistantText && !streaming && !isError) {
+    return null
+  }
+
+  const messages = [...baseMessages]
+  const tailUser = [...messages].reverse().find(message => message.role === 'user' && !message.hidden)
+  const userAlreadyPresent = Boolean(userText && tailUser && visibleText(tailUser) === normalizeComparableText(userText))
+
+  let localUser: ChatMessage | undefined
+  let localUserIndex = -1
+
+  if (userText) {
+    const normalizedUserText = normalizeComparableText(userText)
+
+    for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+      const message = previousMessages[index]
+
+      if (!message || message.hidden || message.role !== 'user') {
+        continue
+      }
+
+      if (visibleText(message) === normalizedUserText) {
+        localUser = message
+        localUserIndex = index
+      }
+
+      break
+    }
+  }
+
+  if (userText && !userAlreadyPresent) {
+    messages.push(
+      localUser ?? {
+        id: `user-inflight-${Date.now()}`,
+        parts: [textPart(userText)],
+        role: 'user'
+      }
+    )
+  }
+
+  const localAssistantSearch = localUserIndex >= 0 ? previousMessages.slice(localUserIndex + 1) : previousMessages
+
+  const localAssistant = [...localAssistantSearch]
+    .reverse()
+    .find(message => message.role === 'assistant' && !message.hidden && (message.pending || (localUser && visibleText(message))))
+
+  const localAssistantText = localAssistant ? chatMessageText(localAssistant) : ''
+  const finalAssistantText = localAssistantText.length > assistantText.length ? localAssistantText : assistantText
+  const needsAssistant = Boolean(finalAssistantText || streaming || isError)
+  let streamId: string | null = null
+
+  if (needsAssistant) {
+    const existingIndex = (() => {
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index]
+
+        if (message.hidden) {
+          continue
+        }
+
+        if (message.role === 'assistant') {
+          return message.pending || !visibleText(message) || visibleText(message) === normalizeComparableText(finalAssistantText)
+            ? index
+            : -1
+        }
+
+        if (message.role === 'user') {
+          break
+        }
+      }
+
+      return -1
+    })()
+
+    const assistantId = localAssistant?.id ?? `assistant-inflight-${Date.now()}`
+
+    const assistantMessage: ChatMessage = {
+      ...(localAssistant ?? {}),
+      id: existingIndex >= 0 ? messages[existingIndex]!.id : assistantId,
+      parts: finalAssistantText ? [assistantTextPart(finalAssistantText)] : [],
+      pending: streaming,
+      role: 'assistant',
+      ...(isError ? { error, pending: false } : {})
+    }
+
+    if (existingIndex >= 0) {
+      messages[existingIndex] = { ...messages[existingIndex]!, ...assistantMessage }
+    } else {
+      messages.push(assistantMessage)
+    }
+
+    streamId = streaming ? assistantMessage.id : null
+  }
+
+  return {
+    awaitingResponse: streaming,
+    busy: streaming,
+    messages,
+    sawAssistantPayload: Boolean(finalAssistantText || isError),
+    streamId,
+    turnStartedAt: streaming ? inflightEpochMs(inflight.started_at) ?? Date.now() : null
+  }
 }
 
 function upsertOptimisticSession(
@@ -698,6 +858,7 @@ export function useSessionActions({
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
+
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
@@ -745,22 +906,35 @@ export function useSessionActions({
 
         const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
 
+        const inflightMerge = mergeResumeInflightMessages(
+          messagesForView,
+          currentMessages,
+          (resumed as { inflight?: ResumeInflightTurn }).inflight,
+          Boolean((resumed as { running?: boolean }).running)
+        )
+
+        const messagesForState = inflightMerge?.messages ?? messagesForView
+
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
-        resumedRunning = Boolean((resumed as { running?: boolean }).running)
+        resumedRunning = inflightMerge?.busy ?? Boolean((resumed as { running?: boolean }).running)
 
         updateSessionState(
           resumed.session_id,
           state => ({
             ...state,
             ...(runtimeInfo ?? {}),
-            messages: messagesForView,
+            messages: messagesForState,
             busy: resumedRunning,
-            awaitingResponse: resumedRunning
+            awaitingResponse: inflightMerge?.awaitingResponse ?? resumedRunning,
+            streamId: inflightMerge?.streamId ?? (resumedRunning ? state.streamId : null),
+            sawAssistantPayload: inflightMerge?.sawAssistantPayload ?? state.sawAssistantPayload,
+            turnStartedAt:
+              inflightMerge?.turnStartedAt ?? (resumedRunning ? state.turnStartedAt ?? Date.now() : null)
           }),
           storedSessionId
         )

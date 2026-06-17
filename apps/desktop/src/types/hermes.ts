@@ -339,12 +339,26 @@ export interface SessionMessagesResponse {
   session_id: string
 }
 
+export interface SessionResumeInflightTurn {
+  assistant?: string
+  error?: boolean | string
+  recoverable?: boolean
+  started_at?: number
+  status?: string
+  streaming?: boolean
+  updated_at?: number
+  user?: string
+}
+
 export interface SessionResumeResponse {
+  inflight?: SessionResumeInflightTurn | null
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
   resumed: string
+  running?: boolean
   session_id: string
+  status?: string
 }
 
 export interface SessionRuntimeInfo {

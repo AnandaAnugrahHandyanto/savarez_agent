@@ -31,6 +31,7 @@ import {
   $composerAttachments,
   clearComposerAttachments,
   type ComposerAttachment,
+  isComposerAttachment,
   setComposerAttachmentUploadState,
   terminalContextBlocksFromDraft,
   updateComposerAttachment
@@ -550,7 +551,7 @@ export function usePromptActions({
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
       const usingComposerAttachments = !options?.attachments
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      const attachments = (options?.attachments ?? $composerAttachments.get()).filter(isComposerAttachment)
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -581,6 +582,50 @@ export function usePromptActions({
       const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
 
       if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
+        return false
+      }
+
+      let sessionId: null | string = activeSessionId || activeSessionIdRef.current
+
+      const existingVisibleMessages = $messages
+        .get()
+        .some(
+          message =>
+            !message.hidden &&
+            (message.role === 'user' || message.role === 'assistant') &&
+            Boolean(chatMessageText(message).trim())
+        )
+
+      if (!sessionId && selectedStoredSessionIdRef.current) {
+        try {
+          await resumeStoredSession(selectedStoredSessionIdRef.current)
+          sessionId = activeSessionIdRef.current
+        } catch (err) {
+          notifyError(err, copy.sessionUnavailable)
+
+          return false
+        }
+      }
+
+      if (!sessionId && existingVisibleMessages) {
+        const message =
+          'This chat has visible messages but is not attached to a backend session. Reopen or resume the session before sending so context is not lost.'
+
+        notify({ kind: 'error', title: copy.sessionUnavailable, message })
+        setMessages(current =>
+          current.some(item => item.role === 'assistant' && item.error === message)
+            ? current
+            : [
+                ...current,
+                {
+                  id: `assistant-error-detached-${Date.now()}`,
+                  role: 'assistant',
+                  parts: [],
+                  error: message
+                }
+              ]
+        )
+
         return false
       }
 
@@ -657,8 +702,6 @@ export function usePromptActions({
       setBusy(true)
       setAwaitingResponse(true)
       clearNotifications()
-
-      let sessionId: null | string = activeSessionId
 
       if (sessionId) {
         seedOptimistic(sessionId)
@@ -779,10 +822,12 @@ export function usePromptActions({
     },
     [
       activeSessionId,
+      activeSessionIdRef,
       busyRef,
       copy,
       createBackendSessionForSend,
       requestGateway,
+      resumeStoredSession,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,
       updateSessionState
@@ -1329,7 +1374,7 @@ export function usePromptActions({
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      const attachments = (options?.attachments ?? $composerAttachments.get()).filter(isComposerAttachment)
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
@@ -1359,6 +1404,7 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
+
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
       setBusy(false)

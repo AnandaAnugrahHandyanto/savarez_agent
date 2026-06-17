@@ -78,6 +78,11 @@ interface QueuedStreamDeltas {
   reasoning: string
 }
 
+interface CompleteAssistantOptions {
+  error?: string
+  status?: string
+}
+
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
@@ -528,7 +533,7 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string) => {
+    (sessionId: string, text: string, options: CompleteAssistantOptions = {}) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -550,7 +555,9 @@ export function useMessageStream({
 
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
-        const completionError = completionErrorText(finalText)
+        const explicitError = options.error?.trim() || (options.status === 'error' ? 'Hermes reported an error' : '')
+        const completionError = explicitError || completionErrorText(finalText)
+        const preserveTextWithError = Boolean(explicitError && finalText)
         const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
@@ -579,7 +586,7 @@ export function useMessageStream({
             ? {
                 ...message,
                 error: completionError,
-                parts: message.parts.filter(part => part.type !== 'text'),
+                parts: preserveTextWithError ? replaceTextPart(message.parts) : message.parts.filter(part => part.type !== 'text'),
                 pending: false
               }
             : {
@@ -591,7 +598,7 @@ export function useMessageStream({
         const newAssistantFromCompletion = (): ChatMessage => ({
           id: `assistant-${Date.now()}`,
           role: 'assistant',
-          parts: completionError ? [] : [assistantTextPart(finalText)],
+          parts: completionError && !preserveTextWithError ? [] : finalText ? [assistantTextPart(finalText)] : [],
           branchGroupId: state.pendingBranchGroup ?? undefined,
           ...(completionError && { error: completionError })
         })
@@ -890,7 +897,17 @@ export function useMessageStream({
         playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText)
+        const completionStatus = typeof payload?.status === 'string' ? payload.status : undefined
+        const completionError = typeof payload?.error === 'string' ? payload.error : undefined
+        completeAssistantMessage(sessionId, finalText, { error: completionError, status: completionStatus })
+
+        if (completionError && isActiveEvent) {
+          notify({
+            kind: 'error',
+            title: 'Hermes error',
+            message: completionError
+          })
+        }
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
