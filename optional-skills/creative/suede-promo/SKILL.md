@@ -70,9 +70,14 @@ All calls settle pay-per-use in USDC on Base. Prices shown per call.
 | `wav_master()` | Loudness + EQ mastering | $0.10 |
 | `lyric_sync()` | Lyrics synchronized to audio | $0.10 |
 | `lyrics()` | Generate lyrics from a prompt | $0.04 |
-| `style_coach()` | Genre/style analysis and coaching | $0.02 |
+| `style_coach()` | Expand style tags into a richer prompt brief | $0.02 |
 | `rights_lookup(assetHash)` | On-chain rights/provenance check | $0.005 |
-| `analyze()` | Audio analysis (BPM, key, energy) | $0.003 |
+| `analyze()` | Audio analysis (BPM, key, energy, danceability) | $0.003 |
+| `prompt_analyze()` | Extract genre, mood, instrumentation from a prompt | $0.003 |
+| `chain_chat(question, assetHash)` | Plain-language Q&A about on-chain rights/royalties | $0.02 |
+| `rig_analyze(audioUrl)` | Infer guitar signal chain from audio (pedal order, drive, FX) | $0.10 |
+| `rig_oracle(goal, genre, budgetUsd)` | Recommend a full guitar rig for a target tone | $0.10 |
+| `rig_roast(pedals, amp, guitar)` | Roast a gear list for laughs | $0.05 |
 
 ### Usage pattern
 
