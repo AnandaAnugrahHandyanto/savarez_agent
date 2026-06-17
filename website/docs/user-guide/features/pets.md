@@ -114,6 +114,25 @@ In the desktop app you can manage the pet two ways:
 Both adopt/toggle/resize the floating mascot in place — size changes apply
 instantly; adopting a new pet lights it up within a moment.
 
+### Pop-out overlay
+
+**Shift-click** the floating pet to pop it out into its own transparent,
+always-on-top desktop window. Out there it stays visible while Hermes is
+minimized (Codex-style), so a glance tells you what the agent is doing:
+
+- **Speech bubble** — the pet shows what it's up to (`working…`, `thinking…`,
+  `your turn`) and pops a gold star when a turn finishes.
+- **Drag** it anywhere on screen, even outside the app's bounds. Its spot and
+  in/out state persist across restarts.
+- **Click** it to open a mini composer and send a prompt to the most recent
+  session without surfacing the app.
+- **Mail icon** — appears only when a turn finished while you were away; click it
+  to raise the app on the most recent thread (and mark it read).
+- **Shift-click** again to pop it back into the window.
+
+The overlay is a pure puppet of the in-app pet — it carries no separate gateway
+connection and never appears in the dock or app switcher.
+
 ## Configuration
 
 All settings live under `display.pet` in `config.yaml`:
