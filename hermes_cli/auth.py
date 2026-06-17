@@ -446,7 +446,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
 }
 
-# Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
+# Auto-extend PROVIDER_REGISTRY with any api-key or external-process provider registered in
 # providers/ that is not already declared above.  New providers only need a
 # plugins/model-providers/<name>/ plugin — no edits to this file required.
 try:
@@ -454,7 +454,9 @@ try:
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
             continue
-        if _pp.auth_type != "api_key" or not _pp.env_vars:
+        if _pp.auth_type not in {"api_key", "external_process"}:
+            continue
+        if _pp.auth_type == "api_key" and not _pp.env_vars:
             continue
         # Skip providers that need custom token resolution or are special-cased
         # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
@@ -468,7 +470,7 @@ try:
         PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
             id=_pp.name,
             name=_pp.display_name or _pp.name,
-            auth_type="api_key",
+            auth_type=_pp.auth_type,
             inference_base_url=_pp.base_url,
             api_key_env_vars=_api_key_vars or _pp.env_vars,
             base_url_env_var=_base_url_var or "",
@@ -6111,23 +6113,67 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def _external_process_profile(provider_id: str):
+    """Return ProviderProfile metadata for an external-process provider."""
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider_id)
+    except Exception:
+        profile = None
+    if profile is not None and getattr(profile, "auth_type", "") == "external_process":
+        return profile
+    return None
+
+
+def _external_process_runtime_settings(provider_id: str, pconfig: ProviderConfig) -> Dict[str, Any]:
+    profile = _external_process_profile(provider_id) or _external_process_profile(pconfig.id)
+    is_copilot = provider_id == "copilot-acp" or pconfig.id == "copilot-acp"
+
+    command_env_vars = tuple(getattr(profile, "external_process_command_env_vars", ()) or ())
+    default_command = str(getattr(profile, "external_process_default_command", "") or "").strip()
+    args_env_var = str(getattr(profile, "external_process_args_env_var", "") or "").strip()
+    default_args = tuple(getattr(profile, "external_process_default_args", ()) or ())
+    api_key = str(getattr(profile, "external_process_api_key", "") or "").strip()
+    missing_hint = str(getattr(profile, "external_process_missing_command_hint", "") or "").strip()
+
+    if is_copilot:
+        command_env_vars = command_env_vars or ("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH")
+        default_command = default_command or "copilot"
+        args_env_var = args_env_var or "HERMES_COPILOT_ACP_ARGS"
+        default_args = default_args or ("--acp", "--stdio")
+        api_key = api_key or "copilot-acp"
+        missing_hint = missing_hint or (
+            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+        )
+
+    command = next((os.getenv(var, "").strip() for var in command_env_vars if os.getenv(var, "").strip()), "")
+    command = command or default_command
+    raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
+    args = shlex.split(raw_args) if raw_args else list(default_args)
+    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    if not base_url:
+        base_url = pconfig.inference_base_url
+
+    return {
+        "api_key": api_key or provider_id,
+        "base_url": base_url,
+        "command": command,
+        "args": args,
+        "missing_hint": missing_hint,
+    }
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
-
+    settings = _external_process_runtime_settings(provider_id, pconfig)
+    command = settings["command"]
+    args = settings["args"]
+    base_url = settings["base_url"]
     resolved_command = shutil.which(command) if command else None
     return {
         "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
@@ -6160,12 +6206,12 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
-        return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
-    # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
+    if pconfig and pconfig.auth_type == "external_process":
+        return get_external_process_provider_status(target)
+    # API-key providers
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
@@ -6310,29 +6356,23 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             code="invalid_provider",
         )
 
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
-
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    settings = _external_process_runtime_settings(provider_id, pconfig)
+    base_url = settings["base_url"]
+    command = settings["command"]
+    args = settings["args"]
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        hint = settings.get("missing_hint") or f"Install the CLI for provider '{provider_id}' or configure its command env var."
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the external-process command '{command}' for provider '{provider_id}'. "
+            f"{hint}",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code="missing_external_process_cli",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": settings["api_key"],
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

@@ -83,6 +83,22 @@ class ProviderProfile:
 
     # ── Client-level quirks (set once at client construction) ─
     default_headers: dict[str, str] = field(default_factory=dict)
+    # Optional OpenAI-compatible client implementation for providers that do
+    # not use the stock OpenAI SDK client. The module/class are imported lazily
+    # by agent runtime construction.
+    client_module: str = ""
+    client_class: str = ""
+    client_receives_agent_context: bool = False
+
+    # External-process provider metadata. Used when auth_type is
+    # "external_process" so out-of-tree provider plugins can declare command
+    # resolution without adding provider-specific branches to core.
+    external_process_api_key: str = ""
+    external_process_command_env_vars: tuple = ()
+    external_process_default_command: str = ""
+    external_process_args_env_var: str = ""
+    external_process_default_args: tuple = ()
+    external_process_missing_command_hint: str = ""
 
     # ── Request-level quirks ─────────────────────────────────
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send

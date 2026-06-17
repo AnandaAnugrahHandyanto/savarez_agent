@@ -1362,6 +1362,37 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs = dict(client_kwargs)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(getattr(agent, "provider", "") or "")
+    except Exception:
+        profile = None
+    client_module = str(getattr(profile, "client_module", "") or "").strip()
+    client_class = str(getattr(profile, "client_class", "") or "").strip()
+    if client_module and client_class:
+        import importlib
+
+        module = importlib.import_module(client_module)
+        cls = getattr(module, client_class)
+        profile_kwargs = dict(client_kwargs)
+        if getattr(profile, "client_receives_agent_context", False):
+            profile_kwargs.setdefault("agent", agent)
+            hsid = getattr(agent, "session_id", None) or getattr(agent, "_session_id", None)
+            if hsid:
+                profile_kwargs.setdefault("hermes_session_id", str(hsid))
+            platform = getattr(agent, "platform", None)
+            if platform:
+                profile_kwargs.setdefault("platform", platform)
+        client = cls(**profile_kwargs)
+        _ra().logger.info(
+            "%s client created (%s, shared=%s) %s",
+            getattr(profile, "name", getattr(agent, "provider", "provider")),
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
         from agent.copilot_acp_client import CopilotACPClient
 

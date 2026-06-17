@@ -4016,6 +4016,44 @@ def resolve_provider_client(
             or _read_main_model(),
             provider,
         )
+        try:
+            from providers import get_provider_profile as _gpf_external_process
+
+            _profile = _gpf_external_process(provider)
+        except Exception:
+            _profile = None
+        _client_module = str(getattr(_profile, "client_module", "") or "").strip()
+        _client_class = str(getattr(_profile, "client_class", "") or "").strip()
+        if _client_module and _client_class:
+            api_key = str(creds.get("api_key", "")).strip()
+            base_url = str(creds.get("base_url", "")).strip()
+            command = str(creds.get("command", "")).strip() or None
+            args = list(creds.get("args") or [])
+            if not final_model:
+                logger.warning(
+                    "resolve_provider_client: %s requested but no model was provided or configured",
+                    provider,
+                )
+                return None, None
+            if not api_key or not base_url:
+                logger.warning(
+                    "resolve_provider_client: %s requested but external process credentials are incomplete",
+                    provider,
+                )
+                return None, None
+            import importlib
+
+            _module = importlib.import_module(_client_module)
+            _cls = getattr(_module, _client_class)
+            client = _cls(
+                api_key=api_key,
+                base_url=base_url,
+                command=command,
+                args=args,
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         if provider == "copilot-acp":
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()
