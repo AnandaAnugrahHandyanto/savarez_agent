@@ -800,8 +800,14 @@ def _cmd_models_add(model: Optional[str], port: Optional[int] = None,
     else:
         print(f"Starting vLLM for {model} on port {use_port} ...")
 
+    # Bind to the address hermes uses to reach the DGX, not 0.0.0.0. vLLM ships
+    # no authentication, so binding every interface exposes an unauthenticated
+    # inference API across the whole LAN/VPN. Operators who really want all
+    # interfaces can set `dgx.vllm_bind: "0.0.0.0"` in config.yaml; "127.0.0.1"
+    # restricts it to the DGX itself (reach it over an SSH tunnel).
+    bind_host = dgx.get("vllm_bind") or dgx["host"]
     cmd = (
-        f"nohup {vllm_bin} serve {model} --host 0.0.0.0 --port {use_port} "
+        f"nohup {vllm_bin} serve {model} --host {bind_host} --port {use_port} "
         f"--trust-remote-code --gpu-memory-utilization {gpu_mem:.2f} "
         f"> {log_file} 2>&1 & echo $!"
     )

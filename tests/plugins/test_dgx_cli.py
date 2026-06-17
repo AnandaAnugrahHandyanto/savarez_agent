@@ -1298,6 +1298,31 @@ class TestCmdModelsAdd:
         assert any(s["model"] == "nvidia/Nemotron-Elastic-12B" and s["port"] == 8900
                    and s.get("pid") == 999 for s in servers)
 
+    def test_vllm_binds_to_configured_host_not_all_interfaces(self, mock_config, monkeypatch):
+        # Security: default bind is the DGX address hermes uses, not 0.0.0.0
+        # (vLLM is unauthenticated; 0.0.0.0 exposes it on every interface).
+        from plugins.dgx.cli import _cmd_models_add
+        ssh_calls = []
+        monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin", lambda *a: "/vllm")
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", self._ssh_launch_ok(ssh_calls))
+        monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
+        _cmd_models_add("nvidia/foo", port=8900)
+        launch = next(c for c in ssh_calls if "vllm serve" in c)
+        assert "--host 10.0.0.1" in launch       # the DGX address (dgx_defaults)
+        assert "--host 0.0.0.0" not in launch
+
+    def test_vllm_bind_override_from_config(self, monkeypatch, dgx_defaults):
+        from plugins.dgx.cli import _cmd_models_add
+        dgx = dict(dgx_defaults); dgx["vllm_bind"] = "0.0.0.0"; dgx["vllm_servers"] = []
+        monkeypatch.setattr("plugins.dgx.cli.load_dgx_config", lambda: dict(dgx))
+        monkeypatch.setattr("plugins.dgx.cli._find_vllm_bin", lambda *a: "/vllm")
+        ssh_calls = []
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", self._ssh_launch_ok(ssh_calls))
+        monkeypatch.setattr("plugins.dgx.cli.save_dgx_config", lambda *a: None)
+        _cmd_models_add("nvidia/foo", port=8900)
+        launch = next(c for c in ssh_calls if "vllm serve" in c)
+        assert "--host 0.0.0.0" in launch        # explicit opt-in honored
+
     def test_not_persisted_when_process_dies_immediately(self, monkeypatch, dgx_defaults):
         # Regression: `echo $!` returns a PID before vLLM binds the port, so a
         # fast crash (e.g. port already in use) must NOT be reported as success
