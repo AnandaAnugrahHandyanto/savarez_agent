@@ -11,7 +11,7 @@ import { $awaitingResponse, $busy } from '@/store/session'
  * `agent/pet/state.py` so the Python and TS surfaces never drift.
  */
 
-export type PetState = 'idle' | 'wave' | 'run' | 'failed' | 'review' | 'jump'
+export type PetState = 'idle' | 'wave' | 'run' | 'failed' | 'review' | 'jump' | 'waiting'
 
 export interface PetInfo {
   enabled: boolean
@@ -45,7 +45,7 @@ export interface PetActivity {
  * Resolve the animation state from coarse activity signals.
  *
  * Priority (highest first) mirrors `agent.pet.state.derive_pet_state`:
- * error → celebrate → justCompleted → toolRunning → reasoning → busy → idle.
+ * error → celebrate → justCompleted → toolRunning → reasoning → busy → awaitingInput → idle.
  */
 export function derivePetState(activity: PetActivity): PetState {
   if (activity.error) {
@@ -70,6 +70,10 @@ export function derivePetState(activity: PetActivity): PetState {
 
   if (activity.busy) {
     return 'run'
+  }
+
+  if (activity.awaitingInput) {
+    return 'waiting'
   }
 
   return 'idle'

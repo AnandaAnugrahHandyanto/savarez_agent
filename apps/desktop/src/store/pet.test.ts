@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { $petActivity, $petState, derivePetState, flashPetActivity, setPetActivity } from './pet'
 
 describe('derivePetState', () => {
-  it('rests at idle by default and while awaiting input', () => {
+  it('rests at idle by default and uses waiting when awaiting input', () => {
     expect(derivePetState({})).toBe('idle')
-    expect(derivePetState({ awaitingInput: true })).toBe('idle')
+    expect(derivePetState({ awaitingInput: true })).toBe('waiting')
   })
 
   it('runs when busy or a tool is executing', () => {

@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
-import { AlertCircle, Clock, type IconComponent, StarFilled } from '@/lib/icons'
+import { AlertCircle, Clock, type IconComponent } from '@/lib/icons'
 import { $petActivity, $petState, type PetState } from '@/store/pet'
 
 /**
@@ -16,27 +16,23 @@ import { $petActivity, $petState, type PetState } from '@/store/pet'
  */
 
 interface Bubble {
-  /** Optional — a glyph-only bubble (e.g. the "done" check) collapses to a badge. */
+  /** Optional — a glyph-only bubble collapses to a badge. */
   text?: string
   glyph?: IconComponent
   /** Tone → glyph color. Text stays neutral for legibility. */
-  tone?: 'done' | 'error' | 'wait'
+  tone?: 'error' | 'wait'
 }
 
 // A couple of phrasings per working state, rotated for a touch of life.
 const WORKING_LINES = ['working…', 'on it…', 'crunching…']
 const REVIEW_LINES = ['thinking…', 'reading…', 'reviewing…']
 
-// How long the "done" star stays after a finish. Longer than the celebrate jump
-// (~2.2s) so the badge lingers a beat past the animation settling.
-const STAR_HOLD_MS = 3200
-
 function bubbleFor(state: PetState, awaitingInput: boolean, tick: number): Bubble | null {
   switch (state) {
-    // Done beats are a gold star that pops in — the bubble collapses to a badge.
+    // Finish beats are carried by the sprite/mail icon now; no extra done badge.
     case 'jump':
     case 'wave':
-      return { glyph: StarFilled, tone: 'done' }
+      return null
 
     case 'failed':
       return { text: 'hit a snag', glyph: AlertCircle, tone: 'error' }
@@ -47,6 +43,9 @@ function bubbleFor(state: PetState, awaitingInput: boolean, tick: number): Bubbl
     case 'review':
       return { text: REVIEW_LINES[tick % REVIEW_LINES.length] }
 
+    case 'waiting':
+      return { text: 'your turn', glyph: Clock, tone: 'wait' }
+
     default:
       // Idle: only speak up if the agent is blocked waiting on the user.
       return awaitingInput ? { text: 'your turn', glyph: Clock, tone: 'wait' } : null
@@ -54,7 +53,6 @@ function bubbleFor(state: PetState, awaitingInput: boolean, tick: number): Bubbl
 }
 
 const TONE_COLOR: Record<NonNullable<Bubble['tone']>, string> = {
-  done: 'var(--ui-yellow)',
   error: 'var(--ui-red)',
   wait: 'var(--ui-yellow)'
 }
@@ -84,43 +82,7 @@ export function PetBubble() {
     () => bubbleFor(state, Boolean(activity.awaitingInput), tick),
     [state, activity.awaitingInput, tick]
   )
-
-  // The "done" star outlives the jump animation: the sprite settles back to idle
-  // after a couple of bounces, but the badge hangs a beat longer so a glance
-  // still catches "it finished". A fresh activity bubble (working/review/error/
-  // waiting) supersedes the lingering star immediately.
-  const done = state === 'jump' || state === 'wave'
-  const [lingerStar, setLingerStar] = useState(false)
-  const lingerTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => {
-    if (!done) {
-      return
-    }
-
-    setLingerStar(true)
-    clearTimeout(lingerTimerRef.current)
-    lingerTimerRef.current = setTimeout(() => setLingerStar(false), STAR_HOLD_MS)
-  }, [done])
-  useEffect(() => () => clearTimeout(lingerTimerRef.current), [])
-
-  const bubble: Bubble | null = stateBubble ?? (lingerStar ? { glyph: StarFilled, tone: 'done' } : null)
-
-  // Pop the star in with a little overshoot + spin each time a done beat lands.
-  const glyphRef = useRef<HTMLSpanElement | null>(null)
-  useEffect(() => {
-    if (!done) {
-      return
-    }
-
-    glyphRef.current?.animate(
-      [
-        { opacity: 0, transform: 'scale(0.3) rotate(-35deg)' },
-        { offset: 0.6, opacity: 1, transform: 'scale(1.25) rotate(10deg)' },
-        { transform: 'scale(1) rotate(0deg)' }
-      ],
-      { duration: 380, easing: 'cubic-bezier(0.2, 0.9, 0.2, 1)' }
-    )
-  }, [done])
+  const bubble: Bubble | null = stateBubble
 
   if (!bubble) {
     return null
@@ -152,7 +114,7 @@ export function PetBubble() {
       }}
     >
       {Glyph && (
-        <span ref={glyphRef} style={{ display: 'inline-flex' }}>
+        <span style={{ display: 'inline-flex' }}>
           <Glyph style={{ color: bubble.tone ? TONE_COLOR[bubble.tone] : 'currentColor', height: 13, width: 13 }} />
         </span>
       )}

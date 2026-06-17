@@ -21,8 +21,8 @@ from agent.pet.constants import FRAME_H, FRAME_W, PetState
 
 def test_derive_idle_default():
     assert state.derive_pet_state() is PetState.IDLE
-    # awaiting input rests, doesn't run
-    assert state.derive_pet_state(awaiting_input=True) is PetState.IDLE
+    # awaiting input uses the dedicated waiting row when available.
+    assert state.derive_pet_state(awaiting_input=True) is PetState.WAITING
 
 
 def test_derive_priority_order():
@@ -60,12 +60,12 @@ def test_todos_all_done():
 
 
 def test_state_row_index_maps_to_supported_atlas_taxonomies():
-    # Current Codex/petdex sheets are 8 columns x 9 rows: jump/celebrate is row
-    # 4, failed/sad is row 5, and the driven front-facing run loop is row 7.
+    # Current Petdex sheets are 8 columns x 9 rows.
     assert constants.state_row_index(PetState.IDLE, 9) == 0
     assert constants.state_row_index(PetState.WAVE, 9) == 3
     assert constants.state_row_index(PetState.JUMP, 9) == 4
     assert constants.state_row_index(PetState.FAILED, 9) == 5
+    assert constants.state_row_index(PetState.WAITING, 9) == 6
     assert constants.state_row_index(PetState.RUN, 9) == 7
     assert constants.state_row_index(PetState.REVIEW, 9) == 8
 
@@ -77,6 +77,12 @@ def test_state_row_index_maps_to_supported_atlas_taxonomies():
     assert constants.state_row_index(PetState.FAILED, 8) == 3
     assert constants.state_row_index(PetState.REVIEW, 8) == 4
     assert constants.state_row_index(PetState.JUMP, 8) == 5
+    assert constants.state_row_index(PetState.WAITING, 8) == 0
+
+    # Alias rows resolve as expected.
+    assert constants.state_row_index("wave", 9) == constants.state_row_index("waving", 9) == 3
+    assert constants.state_row_index("jump", 9) == constants.state_row_index("jumping", 9) == 4
+    assert constants.state_row_index("run", 9) == constants.state_row_index("running", 9) == 7
 
     # unknown row names clamp to idle (row 0), never raise
     assert constants.state_row_index("nonsense") == 0
@@ -209,6 +215,7 @@ def test_trims_trailing_blank_frames(tmp_path):
         "failed": 6,
         "review": 5,
         "jump": 5,
+        "waiting": 0,
     }
 
 

@@ -34,7 +34,8 @@ the agent's behavior** — the sprite is a display concern only. The feature is
   | A tool is executing | `run` |
   | The model is thinking/reading | `review` |
   | Turn in flight (unspecified) | `run` |
-  | Waiting on you / nothing happening | `idle` |
+  | Waiting on you | `waiting` (falls back to `idle` on legacy sheets) |
+  | Nothing happening | `idle` |
 
 ## Rendering
 
@@ -121,7 +122,7 @@ always-on-top desktop window. Out there it stays visible while Hermes is
 minimized (Codex-style), so a glance tells you what the agent is doing:
 
 - **Speech bubble** — the pet shows what it's up to (`working…`, `thinking…`,
-  `your turn`) and pops a gold star when a turn finishes.
+  `your turn`).
 - **Drag** it anywhere on screen, even outside the app's bounds. Its spot and
   in/out state persist across restarts.
 - **Click** it to open a mini composer and send a prompt to the most recent

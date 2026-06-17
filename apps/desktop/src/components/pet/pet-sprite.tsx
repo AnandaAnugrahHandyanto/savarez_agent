@@ -9,10 +9,28 @@ const DEFAULT_LOOP_MS = 1100
 // Mirrors agent.pet.constants.DEFAULT_SCALE — fallback only; the gateway sends
 // the configured scale.
 const DEFAULT_SCALE = 0.33
-// Mirrors agent.pet.constants.STATE_ROWS: current Codex/petdex atlases are
-// 8 columns x 9 rows. Hermes drives the front-facing `run` row (row 7), not the
-// directional rows, and uses the shorter `wave` / `jump` state names.
-const DEFAULT_STATE_ROWS = ['idle', 'running-right', 'running-left', 'wave', 'jump', 'failed', 'waiting', 'run', 'review']
+// Mirrors agent.pet.constants.CODEX_STATE_ROWS (Petdex current taxonomy).
+const DEFAULT_STATE_ROWS = [
+  'idle',
+  'running-right',
+  'running-left',
+  'waving',
+  'jumping',
+  'failed',
+  'waiting',
+  'running',
+  'review'
+]
+
+const STATE_ALIASES: Record<PetState, string[]> = {
+  idle: ['idle'],
+  wave: ['wave', 'waving'],
+  jump: ['jump', 'jumping'],
+  run: ['run', 'running'],
+  failed: ['failed'],
+  review: ['review'],
+  waiting: ['waiting']
+}
 
 interface PetSpriteProps {
   info: PetInfo
@@ -83,10 +101,14 @@ function PetSpriteImpl({ info, zoom = 1 }: PetSpriteProps) {
     let drawnFrame = -1
     let drawnRow = -1
 
-    const rowIndex = (s: string) => {
-      const idx = rows.indexOf(s)
-
-      return idx >= 0 ? idx : 0
+    const rowIndexForState = (s: PetState): number => {
+      for (const key of STATE_ALIASES[s] ?? [s]) {
+        const idx = rows.indexOf(key)
+        if (idx >= 0) {
+          return idx
+        }
+      }
+      return 0
     }
 
     // Resolve a state to the row it draws and its real frame count. A state
@@ -95,10 +117,10 @@ function PetSpriteImpl({ info, zoom = 1 }: PetSpriteProps) {
     const resolve = (s: PetState): { row: number; count: number } => {
       const real = framesByState?.[s] ?? frames
       if (real > 0) {
-        return { row: rowIndex(s), count: real }
+        return { row: rowIndexForState(s), count: real }
       }
 
-      return { row: rowIndex('idle'), count: Math.max(1, framesByState?.idle ?? frames) }
+      return { row: rowIndexForState('idle'), count: Math.max(1, framesByState?.idle ?? frames) }
     }
 
     const render = (now: number) => {

@@ -908,9 +908,7 @@ export function useMessageStream({
           // jump, never linger on the run/reason pose. One atom update (clears
           // toolRunning/reasoning AND sets celebrate together) so no stray "run"
           // frame leaks to the sprite — including the popped-out overlay, which
-          // mirrors each activity change. The jump runs ~2 loops then settles;
-          // the "done" star outlives it (see PetBubble) so the finish stays
-          // glanceable after the pet stops bouncing.
+          // mirrors each activity change. The jump runs ~2 loops, then settles.
           flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
 
           // Light up the pet's mail icon if the user wasn't looking when the turn

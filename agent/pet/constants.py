@@ -89,6 +89,7 @@ class PetState(str, Enum):
     FAILED = "failed"
     REVIEW = "review"
     JUMP = "jump"
+    WAITING = "waiting"
 
 
 # Legacy Hermes/petdex row order (top -> bottom) used by the older 8-row,
@@ -104,28 +105,43 @@ LEGACY_STATE_ROWS: list[str] = [
     "extra2",
 ]
 
-# Codex/petdex v1 row order (top -> bottom) used by 1536x1872 atlases:
+# Current Petdex row order (top -> bottom) used by 1536x1872 atlases:
 # 8 columns x 9 rows of 192x208 cells.
-#
-# Rows 1/2 are directional runs we do not drive yet; the Hermes `run` state maps
-# to row 7's front-facing running loop. Row 3/4 use Hermes' shorter state names
-# (`wave`, `jump`) so TypeScript and Python renderers can index the returned row
-# list directly with `$petState` / `PetState`.
 CODEX_STATE_ROWS: list[str] = [
     PetState.IDLE.value,
     "running-right",
     "running-left",
-    PetState.WAVE.value,
-    PetState.JUMP.value,
+    "waving",
+    "jumping",
     PetState.FAILED.value,
-    "waiting",
-    PetState.RUN.value,
+    PetState.WAITING.value,
+    "running",
     PetState.REVIEW.value,
 ]
 
 # Default/fallback for callers without a sheet. Prefer the current 9-row Codex
 # format because generated pets and the public Codex pet contract use it.
 STATE_ROWS: list[str] = CODEX_STATE_ROWS
+
+# Canonical Hermes activity names -> accepted row-name aliases in descending
+# preference. This keeps our internal state names stable (`wave`/`jump`/`run`)
+# while matching Petdex's current `waving`/`jumping`/`running` taxonomy.
+STATE_ALIASES: dict[str, tuple[str, ...]] = {
+    PetState.IDLE.value: (PetState.IDLE.value,),
+    PetState.WAVE.value: (PetState.WAVE.value, "waving"),
+    PetState.JUMP.value: (PetState.JUMP.value, "jumping"),
+    PetState.RUN.value: (PetState.RUN.value, "running"),
+    PetState.FAILED.value: (PetState.FAILED.value,),
+    PetState.REVIEW.value: (PetState.REVIEW.value,),
+    PetState.WAITING.value: (PetState.WAITING.value,),
+}
+
+
+def state_aliases_for(state: "PetState | str") -> tuple[str, ...]:
+    """Return accepted row-name aliases for *state* (always non-empty)."""
+    value = state.value if isinstance(state, PetState) else str(state)
+    aliases = STATE_ALIASES.get(value)
+    return aliases if aliases else (value,)
 
 
 def state_rows_for_grid(row_count: int | None) -> list[str]:
@@ -142,9 +158,10 @@ def state_rows_for_grid(row_count: int | None) -> list[str]:
 
 def state_row_index(state: "PetState | str", row_count: int | None = None) -> int:
     """Return the spritesheet row index for *state* (clamped, never raises)."""
-    value = state.value if isinstance(state, PetState) else str(state)
     rows = state_rows_for_grid(row_count)
-    try:
-        return rows.index(value)
-    except ValueError:
-        return 0  # fall back to the idle row
+    for name in state_aliases_for(state):
+        try:
+            return rows.index(name)
+        except ValueError:
+            continue
+    return 0  # fall back to the idle row
