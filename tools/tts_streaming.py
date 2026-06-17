@@ -1071,7 +1071,15 @@ class EdgeStreamingProvider(StreamingTTSProvider):
             pitch=self._pitch,
         )
         buf = bytearray()
-        async for chunk_type, chunk_bytes in communicate.stream():
+        async for chunk in communicate.stream():
+            # edge-tts >= 7 yields ``{"type": "audio", "data": <bytes>}`` dicts
+            # (older versions yielded ``(type, data)`` tuples — both shapes
+            # handled here for forward-compat).
+            if isinstance(chunk, dict):
+                chunk_type = chunk.get("type", "")
+                chunk_bytes = chunk.get("data", b"")
+            else:
+                chunk_type, chunk_bytes = chunk[0], chunk[1]
             if chunk_type != "audio":
                 # ``WordBoundary`` / ``SentenceBoundary`` / etc. are
                 # metadata events edge-tts uses for word/phrase

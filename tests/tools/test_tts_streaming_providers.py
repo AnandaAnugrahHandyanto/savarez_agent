@@ -745,7 +745,7 @@ def test_edge_accumulates_mp3_and_yields(monkeypatch):
             if self._emitted:
                 raise StopAsyncIteration
             self._emitted = True
-            return ("audio", fake_mp3)
+            return {"type": "audio", "data": fake_mp3}
 
     class _FakeCommunicate:
         def __init__(self, text, voice, **kwargs):
