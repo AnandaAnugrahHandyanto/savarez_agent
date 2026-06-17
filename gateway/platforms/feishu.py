@@ -1878,6 +1878,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # --- Auto-convert Markdown tables to interactive cards ---
         table_match = _MARKDOWN_TABLE_RE.search(formatted)
+        logger.info("[Feishu] Table detection: match=%s, content=%r", bool(table_match), formatted[:200])
         if table_match:
             table_text = table_match.group(0)
             before = formatted[: table_match.start()].rstrip("\n")
@@ -2016,11 +2017,54 @@ class FeishuAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent Feishu text/post message.
+
+        When finalizing and the content contains a Markdown table, send the
+        table as a separate interactive card instead of editing the text
+        message (cards cannot be created via edit).
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+
+        # On finalize, check for Markdown tables and send as card
+        if finalize:
+            table_match = _MARKDOWN_TABLE_RE.search(content)
+            if table_match:
+                before = content[: table_match.start()].strip()
+                table_text = table_match.group(1).strip()
+                after = content[table_match.end():].strip()
+
+                card = _markdown_table_to_card("表格", table_text)
+                if card:
+                    card_result = await self.send_interactive_card(
+                        chat_id=chat_id,
+                        card=card,
+                        reply_to=None,
+                    )
+                    if card_result.success:
+                        # Send remaining text as a follow-up if any
+                        remaining = "\n\n".join(filter(None, [before, after]))
+                        if remaining.strip():
+                            result = await self.edit_message(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                content=remaining,
+                                finalize=True,
+                            )
+                        else:
+                            # Update the original message to avoid redundancy
+                            result = await self.edit_message(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                content="📊 表格已转为卡片发送 ↑",
+                                finalize=True,
+                            )
+                        # Return card result as primary
+                        return card_result
+                    # Card failed, fall through to normal edit
+
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
