@@ -1,0 +1,14 @@
+[tools]
+python = "3.11.14"
+node = "24.15.0"
+npm = "11.13.0"
+uv = "0.11.7"
+
+[env]
+UV_PYTHON = "3.11.14"
+
+[tasks.test-tool-budget]
+run = "python -m pytest tests/tools/test_tool_result_storage.py -q -o 'addopts='"
+
+[tasks.test-lsp-lifecycle]
+run = "python -m pytest tests/agent/lsp/test_client_e2e.py tests/agent/lsp/test_service.py -q -o 'addopts='"
