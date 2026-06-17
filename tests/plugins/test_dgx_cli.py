@@ -780,6 +780,17 @@ class TestTier3AgentTools:
         register(FakeCtx())
         return tools
 
+    def _registered_tool_kwargs(self):
+        from plugins.dgx import register
+        captured = {}
+
+        class FakeCtx:
+            def register_cli_command(self, **k): pass
+            def register_tool(self, name, **k): captured[name] = k
+
+        register(FakeCtx())
+        return captured
+
     def test_dgx_gpu_status_tool_registered(self):
         assert "dgx_gpu_status" in self._registered_tools()
 
@@ -797,6 +808,43 @@ class TestTier3AgentTools:
         import plugins.dgx.tools as dgx_tools
         assert not hasattr(dgx_tools, "handle_dgx_run")
         assert not hasattr(dgx_tools, "DGX_RUN_SCHEMA")
+
+    def test_agent_tools_gated_by_check_fn(self):
+        # C3: each agent tool must carry a check_fn so an enabled-but-
+        # unconfigured plugin doesn't expose it (with host=None) to the model.
+        kw = self._registered_tool_kwargs()
+        for name in ("dgx_gpu_status", "dgx_pull_model"):
+            assert kw[name].get("check_fn") is not None, f"{name} has no check_fn"
+
+    def test_check_fn_false_when_unconfigured(self, monkeypatch):
+        from plugins.dgx import _dgx_configured
+        from plugins.dgx._dgx_config import DEFAULTS
+        monkeypatch.setattr("plugins.dgx._dgx_config.load_dgx_config",
+                            lambda: dict(DEFAULTS))  # host=None
+        assert _dgx_configured() is False
+
+    def test_check_fn_true_when_configured(self, monkeypatch):
+        from plugins.dgx import _dgx_configured
+        from plugins.dgx._dgx_config import DEFAULTS
+        d = dict(DEFAULTS); d["host"] = "10.0.0.1"
+        monkeypatch.setattr("plugins.dgx._dgx_config.load_dgx_config", lambda: dict(d))
+        assert _dgx_configured() is True
+
+    def test_handle_dgx_gpu_status_unconfigured_returns_hint(self, monkeypatch):
+        from plugins.dgx.tools import handle_dgx_gpu_status
+        from plugins.dgx._dgx_config import DEFAULTS
+        monkeypatch.setattr("plugins.dgx._dgx_config.load_dgx_config",
+                            lambda: dict(DEFAULTS))  # host=None
+        out = handle_dgx_gpu_status()
+        assert "hermes dgx setup" in out
+
+    def test_handle_dgx_pull_model_unconfigured_returns_hint(self, monkeypatch):
+        from plugins.dgx.tools import handle_dgx_pull_model
+        from plugins.dgx._dgx_config import DEFAULTS
+        monkeypatch.setattr("plugins.dgx._dgx_config.load_dgx_config",
+                            lambda: dict(DEFAULTS))  # host=None
+        out = handle_dgx_pull_model(model="foo:latest")
+        assert "hermes dgx setup" in out
 
     def test_handle_dgx_pull_model_success(self, mock_config, monkeypatch):
         from plugins.dgx.tools import handle_dgx_pull_model

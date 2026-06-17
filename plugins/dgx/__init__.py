@@ -27,6 +27,22 @@ _TOOLS = (
 )
 
 
+def _dgx_configured() -> bool:
+    """True iff a DGX host is configured.
+
+    Used as the tools' ``check_fn`` so an enabled-but-unconfigured plugin does
+    not expose ``dgx_gpu_status`` / ``dgx_pull_model`` to the model — they would
+    otherwise try to SSH to ``host=None`` and return a confusing error.
+    """
+    try:
+        from plugins.dgx._dgx_config import load_dgx_config
+        dgx = load_dgx_config()
+        node = dgx.get("_active_node", dgx)
+        return bool(node.get("host"))
+    except Exception:
+        return False
+
+
 def register(ctx) -> None:
     ctx.register_cli_command(
         name="dgx",
@@ -45,4 +61,5 @@ def register(ctx) -> None:
             schema=schema,
             handler=handler,
             emoji=emoji,
+            check_fn=_dgx_configured,
         )

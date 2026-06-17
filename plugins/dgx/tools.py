@@ -65,6 +65,8 @@ def handle_dgx_gpu_status(**_kwargs) -> str:
     dgx = load_dgx_config()
     node = dgx.get("_active_node", dgx)  # multi-node aware
     host, user = node["host"], node["ssh_user"]
+    if not host:
+        return "DGX is not configured. Run `hermes dgx setup` first."
     parts: list[str] = []
 
     # nvidia-smi
@@ -96,6 +98,8 @@ def handle_dgx_pull_model(model: str, **_kwargs) -> str:
     dgx = load_dgx_config()
     node = dgx.get("_active_node", dgx)
     host, user = node["host"], node["ssh_user"]
+    if not host:
+        return "DGX is not configured. Run `hermes dgx setup` first."
     ok, out = _ssh_run(user, host, f"ollama pull {model}", timeout=600)
     if ok:
         return f"Successfully pulled {model} on {host}."
