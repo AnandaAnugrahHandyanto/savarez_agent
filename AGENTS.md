@@ -1405,6 +1405,9 @@ This repository is listed under GitNexus **group(s): tailscale-hermes** (see `~/
 
 ## CLI
 
+> **Note:** The `.claude/skills/gitnexus/` paths below are populated by `gitnexus setup` and
+> are not present in a clean clone. Run `gitnexus setup` once to install them locally.
+
 | Task | Read this skill file |
 |------|---------------------|
 | Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
