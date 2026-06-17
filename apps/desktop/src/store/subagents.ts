@@ -33,6 +33,15 @@ export interface SubagentProgress {
   summary?: string
   /** Active tool while running — cleared on terminal status. */
   currentTool?: string
+  workflowId?: string
+  workflowNodeId?: string
+  workflowObjective?: string
+  workflowPhaseId?: string
+  workflowPhaseTitle?: string
+  workflowTaskTitle?: string
+  taskPrompt?: string
+  taskContext?: string
+  delegationId?: string
 }
 
 export interface SubagentNode extends SubagentProgress {
@@ -177,7 +186,16 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     filesWritten: filesWritten.length ? filesWritten : (prev?.filesWritten ?? []),
     stream,
     summary: str(payload.summary) || prev?.summary,
-    currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool
+    currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool,
+    workflowId: str(payload.workflow_id) || prev?.workflowId,
+    workflowNodeId: str(payload.workflow_node_id) || prev?.workflowNodeId,
+    workflowObjective: str(payload.workflow_objective) || prev?.workflowObjective,
+    workflowPhaseId: str(payload.workflow_phase_id) || prev?.workflowPhaseId,
+    workflowPhaseTitle: str(payload.workflow_phase_title) || prev?.workflowPhaseTitle,
+    workflowTaskTitle: str(payload.workflow_task_title) || prev?.workflowTaskTitle,
+    taskPrompt: str(payload.task_prompt) || prev?.taskPrompt,
+    taskContext: str(payload.task_context) || prev?.taskContext,
+    delegationId: str(payload.delegation_id) || prev?.delegationId
   }
 }
 

@@ -34,6 +34,27 @@ describe('subagent store', () => {
     expect(activeSubagentCount(listFor('s1'))).toBe(2)
   })
 
+  it('preserves workflow phase metadata across partial events', () => {
+    upsertSubagent('s1', {
+      goal: 'verify backlog',
+      status: 'queued',
+      subagent_id: 'a1',
+      task_index: 0,
+      workflow_id: 'wf_demo',
+      workflow_node_id: 'verify',
+      workflow_phase_id: 'verify',
+      workflow_phase_title: 'Verify',
+      workflow_task_title: 'Verifier backlog'
+    })
+    upsertSubagent('s1', { status: 'running', subagent_id: 'a1', task_index: 0, tool_name: 'terminal' }, false)
+
+    const item = listFor('s1')[0]
+    expect(item?.workflowId).toBe('wf_demo')
+    expect(item?.workflowNodeId).toBe('verify')
+    expect(item?.workflowPhaseTitle).toBe('Verify')
+    expect(item?.workflowTaskTitle).toBe('Verifier backlog')
+  })
+
   it('keeps root nodes in spawn order, not task index order', () => {
     const nowSpy = vi.spyOn(Date, 'now')
     nowSpy.mockReturnValueOnce(1_000)

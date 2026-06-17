@@ -57,8 +57,8 @@ import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import type {
-  ClientSessionState,
   BrowserManageResponse,
+  ClientSessionState,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
@@ -311,6 +311,7 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  openAgents: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
@@ -386,6 +387,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  openAgents,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -981,6 +983,9 @@ export function usePromptActions({
       // registry row in desktop-slash-commands.ts plus an entry here — never a
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
+        agents: async () => {
+          openAgents()
+        },
         new: async () => {
           startFreshSessionDraft()
         },
@@ -1318,6 +1323,7 @@ export function usePromptActions({
       createBackendSessionForSend,
       handleSkinCommand,
       handoffSession,
+      openAgents,
       refreshSessions,
       requestGateway,
       resumeStoredSession,

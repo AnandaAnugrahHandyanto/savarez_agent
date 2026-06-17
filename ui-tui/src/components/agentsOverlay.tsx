@@ -120,15 +120,127 @@ const indentFor = (depth: number): string => '  '.repeat(Math.max(0, depth))
 const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
 
-const statusGlyph = (item: SubagentProgress, t: Theme) => {
+const statusGlyphForStatus = (status: Status, t: Theme) => {
   // Defensive fallback for cross-version snapshots with unknown statuses.
-  const g = STATUS_GLYPH[item.status] ?? STATUS_GLYPH.error
+  const g = STATUS_GLYPH[status] ?? STATUS_GLYPH.error
 
   return { color: g.color(t), glyph: g.glyph }
 }
 
+const statusGlyph = (item: SubagentProgress, t: Theme) => statusGlyphForStatus(item.status, t)
+
 const prepareRows = (tree: SubagentNode[], sort: SortMode, filter: FilterMode): SubagentNode[] =>
   tree.length === 0 ? [] : flattenTree([...tree].sort(SORT_COMPARATORS[sort])).filter(FILTER_PREDICATES[filter])
+
+interface WorkflowPhaseGroup {
+  activeCount: number
+  completedCount: number
+  failedCount: number
+  ids: Set<string>
+  key: string
+  title: string
+  totalCount: number
+}
+
+const isActiveStatus = (status: Status) => status === 'running' || status === 'queued'
+const isFailedStatus = (status: Status) =>
+  status === 'error' || status === 'failed' || status === 'interrupted' || status === 'timeout'
+
+const workflowPhaseKey = (item: SubagentProgress): string | null => {
+  if (
+    !item.workflowId &&
+    !item.workflowNodeId &&
+    !item.workflowPhaseId &&
+    !item.workflowPhaseTitle &&
+    !item.workflowTaskTitle
+  ) {
+    return null
+  }
+
+  const workflow = item.workflowId || 'workflow'
+  const phase = item.workflowPhaseId || item.workflowPhaseTitle || 'workflow'
+
+  return `${workflow}:${phase}`
+}
+
+export const buildWorkflowPhases = (subagents: SubagentProgress[]): WorkflowPhaseGroup[] => {
+  const map = new Map<string, WorkflowPhaseGroup>()
+  const other: WorkflowPhaseGroup = {
+    activeCount: 0,
+    completedCount: 0,
+    failedCount: 0,
+    ids: new Set<string>(),
+    key: 'workflow:other',
+    title: 'Other agents',
+    totalCount: 0
+  }
+
+  for (const item of subagents) {
+    const key = workflowPhaseKey(item)
+
+    if (!key) {
+      other.ids.add(item.id)
+      other.totalCount += 1
+      if (isActiveStatus(item.status)) {
+        other.activeCount += 1
+      } else if (item.status === 'completed') {
+        other.completedCount += 1
+      } else if (isFailedStatus(item.status)) {
+        other.failedCount += 1
+      }
+      continue
+    }
+
+    let group = map.get(key)
+
+    if (!group) {
+      group = {
+        activeCount: 0,
+        completedCount: 0,
+        failedCount: 0,
+        ids: new Set<string>(),
+        key,
+        title: item.workflowPhaseTitle || item.workflowPhaseId || item.workflowId || 'Workflow',
+        totalCount: 0
+      }
+      map.set(key, group)
+    }
+
+    group.ids.add(item.id)
+    group.totalCount += 1
+    if (isActiveStatus(item.status)) {
+      group.activeCount += 1
+    } else if (item.status === 'completed') {
+      group.completedCount += 1
+    } else if (isFailedStatus(item.status)) {
+      group.failedCount += 1
+    }
+  }
+
+  const phases = [...map.values()]
+
+  if (phases.length > 0 && other.totalCount > 0) {
+    phases.push(other)
+  }
+
+  return phases
+}
+
+const workflowPhaseStatus = (phase: WorkflowPhaseGroup): Status => {
+  if (phase.failedCount > 0) {
+    return 'failed'
+  }
+
+  if (phase.activeCount > 0) {
+    return 'running'
+  }
+
+  if (phase.completedCount === phase.totalCount) {
+    return 'completed'
+  }
+
+  return 'queued'
+}
 
 const diffMetricLine = (name: string, a: number, b: number, fmt: (n: number) => string) => {
   const d = b - a
@@ -429,6 +541,12 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
 
       <Box flexDirection="column" marginTop={1}>
         <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
+        {item.workflowId ? <Field name="workflow" t={t} value={item.workflowId} /> : null}
+        {item.workflowPhaseTitle || item.workflowPhaseId ? (
+          <Field name="phase" t={t} value={item.workflowPhaseTitle || item.workflowPhaseId} />
+        ) : null}
+        {item.workflowTaskTitle ? <Field name="task" t={t} value={item.workflowTaskTitle} /> : null}
+        {item.delegationId ? <Field name="delegation" t={t} value={item.delegationId} /> : null}
         {item.model ? <Field name="model" t={t} value={item.model} /> : null}
         {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
         <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
@@ -532,6 +650,21 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
           </Text>
         </OverlaySection>
       ) : null}
+
+      {item.taskPrompt || item.taskContext ? (
+        <OverlaySection t={t} title="Prompt">
+          {item.taskPrompt ? (
+            <Text color={t.color.text} wrap="wrap">
+              {item.taskPrompt}
+            </Text>
+          ) : null}
+          {item.taskContext ? (
+            <Text color={t.color.muted} wrap="wrap">
+              {item.taskContext}
+            </Text>
+          ) : null}
+        </OverlaySection>
+      ) : null}
     </Box>
   )
 }
@@ -556,7 +689,10 @@ function ListRow({
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
 
-  const goal = compactPreview(node.item.goal || 'subagent', width - 28 - node.item.depth * 2)
+  const goal = compactPreview(
+    node.item.workflowTaskTitle || node.item.goal || 'subagent',
+    width - 28 - node.item.depth * 2
+  )
   const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
   const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
@@ -578,6 +714,48 @@ function ListRow({
         {trailing}
       </Text>
     </Text>
+  )
+}
+
+function WorkflowPhaseRail({
+  activeIndex,
+  phases,
+  t,
+  width
+}: {
+  activeIndex: number
+  phases: WorkflowPhaseGroup[]
+  t: Theme
+  width: number
+}) {
+  return (
+    <Box flexDirection="column" flexShrink={0} marginRight={1} width={width}>
+      <Text bold color={t.color.label}>
+        Phases
+      </Text>
+
+      {phases.map((phase, index) => {
+        const active = index === activeIndex
+        const { color, glyph } = statusGlyphForStatus(workflowPhaseStatus(phase), t)
+        const counts =
+          phase.activeCount > 0
+            ? `${phase.completedCount}/${phase.totalCount} · ${phase.activeCount} running`
+            : `${phase.completedCount}/${phase.totalCount}`
+
+        return (
+          <Box flexDirection="column" key={phase.key} marginTop={index === 0 ? 1 : 0}>
+            <Text bold={active} color={active ? t.color.accent : t.color.text} inverse={active} wrap="truncate-end">
+              {' '}
+              <Text color={active ? t.color.accent : color}>{glyph}</Text> {compactPreview(phase.title, width - 4)}
+            </Text>
+            <Text color={active ? t.color.accent : t.color.muted} wrap="truncate-end">
+              {'   '}
+              {counts}
+            </Text>
+          </Box>
+        )
+      })}
+    </Box>
   )
 }
 
@@ -707,6 +885,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const [sort, setSort] = useState<SortMode>('depth-first')
   const [filter, setFilter] = useState<FilterMode>('all')
   const [cursor, setCursor] = useState(0)
+  const [phaseCursor, setPhaseCursor] = useState(0)
   const [flash, setFlash] = useState<string>('')
   const [now, setNow] = useState(() => Date.now())
   // cc-style view switching: list = full-width row picker, detail = full-width
@@ -732,12 +911,21 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const spark = useMemo(() => sparkline(widths), [widths])
   const peak = useMemo(() => peakHotness(tree), [tree])
   const rows = useMemo(() => prepareRows(tree, sort, filter), [tree, sort, filter])
+  const workflowPhases = useMemo(() => buildWorkflowPhases(subagents), [subagents])
+  const workflowMode = workflowPhases.length > 0
+  const activePhase = workflowMode ? workflowPhases[Math.min(phaseCursor, workflowPhases.length - 1)] : null
+  const visibleRows = useMemo(
+    () => (activePhase ? rows.filter(row => activePhase.ids.has(row.item.id)) : rows),
+    [activePhase, rows]
+  )
 
-  const selected = rows[cursor] ?? null
+  const selected = visibleRows[cursor] ?? null
 
   const cols = stdout?.columns ?? 80
   const rowsH = Math.max(8, (stdout?.rows ?? 24) - 10)
   const listWindowStart = Math.max(0, cursor - Math.floor(rowsH / 2))
+  const phaseRailWidth = workflowMode ? Math.min(28, Math.max(18, Math.floor(cols * 0.24))) : 0
+  const listCols = workflowMode ? Math.max(40, cols - phaseRailWidth - 2) : cols
 
   // ── Effects ────────────────────────────────────────────────────────
 
@@ -756,6 +944,12 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       setHistoryIndex(history.length)
     }
   }, [history.length, historyIndex])
+
+  useEffect(() => {
+    if (phaseCursor >= workflowPhases.length) {
+      setPhaseCursor(Math.max(0, workflowPhases.length - 1))
+    }
+  }, [phaseCursor, workflowPhases.length])
 
   useEffect(() => {
     // Auto-follow the just-finished turn onto history[1] so the user isn't
@@ -784,10 +978,10 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   }, [gw])
 
   useEffect(() => {
-    if (cursor >= rows.length) {
-      setCursor(Math.max(0, rows.length - 1))
+    if (cursor >= visibleRows.length) {
+      setCursor(Math.max(0, visibleRows.length - 1))
     }
-  }, [cursor, rows.length])
+  }, [cursor, visibleRows.length])
 
   // ── Actions ────────────────────────────────────────────────────────
 
@@ -840,6 +1034,22 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       return next
     })
+
+  const stepPhase = (delta: -1 | 1) => {
+    if (!workflowMode) {
+      return
+    }
+
+    setPhaseCursor(idx => {
+      const next = Math.max(0, Math.min(workflowPhases.length - 1, idx + delta))
+
+      if (next !== idx) {
+        setCursor(0)
+      }
+
+      return next
+    })
+  }
 
   const closeWithCleanup = () => {
     clearDiffPair()
@@ -923,7 +1133,15 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     }
 
     // List mode.
-    if ((key.return || key.rightArrow || ch === 'l') && selected) {
+    if (workflowMode && (key.leftArrow || ch === 'h')) {
+      return stepPhase(-1)
+    }
+
+    if (workflowMode && (key.rightArrow || ch === 'l')) {
+      return stepPhase(1)
+    }
+
+    if (((!workflowMode && (key.rightArrow || ch === 'l')) || key.return) && selected) {
       return setMode('detail')
     }
 
@@ -932,7 +1150,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     }
 
     if (key.downArrow || ch === 'j' || key.wheelDown) {
-      return setCursor(c => Math.min(Math.max(0, rows.length - 1), c + 1))
+      return setCursor(c => Math.min(Math.max(0, visibleRows.length - 1), c + 1))
     }
 
     if (ch === 'g') {
@@ -940,7 +1158,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     }
 
     if (ch === 'G') {
-      return setCursor(Math.max(0, rows.length - 1))
+      return setCursor(Math.max(0, visibleRows.length - 1))
     }
 
     if (ch === 's') {
@@ -976,9 +1194,12 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       ? `${historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'} · finished ${new Date(
           effectiveSnapshot.finishedAt
         ).toLocaleTimeString()}`
-      : `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
+      : `${workflowMode ? 'Workflow agents' : 'Spawn tree'}${delegation.paused ? ' · ⏸ paused' : ''}`
 
-  const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
+  const phaseLine = activePhase ? `phase ${phaseCursor + 1}/${workflowPhases.length} · ${activePhase.title}` : ''
+  const metaLine = [formatSummary(totals), phaseLine, spark, capsLabel, mix ? `· ${mix}` : '']
+    .filter(Boolean)
+    .join('  ')
 
   const controlsHint = replayMode
     ? ' · controls locked'
@@ -1006,26 +1227,34 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         </Text>
       </Box>
 
-      {rows.length === 0 ? (
+      {visibleRows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
-          <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
+          <Text color={t.color.muted}>
+            No subagents this turn. Trigger delegate_task or dynamic_workflow to populate the tree.
+          </Text>
         </Box>
       ) : mode === 'list' ? (
-        <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
-          <GanttStrip cols={cols} cursor={cursor} flatNodes={rows} maxRows={6} now={now} t={t} />
+        <Box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
+          {workflowMode ? (
+            <WorkflowPhaseRail activeIndex={phaseCursor} phases={workflowPhases} t={t} width={phaseRailWidth} />
+          ) : null}
 
-          <Box flexDirection="column" flexGrow={0} flexShrink={0} overflow="hidden">
-            {rows.slice(listWindowStart, listWindowStart + rowsH).map((node, i) => (
-              <ListRow
-                active={listWindowStart + i === cursor}
-                index={listWindowStart + i}
-                key={node.item.id}
-                node={node}
-                peak={peak}
-                t={t}
-                width={cols}
-              />
-            ))}
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
+            <GanttStrip cols={listCols} cursor={cursor} flatNodes={visibleRows} maxRows={6} now={now} t={t} />
+
+            <Box flexDirection="column" flexGrow={0} flexShrink={0} overflow="hidden">
+              {visibleRows.slice(listWindowStart, listWindowStart + rowsH).map((node, i) => (
+                <ListRow
+                  active={listWindowStart + i === cursor}
+                  index={listWindowStart + i}
+                  key={node.item.id}
+                  node={node}
+                  peak={peak}
+                  t={t}
+                  width={listCols}
+                />
+              ))}
+            </Box>
           </Box>
         </Box>
       ) : (
@@ -1047,7 +1276,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
         {mode === 'list' ? (
           <Text color={t.color.muted}>
-            ↑↓/jk move · g/G top/bottom · Enter/→ open detail{controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
+            ↑↓/jk move · {workflowMode ? '←→ phase · Enter open detail' : 'Enter/→ open detail'}
+            {controlsHint} · g/G top/bottom · s sort:{SORT_LABEL[sort]} · f filter:
             {FILTER_LABEL[filter]}
             {history.length > 0 ? ` · [ / ] history ${historyIndex}/${history.length}` : ''}
             {' · q close'}

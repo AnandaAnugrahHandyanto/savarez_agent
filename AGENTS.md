@@ -982,6 +982,30 @@ Synchronicity rule: delegate_task is **not** durable. For long-running
 work that must outlive the current turn, use `cronjob` or
 `terminal(background=True, notify_on_complete=True)` instead.
 
+### Dynamic Workflows (`dynamic_workflow`)
+
+Use `dynamic_workflow` when work has dependent phases and the next step
+should be authored only after prior worker outputs are available. It keeps a
+model-authored workflow in Hermes state, validates dependencies, dispatches
+ready nodes through `delegate_task(background=true)`, and exposes readiness
+after results are recorded.
+
+Typical loop:
+
+1. `dynamic_workflow(action="create", nodes=[...])` with only the currently
+   knowable worker steps.
+2. `dynamic_workflow(action="dispatch_ready")` or `dispatch_ready=true` to run
+   ready leaf workers in the background.
+3. When async delegation results re-enter the conversation, call
+   `dynamic_workflow(action="record_result", ...)`.
+4. Reassess the bounded outputs. If needed, call
+   `dynamic_workflow(action="add_nodes", nodes=[...])` to extend the current
+   phase or create the next phase.
+
+Use plain `delegate_task` for independent one-off delegation. Use
+`dynamic_workflow` when phase barriers, joins, retries, or output-dependent
+follow-on nodes matter.
+
 ---
 
 ## Curator (skill lifecycle)

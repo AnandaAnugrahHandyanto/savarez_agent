@@ -772,7 +772,13 @@ class TurnController {
             done?.verboseArgs,
             error || resultText || summary || ''
           )
-        : buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '', duration ?? fallbackDuration)
+        : buildToolTrailLine(
+            name,
+            done?.context || '',
+            Boolean(error),
+            error || summary || '',
+            duration ?? fallbackDuration
+          )
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -957,7 +963,16 @@ class TurnController {
         thinking: [],
         toolCount: p.tool_count ?? 0,
         tools: [],
-        toolsets: p.toolsets
+        toolsets: p.toolsets,
+        workflowId: p.workflow_id,
+        workflowNodeId: p.workflow_node_id,
+        workflowObjective: p.workflow_objective,
+        workflowPhaseId: p.workflow_phase_id,
+        workflowPhaseTitle: p.workflow_phase_title,
+        workflowTaskTitle: p.workflow_task_title,
+        taskPrompt: p.task_prompt,
+        taskContext: p.task_context,
+        delegationId: p.delegation_id
       }
 
       // Map snake_case payload keys onto camelCase state.  Only overwrite
@@ -989,6 +1004,15 @@ class TurnController {
         taskCount: p.task_count ?? base.taskCount,
         toolCount: p.tool_count ?? base.toolCount,
         toolsets: p.toolsets ?? base.toolsets,
+        workflowId: p.workflow_id ?? base.workflowId,
+        workflowNodeId: p.workflow_node_id ?? base.workflowNodeId,
+        workflowObjective: p.workflow_objective ?? base.workflowObjective,
+        workflowPhaseId: p.workflow_phase_id ?? base.workflowPhaseId,
+        workflowPhaseTitle: p.workflow_phase_title ?? base.workflowPhaseTitle,
+        workflowTaskTitle: p.workflow_task_title ?? base.workflowTaskTitle,
+        taskPrompt: p.task_prompt ?? base.taskPrompt,
+        taskContext: p.task_context ?? base.taskContext,
+        delegationId: p.delegation_id ?? base.delegationId,
         ...patch(base)
       }
 

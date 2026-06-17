@@ -16,6 +16,7 @@ describe('desktop slash command curation', () => {
   it('keeps core desktop chat commands in suggestions', () => {
     expect(isDesktopSlashSuggestion('/new')).toBe(true)
     expect(isDesktopSlashSuggestion('/branch')).toBe(true)
+    expect(isDesktopSlashSuggestion('/agents')).toBe(true)
     expect(isDesktopSlashSuggestion('/skin')).toBe(true)
     expect(isDesktopSlashSuggestion('/usage')).toBe(true)
     expect(isDesktopSlashSuggestion('/version')).toBe(true)
@@ -182,6 +183,8 @@ describe('desktop slash command curation', () => {
   it('resolves commands and aliases to their declared surface', () => {
     expect(resolveDesktopCommand('/new')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/agents')?.surface).toEqual({ kind: 'action', action: 'agents' })
+    expect(resolveDesktopCommand('/tasks')?.surface).toEqual({ kind: 'action', action: 'agents' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
     expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })

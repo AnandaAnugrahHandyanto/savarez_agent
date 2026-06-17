@@ -156,6 +156,39 @@ _active_subagents_lock = threading.Lock()
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
+_OBSERVABILITY_CONTEXT_KEYS = {
+    "workflow_id",
+    "workflow_node_id",
+    "workflow_phase_id",
+    "workflow_phase_title",
+    "workflow_task_title",
+    "workflow_objective",
+    "task_prompt",
+    "task_context",
+    "delegation_id",
+}
+
+
+def _normalise_observability_context(value: Any) -> Dict[str, str]:
+    """Return safe optional metadata for UI correlation.
+
+    This is intentionally internal: tool schemas do not expose it to the
+    model, but coordinator tools can tag subagent events with stable workflow
+    identity so existing UIs can group them without a separate dashboard.
+    """
+    if not isinstance(value, dict):
+        return {}
+    result: Dict[str, str] = {}
+    for key in _OBSERVABILITY_CONTEXT_KEYS:
+        raw = value.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        result[key] = text[:2000]
+    return result
+
 
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock new delegate_task spawns.
@@ -760,6 +793,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
         "delegation",
+        "dynamic_workflow",
         "clarify",
         "memory",
         "code_execution",
@@ -779,6 +813,7 @@ def _build_child_progress_callback(
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     session_ref: Optional[Dict[str, Any]] = None,
+    observability_context: Optional[Dict[str, str]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -826,6 +861,8 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        if observability_context:
+            kw.update(observability_context)
         # The child's own session id — filled into the shared ref once the
         # child agent exists (the callback is built first), so every relayed
         # event lets UIs open/inspect the subagent's session directly.
@@ -990,6 +1027,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    observability_context: Optional[Dict[str, str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1101,6 +1139,7 @@ def _build_child_agent(
         model=effective_model_for_cb,
         toolsets=child_toolsets,
         session_ref=child_session_ref,
+        observability_context=observability_context,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -1253,6 +1292,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._subagent_observability_context = dict(observability_context or {})
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
@@ -1579,6 +1619,9 @@ def _run_single_child(
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
         _parent_sid = getattr(child, "_parent_subagent_id", None)
+        _observability_context = getattr(child, "_subagent_observability_context", {})
+        if not isinstance(_observability_context, dict):
+            _observability_context = {}
         _register_subagent(
             {
                 "subagent_id": _subagent_id,
@@ -1594,6 +1637,7 @@ def _run_single_child(
                 "status": "running",
                 "tool_count": 0,
                 "agent": child,
+                **_observability_context,
             }
         )
 
@@ -2073,6 +2117,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    _observability_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2090,6 +2135,11 @@ def delegate_task(
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+    observability_context = _normalise_observability_context(
+        _observability_context
+        if _observability_context is not None
+        else getattr(parent_agent, "_subagent_observability_context", None)
+    )
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
@@ -2242,6 +2292,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                observability_context=observability_context,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2312,13 +2363,18 @@ def delegate_task(
                 runner=_async_runner,
                 interrupt_fn=_async_interrupt,
                 max_async_children=_get_max_async_children(),
+                observability_context=observability_context,
             )
 
             if dispatch.get("status") == "dispatched":
+                subagent_id = getattr(child, "_subagent_id", None)
+                child_session_id = getattr(child, "session_id", None)
                 return json.dumps(
                     {
                         "status": "dispatched",
                         "delegation_id": dispatch["delegation_id"],
+                        "subagent_id": subagent_id if isinstance(subagent_id, str) else None,
+                        "child_session_id": child_session_id if isinstance(child_session_id, str) else None,
                         "goal": _t["goal"],
                         "mode": "background",
                         "note": (
@@ -2855,13 +2911,10 @@ def _build_top_level_description() -> str:
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot use clarify\n"
-        "- Durable long-running work that must outlive the current turn -> "
+        "- Durable long-running work that must survive process restart -> "
         "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
-        "inside the parent turn: if the parent is interrupted (user sends a "
-        "new message, /stop, /new) the child is cancelled with status="
-        "'interrupted' and its work is discarded. Children cannot continue "
-        "in the background.\n\n"
+        "notify_on_complete=True) instead. delegate_task background work is "
+        "detached from the current turn but still process-local.\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"

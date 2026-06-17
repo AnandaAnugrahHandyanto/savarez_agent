@@ -2838,6 +2838,19 @@ def _on_tool_progress(
             payload["tool_count"] = int(_kwargs["tool_count"])
         if _kwargs.get("toolsets"):
             payload["toolsets"] = [str(t) for t in _kwargs["toolsets"]]
+        for workflow_key in (
+            "workflow_id",
+            "workflow_node_id",
+            "workflow_phase_id",
+            "workflow_phase_title",
+            "workflow_task_title",
+            "workflow_objective",
+            "task_prompt",
+            "task_context",
+            "delegation_id",
+        ):
+            if _kwargs.get(workflow_key):
+                payload[workflow_key] = str(_kwargs[workflow_key])
         # Per-branch rollups emitted on subagent.complete (features 1+2+4).
         for int_key in (
             "input_tokens",

@@ -94,7 +94,9 @@ def test_async_executor_workers_are_daemon_threads():
 def test_completion_event_lands_on_shared_queue_with_session_key():
     def runner():
         return {"status": "completed", "summary": "the result",
-                "api_calls": 3, "duration_seconds": 2.0, "model": "test-model"}
+                "api_calls": 3, "duration_seconds": 2.0, "model": "test-model",
+                "input_tokens": 11, "output_tokens": 7, "reasoning_tokens": 5,
+                "cost_usd": 0.02, "exit_reason": "completed"}
 
     res = ad.dispatch_async_delegation(
         goal="compute X", context="some context", toolsets=["web", "file"],
@@ -109,6 +111,52 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["summary"] == "the result"
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["delegation_id"] == res["delegation_id"]
+
+    retained = {
+        item["delegation_id"]: item
+        for item in ad.list_async_delegations()
+    }[res["delegation_id"]]
+    assert retained["summary"] == "the result"
+    assert retained["api_calls"] == 3
+    assert retained["duration_seconds"] == 2.0
+    assert retained["input_tokens"] == 11
+    assert retained["output_tokens"] == 7
+    assert retained["reasoning_tokens"] == 5
+    assert retained["cost_usd"] == 0.02
+    assert retained["exit_reason"] == "completed"
+    assert retained["model"] == "test-model"
+
+
+def test_completion_event_preserves_workflow_observability_context():
+    def runner():
+        return {"status": "completed", "summary": "done"}
+
+    res = ad.dispatch_async_delegation(
+        goal="verify backlog",
+        context=None,
+        toolsets=["terminal"],
+        role="leaf",
+        model="test-model",
+        session_key="",
+        runner=runner,
+        max_async_children=3,
+        observability_context={
+            "workflow_id": "wf_demo",
+            "workflow_node_id": "verify",
+            "workflow_phase_id": "verify",
+            "workflow_phase_title": "Verify",
+            "workflow_task_title": "Verifier backlog",
+        },
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["delegation_id"] == res["delegation_id"]
+    assert evt["workflow_id"] == "wf_demo"
+    assert evt["workflow_node_id"] == "verify"
+    assert evt["workflow_phase_title"] == "Verify"
+    assert evt["workflow_task_title"] == "Verifier backlog"
 
 
 def test_rich_reinjection_block_is_self_contained():
@@ -204,6 +252,57 @@ def test_interrupt_all_signals_running_children():
     evt = _drain_one()
     assert evt is not None
     assert evt["status"] == "interrupted"
+
+
+def test_interrupt_delegation_signals_only_requested_child():
+    first = threading.Event()
+    second = threading.Event()
+    interrupted = []
+
+    def first_runner():
+        first.wait(timeout=5)
+        return {"status": "interrupted", "summary": None, "error": "cancelled"}
+
+    def second_runner():
+        second.wait(timeout=5)
+        return {"status": "completed", "summary": "ok"}
+
+    first_res = ad.dispatch_async_delegation(
+        goal="first",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=first_runner,
+        interrupt_fn=lambda: (interrupted.append("first"), first.set()),
+        max_async_children=3,
+    )
+    second_res = ad.dispatch_async_delegation(
+        goal="second",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=second_runner,
+        interrupt_fn=lambda: (interrupted.append("second"), second.set()),
+        max_async_children=3,
+    )
+
+    assert ad.interrupt_delegation(first_res["delegation_id"], reason="test") is True
+    assert interrupted == ["first"]
+    second.set()
+
+    events = []
+    deadline = time.monotonic() + 5
+    while len(events) < 2 and time.monotonic() < deadline:
+        evt = _drain_one(timeout=0.2)
+        if evt is not None:
+            events.append(evt)
+    by_id = {evt["delegation_id"]: evt for evt in events}
+    assert by_id[first_res["delegation_id"]]["status"] == "interrupted"
+    assert by_id[second_res["delegation_id"]]["status"] == "completed"
 
 
 def test_completed_records_pruned_to_cap():
@@ -469,5 +568,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-

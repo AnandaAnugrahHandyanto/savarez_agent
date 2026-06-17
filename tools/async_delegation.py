@@ -36,6 +36,7 @@ logic stays in one place.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 import time
@@ -67,15 +68,26 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            worker_params = inspect.signature(_worker).parameters
+            if len(worker_params) == 3 and hasattr(self, "_create_worker_context"):
+                args = (
+                    weakref.ref(self, weakref_cb),
+                    self._create_worker_context(),
+                    self._work_queue,
+                )
+            else:
+                initializer = getattr(self, "_initializer", None)
+                initargs = getattr(self, "_initargs", ())
+                args = (
+                    weakref.ref(self, weakref_cb),
+                    self._work_queue,
+                    initializer,
+                    initargs,
+                )
             t = threading.Thread(
                 name=thread_name,
                 target=_worker,
-                args=(
-                    weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
-                ),
+                args=args,
                 daemon=True,
             )
             t.start()
@@ -160,6 +172,7 @@ def dispatch_async_delegation(
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    observability_context: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -192,6 +205,8 @@ def dispatch_async_delegation(
     """
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
+    if observability_context is not None:
+        observability_context.setdefault("delegation_id", delegation_id)
     record: Dict[str, Any] = {
         "delegation_id": delegation_id,
         "goal": goal,
@@ -205,6 +220,8 @@ def dispatch_async_delegation(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
     }
+    if observability_context:
+        record["observability_context"] = dict(observability_context)
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
     # from different gateway sessions) both pass the check and exceed the cap.
@@ -271,6 +288,27 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
             return
         record["status"] = status
         record["completed_at"] = time.time()
+        record["summary"] = result.get("summary")
+        record["error"] = result.get("error")
+        record["api_calls"] = result.get("api_calls", 0)
+        record["duration_seconds"] = result.get(
+            "duration_seconds",
+            round(
+                record["completed_at"]
+                - (record.get("dispatched_at") or record["completed_at"]),
+                2,
+            ),
+        )
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cost_usd",
+            "exit_reason",
+            "model",
+        ):
+            if key in result and result.get(key) is not None:
+                record[key] = result.get(key)
         record["interrupt_fn"] = None  # drop the closure; child is done
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
@@ -324,6 +362,9 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
+    observability_context = record.get("observability_context")
+    if isinstance(observability_context, dict):
+        evt.update(observability_context)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -372,6 +413,28 @@ def interrupt_all(reason: str = "shutdown") -> int:
     if count:
         logger.info("Interrupted %d async delegation(s) (%s)", count, reason)
     return count
+
+
+def interrupt_delegation(delegation_id: str, reason: str = "cancelled") -> bool:
+    """Signal one running async delegation to stop.
+
+    Returns True when an interrupt function was found and called. The worker
+    still owns final status and completion-event delivery.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if not record or record.get("status") != "running":
+            return False
+        fn = record.get("interrupt_fn")
+    if not callable(fn):
+        return False
+    try:
+        fn()
+        logger.info("Interrupted async delegation %s (%s)", delegation_id, reason)
+        return True
+    except Exception as exc:
+        logger.debug("interrupt_delegation: %s interrupt failed: %s", delegation_id, exc)
+        return False
 
 
 def _reset_for_tests() -> None:
