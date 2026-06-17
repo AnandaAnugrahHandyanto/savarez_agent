@@ -443,7 +443,9 @@ class GatewaySlashCommandsMixin:
         cache_write_tokens = _int_value(session_row.get("cache_write_tokens"))
 
         # context_tokens: prefer the last API-reported prompt size, not cumulative input.
-        context_tokens = _int_value(getattr(session_entry, "last_prompt_tokens", 0)) or None
+        # Fallback to 0 (not None) so _format_context shows "0/limit" instead of "unknown"
+        # on fresh sessions that haven't run an agent turn yet.
+        context_tokens = _int_value(getattr(session_entry, "last_prompt_tokens", 0)) or 0
 
         # Count active tasks (agents + processes + background tasks).
         running_processes = 0
