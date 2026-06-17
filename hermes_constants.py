@@ -461,25 +461,36 @@ _container_detected: bool | None = None
 
 
 def is_container() -> bool:
-    """Return True when running inside a Docker/Podman container.
+    """Return True when running inside a known container runtime.
 
-    Checks ``/.dockerenv`` (Docker), ``/run/.containerenv`` (Podman),
-    and ``/proc/1/cgroup`` for container runtime markers.  Result is
-    cached for the process lifetime.  Import-safe — no heavy deps.
+    Checks explicit Hermes/Kubernetes environment hints, marker files
+    (Docker/Podman/Kubernetes), and ``/proc/1/cgroup`` for container
+    runtime markers.  Result is cached for the process lifetime.
+    Import-safe — no heavy deps.
     """
     global _container_detected
     if _container_detected is not None:
         return _container_detected
+    if os.environ.get("HERMES_CONTAINER"):
+        _container_detected = True
+        return True
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        _container_detected = True
+        return True
     if os.path.exists("/.dockerenv"):
         _container_detected = True
         return True
     if os.path.exists("/run/.containerenv"):
         _container_detected = True
         return True
+    if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount"):
+        _container_detected = True
+        return True
     try:
         with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
-            cgroup = f.read()
-            if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
+            cgroup = f.read().lower()
+            markers = ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio")
+            if any(marker in cgroup for marker in markers):
                 _container_detected = True
                 return True
     except OSError:
