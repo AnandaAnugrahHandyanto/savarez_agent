@@ -1683,12 +1683,19 @@ def _status_model_label(config: dict) -> str:
 
 def _status_context_limit(config: dict) -> int | None:
     """Extract context limit from config."""
+    # Try top-level "context" as an int value
     ctx = config.get("context")
-    if ctx is not None:
-        try:
-            return int(ctx)
-        except (TypeError, ValueError):
-            pass
+    if ctx is not None and isinstance(ctx, (int, float)):
+        return int(ctx)
+    # Try model.context_length
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        cl = model_cfg.get("context_length")
+        if cl is not None:
+            try:
+                return int(cl)
+            except (TypeError, ValueError):
+                pass
     return None
 
 

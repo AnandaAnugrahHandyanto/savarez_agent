@@ -58,14 +58,15 @@ def _format_cost(value: Any) -> str:
 
 
 def _format_context(current: Any, limit: Any) -> str:
-    if current is None or limit in (None, 0):
-        return "unknown"
     cur = _as_int(current, 0)
     lim = _as_int(limit, 0)
-    if lim <= 0:
-        return "unknown"
-    pct = int(round((cur / lim) * 100))
-    return f"{_format_count(cur)}/{_format_count(lim)} ({pct}%)"
+    if lim > 0:
+        pct = int(round((cur / lim) * 100))
+        return f"{_format_count(cur)}/{_format_count(lim)} ({pct}%)"
+    # No known limit — still show current if available
+    if cur > 0:
+        return f"{_format_count(cur)} used"
+    return "unknown"
 
 
 def _format_cache_hit(snapshot: dict[str, Any]) -> str:
