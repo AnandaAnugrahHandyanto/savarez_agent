@@ -1162,7 +1162,33 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
-        Remove-Item -Recurse -Force "venv"
+
+        # Kill any processes running from the old venv — Python, pythonw,
+        # and hermes.exe hold .pyd native extensions as loaded DLLs; Windows
+        # locks those files and Remove-Item fails with "directory not empty".
+        # See #47557.
+        $venvScripts = Join-Path $InstallDir "venv\Scripts"
+        if (Test-Path $venvScripts) {
+            foreach ($procName in @("hermes.exe", "python.exe", "pythonw.exe")) {
+                foreach ($proc in Get-Process -Name $procName -ErrorAction SilentlyContinue) {
+                    try {
+                        if ($proc.Path -and $proc.Path.StartsWith($venvScripts, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            Write-Info "Stopping $procName (PID $($proc.Id)) holding venv files..."
+                            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch { }
+                }
+            }
+            # Brief pause for OS to release file handles after process termination
+            Start-Sleep -Milliseconds 500
+        }
+
+        Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
+        # If Remove-Item still failed (race with slow handle release), retry once
+        if (Test-Path "venv") {
+            Start-Sleep -Seconds 2
+            Remove-Item -Recurse -Force "venv"
+        }
     }
     
     # uv creates the venv and pins the Python version in one step
