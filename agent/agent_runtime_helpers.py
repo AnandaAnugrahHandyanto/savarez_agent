@@ -2085,6 +2085,18 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
         )
+    # Strip internal bookkeeping keys that are not valid OpenAI message fields.
+    # The gateway stamps inbound messages with the platform event time and
+    # hermes_state re-hydrates these from state.db; strict OpenAI-compatible
+    # endpoints reject them with a non-retryable HTTP 400 (e.g. "Extra inputs are
+    # not permitted, field: 'messages[N].timestamp'").
+    _NON_API_KEYS = ("timestamp", "observed", "platform_message_id")
+    messages = [
+        {k: v for k, v in m.items() if k not in _NON_API_KEYS}
+        if isinstance(m, dict)
+        else m
+        for m in messages
+    ]
     return messages
 
 

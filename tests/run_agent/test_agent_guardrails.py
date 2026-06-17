@@ -97,6 +97,31 @@ class TestSanitizeApiMessages:
         out = AIAgent._sanitize_api_messages(msgs)
         assert out == msgs
 
+    def test_strips_non_api_metadata_keys(self):
+        # The gateway stamps inbound messages with the platform event time and
+        # state.db restore re-hydrates timestamp/observed/platform_message_id.
+        # These are not valid OpenAI message fields; strict OpenAI-compatible
+        # endpoints reject them with a non-retryable HTTP 400.
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "user",
+                "content": "hi",
+                "timestamp": 1781703996.0,
+                "observed": True,
+                "platform_message_id": "abc123",
+            },
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[-1] == {"role": "user", "content": "hi"}
+        for key in ("timestamp", "observed", "platform_message_id"):
+            assert all(key not in m for m in out)
+
+    def test_strip_does_not_mutate_input(self):
+        user = {"role": "user", "content": "hi", "timestamp": 1.0}
+        AIAgent._sanitize_api_messages([user])
+        assert user["timestamp"] == 1.0
+
     def test_sdk_object_tool_calls(self):
         tc_obj = types.SimpleNamespace(id="c6", function=types.SimpleNamespace(
             name="terminal", arguments="{}"
