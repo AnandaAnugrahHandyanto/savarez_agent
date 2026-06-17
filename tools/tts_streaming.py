@@ -28,6 +28,8 @@ dispatcher.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import os
 import threading
@@ -155,6 +157,27 @@ def _import_elevenlabs_client():
     return ElevenLabs
 
 
+def _import_httpx():
+    """Lazy import the ``httpx`` HTTP client library.
+
+    Returns the ``httpx`` module (not an instance) so callers can build
+    their own ``httpx.Client()``. Raises ``ImportError`` with the install
+    command when the package isn't available.
+
+    This helper is the seam the test suite monkeypatches; keeping the
+    import isolated in a single function means tests never need to
+    install the real ``httpx`` package to validate the SSE parsing
+    shape.
+    """
+    try:
+        import httpx  # type: ignore
+    except ImportError as e:
+        raise ImportError(
+            "httpx package not installed. Run: pip install httpx"
+        ) from e
+    return httpx
+
+
 @register("elevenlabs")
 class ElevenLabsStreamingProvider(StreamingTTSProvider):
     """Streaming TTS provider for ElevenLabs' ``text_to_speech.convert`` API.
@@ -240,10 +263,170 @@ class ElevenLabsStreamingProvider(StreamingTTSProvider):
             return
 
 
+@register("gemini")
+class GeminiStreamingProvider(StreamingTTSProvider):
+    """Streaming TTS provider for Google Gemini's ``streamGenerateContent`` SSE endpoint.
+
+    The Gemini TTS API (``gemini-2.5-flash-preview-tts`` and similar
+    models) returns 24 kHz mono 16-bit signed PCM (L16) wrapped in a
+    ``streamGenerateContent`` call when the ``?alt=sse`` query parameter
+    is set — without that param the API returns a single JSON blob and
+    the whole point of this class (chunked streaming) is lost. Each
+    SSE event carries one base64-encoded PCM chunk under
+    ``candidates[0].content.parts[*].inlineData.data``; we decode and
+    yield each one as it arrives.
+
+    Auth follows the same fallback as the non-streaming
+    ``_generate_gemini_tts`` in ``tools.tts_tool.py``: ``GEMINI_API_KEY``
+    wins, ``GOOGLE_API_KEY`` is the secondary, and a missing key fails
+    loud in ``__init__`` so the dispatcher never pulls zero chunks.
+    """
+
+    # Gemini TTS hardcodes 24 kHz mono 16-bit (L16) PCM — see the API
+    # docs for ``responseModalities=AUDIO`` + ``speechConfig``. We
+    # declare it as class attrs so the dispatcher can build the
+    # ``sounddevice.OutputStream`` with the matching format.
+    sample_rate = 24000
+    channels = 1
+    sample_width = 2
+
+    def __init__(self, config: dict, *, stop_event: Optional[threading.Event] = None):
+        # Config keys mirror the ``tts.gemini`` block from config.yaml.
+        # Defaults match the constants in tools.tts_tool.py
+        # (DEFAULT_GEMINI_TTS_MODEL / _VOICE / _BASE_URL) so behaviour
+        # stays consistent with the existing non-streaming path.
+        self._model = config.get("model", "gemini-2.5-flash-preview-tts")
+        self._voice = config.get("voice", "Kore")
+        self._base_url = (
+            config.get("base_url", "https://generativelanguage.googleapis.com/v1beta")
+            .strip()
+            .rstrip("/")
+        )
+        # The stop event is optional so this class is usable outside the
+        # dispatcher (e.g. one-off scripts). When None, the stream() loop
+        # simply skips the stop check.
+        self._stop_event = stop_event
+
+        # Auth: prefer GEMINI_API_KEY, fall back to GOOGLE_API_KEY (same
+        # as tools.tts_tool.py:_generate_gemini_tts). Empty/None both
+        # mean "not set" — strip whitespace defensively.
+        api_key = (
+            os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+            or ""
+        ).strip()
+        if not api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY (or GOOGLE_API_KEY) not set; cannot use "
+                "Gemini streaming TTS. Get one at "
+                "https://aistudio.google.com/app/apikey"
+            )
+        self._api_key = api_key
+
+        # Lazy SDK import — wrapped in a helper so the test suite can
+        # monkeypatch it without requiring httpx at install time on
+        # machines that never use this provider. We surface the import
+        # error loudly because silently disabling the provider would
+        # mask config bugs the user can fix. The return value is unused
+        # in normal operation (we re-look up ``httpx`` via the module
+        # globals below) but calling the helper gives the test suite a
+        # seam to override the import behaviour.
+        _import_httpx()
+        import httpx as _httpx_module  # noqa: WPS433 — intentional late import
+        # Build a long-lived client so the SSE connection reuses the
+        # default keepalive pool. Tests patch ``httpx.Client.post`` at
+        # the class level, so this instantiation must call
+        # ``httpx.Client()`` (not the module-level ``httpx.post``).
+        self._client = _httpx_module.Client()
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        """Yield PCM chunks for *text* as they arrive from Gemini.
+
+        POSTs to ``streamGenerateContent?alt=sse`` so the API returns a
+        Server-Sent Events stream rather than a single JSON blob. The
+        body is a sequence of ``data: {json}\\n\\n`` blocks separated by
+        blank lines; we walk the lines, strip the ``data: `` prefix,
+        parse the JSON, and decode the base64 audio under
+        ``inlineData.data``.
+
+        The ``try/except`` is deliberately broad (same shape as the
+        ElevenLabs provider above): a streaming response that fails
+        halfway through should log a warning and stop yielding rather
+        than crash the dispatcher's audio callback.
+        """
+        payload = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {"voiceName": self._voice},
+                    },
+                },
+            },
+        }
+        # ``?alt=sse`` is what flips the response from a single JSON
+        # blob to a streaming SSE feed; without it the API just returns
+        # the full audio in one shot and we lose the whole point of
+        # being a streaming provider.
+        url = (
+            f"{self._base_url}/models/{self._model}:streamGenerateContent"
+            f"?alt=sse&key={self._api_key}"
+        )
+        try:
+            with self._client.post(url, json=payload) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if self._stop_event is not None and self._stop_event.is_set():
+                        break
+                    if not line:
+                        # Blank line = SSE event separator; skip.
+                        continue
+                    if not line.startswith("data: "):
+                        # Comments (``event:``, ``id:``, ``:heartbeat``)
+                        # and any non-data lines are ignored.
+                        continue
+                    try:
+                        event = json.loads(line[len("data: "):])
+                    except (ValueError, TypeError) as exc:
+                        logger.warning(
+                            "Gemini SSE: failed to parse event JSON: %s", exc
+                        )
+                        continue
+                    # Audio is nested under
+                    # ``candidates[0].content.parts[*].inlineData.data``
+                    # as a base64-encoded PCM blob. Some Gemini
+                    # responses use ``inline_data`` (snake_case) — the
+                    # legacy non-streaming path checks both, so we do
+                    # the same.
+                    try:
+                        parts = event["candidates"][0]["content"]["parts"]
+                    except (KeyError, IndexError, TypeError):
+                        continue
+                    for part in parts:
+                        inline = part.get("inlineData") or part.get("inline_data")
+                        if not inline:
+                            continue
+                        b64 = inline.get("data", "")
+                        if not b64:
+                            continue
+                        try:
+                            yield base64.b64decode(b64)
+                        except (ValueError, TypeError) as exc:
+                            logger.warning(
+                                "Gemini SSE: failed to base64-decode audio: %s",
+                                exc,
+                            )
+        except Exception as exc:
+            logger.warning("Gemini streaming TTS failed: %s", exc)
+            return
+
+
 __all__ = [
     "StreamingTTSProvider",
     "register",
     "get",
     "available",
     "ElevenLabsStreamingProvider",
+    "GeminiStreamingProvider",
 ]

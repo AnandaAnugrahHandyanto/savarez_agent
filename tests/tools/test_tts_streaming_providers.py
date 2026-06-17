@@ -13,6 +13,9 @@ subclass that satisfies the ABC, so the tests stay hermetic and fast.
 
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 
 from tools.tts_streaming import (
@@ -349,6 +352,109 @@ def test_elevenlabs_audio_format():
     """sample_rate/channels/sample_width match the API contract."""
     from tools.tts_streaming import ElevenLabsStreamingProvider
     p = ElevenLabsStreamingProvider.__new__(ElevenLabsStreamingProvider)  # skip __init__
+    assert p.sample_rate == 24000
+    assert p.channels == 1
+    assert p.sample_width == 2
+
+
+# --- Gemini streaming provider ---
+
+
+def _make_sse_response(events: list[dict]) -> str:
+    """Build a fake SSE response body from a list of event dicts.
+
+    The real Gemini ``streamGenerateContent?alt=sse`` endpoint produces a
+    stream of ``data: {json}\\n\\n`` chunks separated by blank lines. This
+    helper reconstructs that shape so the test stub can feed it into a
+    fake ``httpx`` response and exercise the SSE parser.
+    """
+    lines = []
+    for ev in events:
+        lines.append("data: " + json.dumps(ev))
+        lines.append("")  # blank line separator
+    return "\n".join(lines)
+
+
+def _make_fake_httpx_stream(body: str):
+    """Build a stub httpx client whose ``.post()`` returns a context manager.
+
+    The real ``httpx.Client.post(url, json=payload)`` returns an object
+    usable as a context manager whose response object exposes
+    ``iter_lines()``. This stub mimics that shape: the stub class is
+    callable like ``httpx.Client()`` and the post() method returns an
+    object that yields lines from ``body`` when entered.
+    """
+    class _FakeStream:
+        def __init__(self, body):
+            self._body = body
+        def __enter__(self):
+            class _Resp:
+                def __init__(self, body):
+                    self._body = body
+                def raise_for_status(self):
+                    pass
+                def iter_lines(self):
+                    for line in self._body.split("\n"):
+                        yield line
+            return _Resp(self._body)
+        def __exit__(self, *args):
+            pass
+    return _FakeStream(body)
+
+
+def test_gemini_yields_decoded_pcm(monkeypatch):
+    """Provider decodes base64 inlineData and yields raw PCM bytes."""
+    from tools.tts_streaming import GeminiStreamingProvider
+
+    pcm = b"\x10\x20\x30\x40"
+    b64 = base64.b64encode(pcm).decode("ascii")
+    sse_body = _make_sse_response([{
+        "candidates": [{
+            "content": {"parts": [{"inlineData": {"data": b64, "mimeType": "audio/L16"}}]}
+        }]
+    }])
+
+    def _fake_post(self, url, **kwargs):
+        return _make_fake_httpx_stream(sse_body)
+
+    monkeypatch.setattr("tools.tts_streaming._import_httpx", lambda: None)  # not used, patched below
+    monkeypatch.setattr("httpx.Client.post", _fake_post)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    provider = GeminiStreamingProvider({})
+    out = list(provider.stream("hello"))
+    assert out == [pcm]
+
+
+def test_gemini_respects_stop_event(monkeypatch):
+    """Stop event aborts the iteration."""
+    from tools.tts_streaming import GeminiStreamingProvider
+    import threading
+
+    # Build 4 SSE events
+    events = []
+    for i in range(4):
+        pcm = bytes([i])
+        b64 = base64.b64encode(pcm).decode("ascii")
+        events.append({
+            "candidates": [{"content": {"parts": [{"inlineData": {"data": b64}}]}}]
+        })
+    sse_body = _make_sse_response(events)
+
+    monkeypatch.setattr("httpx.Client.post", lambda self, url, **kw: _make_fake_httpx_stream(sse_body))
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    stop = threading.Event()
+    stop.set()  # already stopped
+    provider = GeminiStreamingProvider({}, stop_event=stop)
+    out = list(provider.stream("hello"))
+    assert out == []
+
+
+def test_gemini_audio_format():
+    """sample_rate/channels/sample_width match the API contract (24kHz mono int16)."""
+    from tools.tts_streaming import GeminiStreamingProvider
+    p = GeminiStreamingProvider.__new__(GeminiStreamingProvider)
     assert p.sample_rate == 24000
     assert p.channels == 1
     assert p.sample_width == 2
