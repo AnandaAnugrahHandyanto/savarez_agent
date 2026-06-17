@@ -1161,6 +1161,27 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
+    # DEBUG: trace delegation routing — remove after debugging
+    import sys as _dbg_sys
+    _dbg_line = (
+        f"[delegate DEBUG task={task_index}] "
+        f"model={model!r} override_provider={override_provider!r} override_base_url={override_base_url!r} "
+        f"override_api_mode={override_api_mode!r} override_acp_command={override_acp_command!r} "
+        f"override_acp_args={override_acp_args!r} "
+        f"-> effective_model={effective_model!r} effective_provider={effective_provider!r} "
+        f"effective_api_mode={effective_api_mode!r} effective_acp_command={effective_acp_command!r} "
+        f"effective_acp_args={effective_acp_args!r} "
+        f"parent.model={getattr(parent_agent, 'model', None)!r} "
+        f"parent.provider={getattr(parent_agent, 'provider', None)!r} "
+        f"parent.acp_command={getattr(parent_agent, 'acp_command', None)!r}"
+    )
+    print(_dbg_line, file=_dbg_sys.stderr)
+    try:
+        with open("/tmp/delegate-debug.log", "a") as _dbg_f:
+            _dbg_f.write(_dbg_line + "\n")
+    except Exception:
+        pass
+
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
@@ -2674,6 +2695,20 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
+    # ACP transport (e.g. `acp_command: claude` + `acp_args: [...]`) is also
+    # read from the delegation config so subagents pick up the configured
+    # backend (Claude / Codex / etc.) without needing per-call overrides.
+    # Without this, a non-ACP parent (e.g. direct-API minimax) silently drops
+    # the configured ACP backend and the child falls back to the parent's
+    # transport — which on Codex is the broken `gpt-5.3-codex` path.
+    configured_acp_command = str(cfg.get("acp_command") or "").strip() or None
+    _raw_args = cfg.get("acp_args")
+    if isinstance(_raw_args, list):
+        configured_acp_args = [str(a) for a in _raw_args]
+    elif isinstance(_raw_args, str) and _raw_args.strip():
+        configured_acp_args = [_raw_args.strip()]
+    else:
+        configured_acp_args = []
 
     if configured_base_url:
         # When delegation.api_key is not set, return None so _build_child_agent
@@ -2719,6 +2754,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "command": configured_acp_command,
+            "args": configured_acp_args,
         }
 
     if not configured_provider:
@@ -2729,6 +2766,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "command": configured_acp_command,
+            "args": configured_acp_args,
         }
 
     # Provider is configured — resolve full credentials
@@ -2757,8 +2796,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
+        # Configured ACP command/args take precedence over the runtime
+        # provider's defaults — that's what `delegation.acp_command: claude`
+        # in the user's config is asking for.
+        "command": configured_acp_command or runtime.get("command"),
+        "args": configured_acp_args if configured_acp_args else list(runtime.get("args") or []),
     }
 
 

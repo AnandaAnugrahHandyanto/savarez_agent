@@ -4427,7 +4427,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # 2. Replace untouched default with a Codex model
         if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
+            # Use gpt-5.4 as the safe-default fallback when live Codex model
+            # discovery fails. gpt-5.3-codex is NOT supported on ChatGPT
+            # accounts (returns HTTP 400: "The 'gpt-5.3-codex' model is not
+            # supported when using Codex with a ChatGPT account").
+            fallback_model = "gpt-5.4"
             try:
                 from hermes_cli.codex_models import get_codex_model_ids
 
