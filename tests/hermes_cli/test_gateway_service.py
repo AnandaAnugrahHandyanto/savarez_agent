@@ -3151,3 +3151,52 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+
+class TestResetFailedQuiet:
+    """_reset_failed_quiet swallows benign reset-failed noise.
+
+    `hermes gateway restart` of a *stopped* gateway runs `reset-failed` before
+    `start`. A disabled+inactive unit is unloaded by systemd, so reset-failed
+    exits non-zero with "Unit ... not loaded" — harmless, but it used to print
+    a scary error line during an otherwise-successful restart.
+    """
+
+    def _capture(self, monkeypatch, returncode, stderr):
+        captured = {}
+
+        def fake_run_systemctl(args, *, system=False, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return subprocess.CompletedProcess(args, returncode, stdout="", stderr=stderr)
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+        return captured
+
+    def test_success_is_silent(self, monkeypatch, capsys):
+        captured = self._capture(monkeypatch, 0, "")
+        gateway_cli._reset_failed_quiet("hermes-gateway-x.service")
+        assert captured["args"] == ["reset-failed", "hermes-gateway-x.service"]
+        # Output must be captured (not inherited) so systemctl can't leak to the tty.
+        assert captured["kwargs"].get("capture_output") is True
+        assert capsys.readouterr().err == ""
+
+    def test_not_loaded_is_swallowed(self, monkeypatch, capsys):
+        self._capture(
+            monkeypatch,
+            1,
+            "Failed to reset failed state of unit hermes-gateway-x.service: "
+            "Unit hermes-gateway-x.service not loaded.",
+        )
+        gateway_cli._reset_failed_quiet("hermes-gateway-x.service")
+        assert capsys.readouterr().err == ""
+
+    def test_not_found_is_swallowed(self, monkeypatch, capsys):
+        self._capture(monkeypatch, 1, "Unit hermes-gateway-x.service not found.")
+        gateway_cli._reset_failed_quiet("hermes-gateway-x.service")
+        assert capsys.readouterr().err == ""
+
+    def test_unexpected_error_is_surfaced(self, monkeypatch, capsys):
+        self._capture(monkeypatch, 1, "Interactive authentication required.")
+        gateway_cli._reset_failed_quiet("hermes-gateway-x.service")
+        assert "Interactive authentication required." in capsys.readouterr().err
