@@ -69,6 +69,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("skills", props)
+        self.assertIn("skills", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -413,6 +415,84 @@ class TestDelegateTask(unittest.TestCase):
         self.assertTrue(callable(mock_child.thinking_callback))
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
+
+    def test_child_preloads_requested_skills_into_ephemeral_prompt(self):
+        """Native delegate_task skills=[...] should load skills before child starts."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent, patch(
+            "agent.skill_commands.build_preloaded_skills_prompt",
+            return_value=("[preloaded vooy-docs skill]", ["vooy-docs"], []),
+        ) as mock_preload:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Create vooy documentation",
+                context=None,
+                toolsets=None,
+                skills=["vooy-docs"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        mock_preload.assert_called_once()
+        self.assertEqual(mock_preload.call_args.args[0], ["vooy-docs"])
+        self.assertRegex(mock_preload.call_args.kwargs["task_id"], r"^sa-0-[0-9a-f]{8}$")
+        _, kwargs = MockAgent.call_args
+        prompt = kwargs["ephemeral_system_prompt"]
+        self.assertIn("Create vooy documentation", prompt)
+        self.assertIn("[preloaded vooy-docs skill]", prompt)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_delegate_task_passes_top_level_skills_to_child_builder(self, mock_run):
+        """Top-level skills should apply to a single delegated task."""
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            delegate_task(
+                goal="Document this source",
+                skills=["vooy-docs"],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(mock_build.call_args.kwargs["skills"], ["vooy-docs"])
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_task_skills_override_top_level_skills(self, mock_run):
+        """Each batch task may override inherited top-level preloaded skills."""
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "A", "api_calls": 1, "duration_seconds": 1.0},
+            {"task_index": 1, "status": "completed", "summary": "B", "api_calls": 1, "duration_seconds": 1.0},
+        ]
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_build.side_effect = [MagicMock(), MagicMock()]
+            delegate_task(
+                tasks=[
+                    {"goal": "Use inherited skills"},
+                    {"goal": "Use task skills", "skills": ["notion"]},
+                ],
+                skills=["vooy-docs"],
+                parent_agent=parent,
+            )
+
+        first_call, second_call = mock_build.call_args_list
+        self.assertEqual(first_call.kwargs["skills"], ["vooy-docs"])
+        self.assertEqual(second_call.kwargs["skills"], ["notion"])
 
 
 class TestToolNamePreservation(unittest.TestCase):
@@ -1622,20 +1702,21 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            # Wait until the heartbeat proves it passed the old idle stale
+            # ceiling, or time out so the test can fail with the touch count.
+            deadline = time.monotonic() + 5.0
+            while len(touch_calls) <= 15 and time.monotonic() < deadline:
+                time.sleep(0.01)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch both the interval AND the idle ceiling so the test proves
-        # the in-tool branch takes effect: with a 0.05s interval and the
-        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
-        # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Patch the interval so the test proves the in-tool branch takes
+        # effect quickly: with a 0.02s interval and the default
+        # _HEARTBEAT_STALE_CYCLES_IDLE=15, the old behavior would trip after
+        # about 0.3s and stop firing. We should see heartbeats continuing
+        # through the full 0.7s run.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.02):
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1643,13 +1724,13 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
+        # With the old idle threshold (15 cycles = 0.3s), touch_calls would
+        # cap around 15. With the in-tool threshold (40 cycles = 0.8s), we
+        # should see substantially more heartbeats over 0.7s.
         self.assertGreater(
-            len(touch_calls), 6,
+            len(touch_calls), 15,
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"got {len(touch_calls)} touches over 0.7s at 0.02s interval",
         )
 
 

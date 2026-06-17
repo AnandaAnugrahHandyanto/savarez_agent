@@ -883,6 +883,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Optional skill names/paths to preload into the child prompt.
+    skills: Optional[List[str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -971,6 +973,42 @@ def _build_child_agent(
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
     )
+    if skills:
+        try:
+            from agent.skill_commands import build_preloaded_skills_prompt
+
+            skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
+                skills,
+                task_id=subagent_id,
+            )
+            skill_blocks: List[str] = []
+            if skills_prompt.strip():
+                skill_blocks.append(
+                    "## Preloaded Skills for This Delegated Task\n"
+                    + skills_prompt.strip()
+                )
+            if missing_skills:
+                skill_blocks.append(
+                    "[Delegate skill preload warning: requested skills not found: "
+                    + ", ".join(missing_skills)
+                    + "]"
+                )
+            if skill_blocks:
+                child_prompt = child_prompt.rstrip() + "\n\n" + "\n\n".join(skill_blocks)
+            if loaded_skills:
+                logger.debug(
+                    "delegate_task: preloaded skills for %s: %s",
+                    subagent_id,
+                    ", ".join(loaded_skills),
+                )
+        except Exception as exc:
+            logger.warning("delegate_task: failed to preload child skills: %s", exc)
+            child_prompt = (
+                child_prompt.rstrip()
+                + "\n\n[Delegate skill preload warning: failed to preload requested skills: "
+                + str(exc)
+                + "]"
+            )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -1904,14 +1942,18 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    skills: Optional[List[str]] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, skills, role)
+      - Batch:  provide tasks array [{goal, context, toolsets, skills, role}, ...]
+
+    Top-level skills preload into a single child or, in batch mode, into every
+    task that does not define its own task-level skills list.
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -1997,7 +2039,13 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "skills": skills,
+                "role": top_role,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2043,6 +2091,7 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
+                skills=t.get("skills") if "skills" in t else skills,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2502,7 +2551,7 @@ def _build_top_level_description() -> str:
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
+        "1. Single task: provide 'goal' (+ optional context, toolsets, skills)\n"
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
         f"items concurrently for this user (configured via "
         f"delegation.max_concurrent_children in config.yaml). "
@@ -2546,7 +2595,10 @@ def _build_top_level_description() -> str:
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task.\n"
+        "- Optional `skills` preloads one or more skills into child agents "
+        "before they start. In batch mode, top-level `skills` are inherited "
+        "by each task unless that task provides its own `skills` list."
     )
 
 
@@ -2560,7 +2612,8 @@ def _build_tasks_param_description() -> str:
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
         f"user, set via delegation.max_concurrent_children). Each gets "
         "its own subagent with isolated context and terminal session. "
-        "When provided, top-level goal/context/toolsets are ignored."
+        "When provided, top-level goal/context/toolsets are ignored; "
+        "top-level skills are inherited unless a task defines its own skills."
     )
 
 
@@ -2669,6 +2722,16 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional ordered list of skill names or paths to preload "
+                    "into the child agent before it starts. In batch mode, "
+                    "top-level skills apply to every task unless that task "
+                    "provides its own skills list."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2683,6 +2746,14 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Skills to preload for this specific task. "
+                                "Overrides top-level skills when provided."
+                            ),
                         },
                         "acp_command": {
                             "type": "string",
@@ -2759,6 +2830,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        skills=args.get("skills"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
