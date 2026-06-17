@@ -10142,6 +10142,29 @@ else:
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+# -- Reconnectable PTY bridge pool ------------------------------------------
+#
+# When the browser WebSocket drops (lid close, network blip, sleep/wake),
+# we keep the PTY child (hermes --tui) alive so a reconnect within the
+# grace window picks up where it left off.  Entries are keyed by the
+# channel id from the query string and auto-evicted after a timeout.
+
+@dataclass
+class _ReconnectableBridge:
+    bridge: Any
+    timer: Any
+
+
+_reconnectable_bridges: dict[str, _ReconnectableBridge] = {}
+_reconnectable_bridges_lock = threading.Lock()
+_BRIDGE_RECONNECT_TIMEOUT_S = 3600
+
+# 1005 means the peer supplied no close status; 1006 is an abnormal closure.
+# Both can represent a sleeping browser. Intentional browser teardown sends
+# 1000 explicitly and closes the child immediately.
+_WS_KEEP_BRIDGE_CODES = frozenset({1005, 1006})
+
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
@@ -10535,6 +10558,53 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
             _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
 
 
+def _expire_reconnectable_bridge(channel: str, expected_bridge: Any) -> None:
+    """Close a parked bridge only if it is still this channel's entry."""
+    with _reconnectable_bridges_lock:
+        entry = _reconnectable_bridges.get(channel)
+        if entry is None or entry.bridge is not expected_bridge:
+            return
+        _reconnectable_bridges.pop(channel, None)
+
+    expected_bridge.close()
+
+
+def _park_reconnectable_bridge(channel: str, bridge: Any) -> None:
+    """Park ``bridge`` for a later browser reconnect."""
+    timer = threading.Timer(
+        _BRIDGE_RECONNECT_TIMEOUT_S,
+        _expire_reconnectable_bridge,
+        args=[channel, bridge],
+    )
+    timer.daemon = True
+    entry = _ReconnectableBridge(bridge=bridge, timer=timer)
+
+    with _reconnectable_bridges_lock:
+        previous = _reconnectable_bridges.get(channel)
+        _reconnectable_bridges[channel] = entry
+
+    if previous is not None:
+        previous.timer.cancel()
+        previous.bridge.close()
+    timer.start()
+
+
+def _take_reconnectable_bridge(channel: str) -> Any | None:
+    """Return the channel's live parked bridge, if one remains."""
+    with _reconnectable_bridges_lock:
+        entry = _reconnectable_bridges.pop(channel, None)
+
+    if entry is None:
+        return None
+
+    entry.timer.cancel()
+    if entry.bridge.is_alive():
+        return entry.bridge
+
+    entry.bridge.close()
+    return None
+
+
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     """Return the channel id from the query string or None if invalid."""
     channel = ws.query_params.get("channel", "")
@@ -10607,38 +10677,55 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
 
-    # --- spawn PTY ------------------------------------------------------
+    # --- spawn or reclaim PTY -------------------------------------------
     resume = ws.query_params.get("resume") or None
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
-    try:
-        argv, cwd, env = _resolve_chat_argv(
-            resume=resume, sidecar_url=sidecar_url, profile=profile
-        )
-    except HTTPException as exc:
-        # Unknown/invalid profile from _resolve_profile_dir.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except SystemExit as exc:
-        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
+    bridge: PtyBridge | None = None
 
+    # If this channel has a live bridge from a previous WS session,
+    # reclaim it instead of spawning a new TUI child.  This lets the
+    # browser reconnect after a lid-close or network blip without
+    # losing the running agent session.
+    if channel:
+        bridge = _take_reconnectable_bridge(channel)
+        if bridge is not None:
+            _log.info(
+                "pty reclaimed bridge channel=%s peer=%s",
+                channel,
+                peer,
+            )
 
-    try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
-    except PtyUnavailableError as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except (FileNotFoundError, OSError) as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
+    if bridge is None:
+        try:
+            argv, cwd, env = _resolve_chat_argv(
+                resume=resume, sidecar_url=sidecar_url, profile=profile
+            )
+        except HTTPException as exc:
+            # Unknown/invalid profile from _resolve_profile_dir.
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        except SystemExit as exc:
+            # _make_tui_argv calls sys.exit(1) when node/npm is missing.
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+
+        try:
+            bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+        except PtyUnavailableError as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        except (FileNotFoundError, OSError) as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+
+    assert bridge is not None
 
     loop = asyncio.get_running_loop()
 
@@ -10661,11 +10748,13 @@ async def pty_ws(ws: WebSocket) -> None:
     reader_task = asyncio.create_task(pump_pty_to_ws())
 
     # --- writer loop: WebSocket → PTY master ----------------------------
+    close_code: int | None = None
     try:
         while True:
             msg = await ws.receive()
             msg_type = msg.get("type")
             if msg_type == "websocket.disconnect":
+                close_code = msg.get("code", 1005)
                 break
             raw = msg.get("bytes")
             if raw is None:
@@ -10683,15 +10772,28 @@ async def pty_ws(ws: WebSocket) -> None:
                 continue
 
             bridge.write(raw)
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as exc:
+        close_code = getattr(exc, "code", 1005)
     finally:
         reader_task.cancel()
         try:
             await reader_task
         except (asyncio.CancelledError, Exception):
             pass
-        bridge.close()
+
+        # On abnormal WS closure (network drop, lid close, sleep) keep
+        # the PTY child alive in the reconnect pool so a new browser WS
+        # within the grace window reclaims it.  Normal close (user closed
+        # tab) and auth/refusal codes tear down immediately.
+        if channel and close_code in _WS_KEEP_BRIDGE_CODES:
+            _log.info(
+                "pty keeping bridge alive for reconnect channel=%s "
+                "close_code=%s timeout=%ss",
+                channel, close_code, _BRIDGE_RECONNECT_TIMEOUT_S,
+            )
+            _park_reconnectable_bridge(channel, bridge)
+        else:
+            bridge.close()
 
 
 # ---------------------------------------------------------------------------

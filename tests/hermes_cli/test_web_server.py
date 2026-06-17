@@ -4849,6 +4849,93 @@ skip_on_windows = pytest.mark.skipif(
 )
 
 
+class _FakeReconnectBridge:
+    def __init__(self, *, alive=True):
+        self.alive = alive
+        self.closed = False
+
+    def is_alive(self):
+        return self.alive
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeReconnectTimer:
+    def __init__(self, interval, callback, args):
+        self.interval = interval
+        self.callback = callback
+        self.args = args
+        self.cancelled = False
+
+    def start(self):
+        return None
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.callback(*self.args)
+
+
+@skip_on_windows
+class TestReconnectablePtyBridgePool:
+    @pytest.fixture(autouse=True)
+    def _reset_pool(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        self.ws = ws
+        self.timers = []
+
+        def fake_timer(interval, callback, args):
+            timer = _FakeReconnectTimer(interval, callback, args)
+            self.timers.append(timer)
+            return timer
+
+        monkeypatch.setattr(ws.threading, "Timer", fake_timer)
+        with ws._reconnectable_bridges_lock:
+            ws._reconnectable_bridges.clear()
+        yield
+        with ws._reconnectable_bridges_lock:
+            entries = list(ws._reconnectable_bridges.values())
+            ws._reconnectable_bridges.clear()
+        for entry in entries:
+            entry.timer.cancel()
+            entry.bridge.close()
+
+    def test_reclaims_live_bridge_and_cancels_expiry(self):
+        bridge = _FakeReconnectBridge()
+
+        self.ws._park_reconnectable_bridge("channel-1", bridge)
+        timer = self.ws._reconnectable_bridges["channel-1"].timer
+
+        assert self.ws._take_reconnectable_bridge("channel-1") is bridge
+        assert timer.cancelled is True
+        assert bridge.closed is False
+        assert "channel-1" not in self.ws._reconnectable_bridges
+
+    def test_dead_bridge_is_closed_instead_of_reclaimed(self):
+        bridge = _FakeReconnectBridge(alive=False)
+
+        self.ws._park_reconnectable_bridge("channel-2", bridge)
+
+        assert self.ws._take_reconnectable_bridge("channel-2") is None
+        assert bridge.closed is True
+
+    def test_stale_expiry_cannot_close_replacement_bridge(self):
+        first = _FakeReconnectBridge()
+        replacement = _FakeReconnectBridge()
+
+        self.ws._park_reconnectable_bridge("channel-3", first)
+        stale_timer = self.timers[-1]
+        self.ws._park_reconnectable_bridge("channel-3", replacement)
+        stale_timer.fire()
+
+        assert first.closed is True
+        assert replacement.closed is False
+        assert self.ws._take_reconnectable_bridge("channel-3") is replacement
+
+
 @skip_on_windows
 class TestPtyWebSocket:
     @pytest.fixture(autouse=True)
@@ -5005,6 +5092,41 @@ class TestPtyWebSocket:
                 if b"round-trip-payload" in buf:
                     break
             assert b"round-trip-payload" in buf
+
+    def test_abnormal_disconnect_reclaims_same_pty(self, monkeypatch):
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None, profile=None: (["/bin/cat"], None, None),
+        )
+        real_spawn = self.ws_module.PtyBridge.spawn
+        spawned = []
+
+        def tracking_spawn(cls, *args, **kwargs):
+            bridge = real_spawn(*args, **kwargs)
+            spawned.append(bridge)
+            return bridge
+
+        monkeypatch.setattr(
+            self.ws_module.PtyBridge,
+            "spawn",
+            classmethod(tracking_spawn),
+        )
+
+        url = self._url(channel="sleep-wake-channel")
+        with self.client.websocket_connect(url) as conn:
+            conn.send_bytes(b"before-sleep\n")
+            assert b"before-sleep" in conn.receive_bytes()
+            conn.close(code=1006)
+
+        assert "sleep-wake-channel" in self.ws_module._reconnectable_bridges
+
+        with self.client.websocket_connect(url) as conn:
+            conn.send_bytes(b"after-wake\n")
+            assert b"after-wake" in conn.receive_bytes()
+
+        assert len(spawned) == 1
+        assert "sleep-wake-channel" not in self.ws_module._reconnectable_bridges
 
     def test_resize_escape_is_forwarded(self, monkeypatch):
         # Resize escape gets intercepted and applied via TIOCSWINSZ, then the

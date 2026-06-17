@@ -583,81 +583,139 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    let reconnectAttempts = 0;
+    let reconnectTimer: number | null = null;
+    let hasConnected = false;
     void (async () => {
-      const authParam = await buildWsAuthParam();
-      if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel, scopedProfile);
-      const ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
-      wsRef.current = ws;
+      const maxReconnectAttempts = 20;
+      const reconnectBaseDelayMs = 1000;
+      const reconnectMaxDelayMs = 30000;
 
-    ws.onopen = () => {
-      setBanner(null);
-      // Send the initial RESIZE immediately so Ink has *a* size to lay
-      // out against on its first paint.  The double-rAF block above will
-      // follow up with the authoritative measurement — at worst Ink
-      // reflows once after the PTY boots, which is imperceptible.
-      ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
-    };
+      function scheduleReconnect(termRef_: Terminal, closeCode: number): void {
+        if (unmounting || reconnectTimer !== null) return;
+        if (reconnectAttempts >= maxReconnectAttempts) {
+          termRef_.write(
+            `\r\n\x1b[90m[session ended (code ${closeCode}) — max reconnection attempts reached]\x1b[0m\r\n`,
+          );
+          return;
+        }
 
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
+        const attemptIndex = reconnectAttempts;
+        reconnectAttempts += 1;
+        const delay = Math.min(
+          reconnectBaseDelayMs * Math.pow(2, attemptIndex),
+          reconnectMaxDelayMs,
+        );
+        const jitteredDelay = delay * (0.8 + Math.random() * 0.4);
+        const delaySeconds = Math.max(1, Math.round(jitteredDelay / 1000));
+        termRef_.write(
+          `\r\n\x1b[90m[connection lost, reconnecting in ${delaySeconds}s (attempt ${reconnectAttempts}/${maxReconnectAttempts})]\x1b[0m\r\n`,
+        );
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          void connectWs(termRef_);
+        }, jitteredDelay);
       }
-    };
 
-    ws.onclose = (ev) => {
-      wsRef.current = null;
-      if (unmounting) {
-        return;
+      async function connectWs(termRef_: Terminal): Promise<void> {
+        try {
+          const authParam = await buildWsAuthParam();
+          if (unmounting) return;
+          const url = buildWsUrl(authParam, resumeParam, channel, scopedProfile);
+          const newWs = new WebSocket(url);
+          newWs.binaryType = "arraybuffer";
+          wsRef.current = newWs;
+          wireWsHandlers(newWs, termRef_);
+        } catch (error) {
+          if (unmounting) return;
+          console.warn("[chat] PTY WebSocket connection attempt failed", error);
+          scheduleReconnect(termRef_, 1006);
+        }
       }
-      // Surface the real cause to the browser console on every close so a
-      // "chat won't connect" report can be diagnosed without server access.
-      // The server sends a machine-parseable reason on every rejection (see
-      // pty_ws in web_server.py); echo it verbatim alongside the close code.
-      const why = ev.reason ? ` reason=${ev.reason}` : "";
-      console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
-      if (ev.code === 4401) {
-        setBanner(
-          ev.reason
-            ? `Auth failed (${ev.reason}). Reload to refresh the session.`
-            : "Auth failed. Reload the page to refresh the session token.",
-        );
-        return;
+
+      function wireWsHandlers(targetWs: WebSocket, termRef_: Terminal): void {
+        targetWs.onopen = () => {
+          if (unmounting || wsRef.current !== targetWs) {
+            targetWs.close(1000, "stale connection");
+            return;
+          }
+
+          const wasReconnect = hasConnected;
+          hasConnected = true;
+          reconnectAttempts = 0;
+          setBanner(null);
+          targetWs.send(`\x1b[RESIZE:${termRef_.cols};${termRef_.rows}]`);
+          if (wasReconnect) {
+            termRef_.write(`\r\n\x1b[90m[reconnected]\x1b[0m\r\n`);
+          }
+          termRef_.focus();
+        };
+
+        targetWs.onmessage = (ev) => {
+          if (typeof ev.data === "string") {
+            termRef_.write(ev.data);
+          } else {
+            termRef_.write(new Uint8Array(ev.data as ArrayBuffer));
+          }
+        };
+
+        targetWs.onclose = (ev) => {
+          if (wsRef.current === targetWs) {
+            wsRef.current = null;
+          }
+          if (unmounting) {
+            return;
+          }
+          const why = ev.reason ? ` reason=${ev.reason}` : "";
+          console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
+          if (ev.code === 4401) {
+            setBanner(
+              ev.reason
+                ? `Auth failed (${ev.reason}). Reload to refresh the session.`
+                : "Auth failed. Reload the page to refresh the session token.",
+            );
+            return;
+          }
+          if (ev.code === 4403) {
+            setBanner(
+              ev.reason
+                ? `Refused: ${ev.reason}.`
+                : "Refused: request host/origin doesn't match the dashboard.",
+            );
+            return;
+          }
+          if (ev.code === 4404) {
+            setBanner(
+              "Embedded chat is disabled on this server (start it with --tui).",
+            );
+            return;
+          }
+          if (ev.code === 4408) {
+            setBanner(
+              ev.reason
+                ? `Refused: ${ev.reason}.`
+                : "Refused: your client isn't permitted (server bound to localhost only).",
+            );
+            return;
+          }
+          if (ev.code === 1011) {
+            return;
+          }
+
+          // No-status and abnormal closures cover sleep/wake and network loss.
+          // The server parks the PTY child under this tab's stable channel id.
+          if (ev.code === 1006 || ev.code === 1005) {
+            scheduleReconnect(termRef_, ev.code);
+            return;
+          }
+          termRef_.write(
+            `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
+          );
+        };
       }
-      if (ev.code === 4403) {
-        // Host/Origin mismatch (DNS-rebinding guard).
-        setBanner(
-          ev.reason
-            ? `Refused: ${ev.reason}.`
-            : "Refused: request host/origin doesn't match the dashboard.",
-        );
-        return;
-      }
-      if (ev.code === 4404) {
-        setBanner(
-          "Embedded chat is disabled on this server (start it with --tui).",
-        );
-        return;
-      }
-      if (ev.code === 4408) {
-        setBanner(
-          ev.reason
-            ? `Refused: ${ev.reason}.`
-            : "Refused: your client isn't permitted (server bound to localhost only).",
-        );
-        return;
-      }
-      if (ev.code === 1011) {
-        // Server already wrote an ANSI error frame.
-        return;
-      }
-      term.write(
-        `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
-      );
-    };
+
+      // --- initial connection ---
+      await connectWs(term);
 
     // Keystrokes → PTY.
     //
@@ -676,18 +734,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
       onDataDisposable = term.onData((data) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
+        if (wsRef.current?.readyState !== WebSocket.OPEN) return;
 
         if (SGR_MOUSE_RE.test(data)) {
           return;
         }
 
-        ws.send(data);
+        wsRef.current?.send(data);
       });
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(`\x1b[RESIZE:${cols};${rows}]`);
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current?.send(`\x1b[RESIZE:${cols};${rows}]`);
         }
       });
     })();
@@ -709,12 +767,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
       // ticket fetch makes the open async). The cleanup runs at the outer
       // effect's top level so it can't reach into that scope — close via
       // the ref instead. ``?.`` covers the race where unmount fires before
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
-      wsRef.current?.close();
+      wsRef.current?.close(1000, "page unmounted");
       wsRef.current = null;
       term.dispose();
       termRef.current = null;
