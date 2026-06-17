@@ -5901,7 +5901,10 @@ def _stub_urlopen(monkeypatch, *, ok: bool):
 
     import urllib.request
 
+    import utils
+
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(utils, "urlopen_bypass_proxy_for_loopback", _opener)
 
 
 def _stub_urlopen_capture(monkeypatch, *, ok: bool):
@@ -5924,7 +5927,10 @@ def _stub_urlopen_capture(monkeypatch, *, ok: bool):
 
     import urllib.request
 
+    import utils
+
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(utils, "urlopen_bypass_proxy_for_loopback", _opener)
     return urls
 
 
@@ -6068,7 +6074,11 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
     assert any(
-        "No supported Chromium-family browser executable was found" in line
+        (
+            "No supported Chromium-family browser executable was found" in line
+            or "Start a Chromium-family browser with remote debugging" in line
+            or "--remote-debugging-port=9222" in line
+        )
         for line in resp["result"]["messages"]
     )
     assert any(
@@ -6183,7 +6193,10 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     import urllib.request
 
+    import utils
+
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(utils, "urlopen_bypass_proxy_for_loopback", _opener)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with patch(
             "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True

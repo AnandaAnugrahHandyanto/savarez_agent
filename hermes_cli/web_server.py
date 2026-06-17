@@ -67,7 +67,7 @@ from gateway.status import (
     get_runtime_status_running_pid,
     read_runtime_status,
 )
-from utils import env_var_enabled
+from utils import env_var_enabled, urlopen_bypass_proxy_for_loopback
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -927,7 +927,7 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
-            with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
+            with urlopen_bypass_proxy_for_loopback(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
                     body = json.loads(resp.read())
                     return True, body
