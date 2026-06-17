@@ -1354,7 +1354,48 @@ class DockerEnvironment(BaseEnvironment):
         # Explicit docker_forward_env entries are an intentional opt-in and must
         # win over the generic Hermes secret blocklist. Only implicit passthrough
         # keys are filtered.
-        forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        implicit_passthrough = passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST
+
+        # weklund: the init-snapshot env path must not let an *implicit*
+        # passthrough key silently override the egress proxy posture.
+        # `_HERMES_PROVIDER_ENV_BLOCKLIST` only filters provider secrets
+        # (API keys/tokens) — it does NOT include the proxy-control vars
+        # (HTTPS_PROXY, SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, …). So when
+        # egress overrides are active, a skill- or config-registered
+        # passthrough of HTTPS_PROXY would land in `docker exec -e` at
+        # init_session() and shadow the container's base proxy settings in
+        # the login-shell snapshot, defeating egress isolation.
+        #
+        # Explicit docker_forward_env collisions are handled separately
+        # (fail-loud at container creation), so we only police the implicit
+        # set here. Mirror enforce_on_docker: drop the offending vars when
+        # enforcement is on, warn-and-keep when it's off.
+        try:
+            _egress_active = bool(_egress_proxy_args_for_docker()[1])
+        except Exception:  # noqa: BLE001 — best-effort; absence == not active
+            _egress_active = False
+        if _egress_active and implicit_passthrough:
+            _critical = _critical_egress_env_names({})
+            _egress_collisions = sorted(implicit_passthrough & _critical)
+            if _egress_collisions:
+                if _egress_enforce_on_docker():
+                    logger.warning(
+                        "Dropping implicit passthrough vars %s from the "
+                        "init-session env: they would override the enforced "
+                        "egress proxy posture. Add them to docker_forward_env "
+                        "to override explicitly, or disable enforce_on_docker.",
+                        _egress_collisions,
+                    )
+                    implicit_passthrough = implicit_passthrough - _critical
+                else:
+                    logger.warning(
+                        "Implicit passthrough vars %s will override egress "
+                        "proxy settings in the init-session snapshot "
+                        "(enforce_on_docker is disabled).",
+                        _egress_collisions,
+                    )
+
+        forward_keys = explicit_forward_keys | implicit_passthrough
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
             value = os.getenv(key)

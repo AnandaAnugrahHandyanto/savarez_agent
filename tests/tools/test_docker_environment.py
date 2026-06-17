@@ -340,6 +340,62 @@ def test_init_env_args_never_forwards_blank_secret(monkeypatch):
     assert "MY_SECRET" not in " ".join(args)
 
 
+def test_init_env_args_drops_implicit_passthrough_proxy_when_egress_enforced(monkeypatch):
+    """weklund: an *implicit* passthrough of HTTPS_PROXY must not override the
+    enforced egress proxy in the init-session snapshot.
+
+    Regression guard: the implicit passthrough set is only filtered by
+    `_HERMES_PROVIDER_ENV_BLOCKLIST` (provider secrets), which does NOT
+    include the proxy-control vars. With egress overrides active and
+    enforce_on_docker on, a passthrough'd HTTPS_PROXY must be dropped.
+    """
+    env = _make_execute_only_env([])  # no explicit docker_forward_env
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://attacker.example:8080")
+    monkeypatch.setattr(
+        docker_env, "get_all_passthrough", lambda: frozenset({"HTTPS_PROXY"}),
+        raising=False,
+    )
+    # env_passthrough is imported lazily inside the method; patch the source.
+    import tools.env_passthrough as _ep
+    monkeypatch.setattr(_ep, "get_all_passthrough", lambda: frozenset({"HTTPS_PROXY"}))
+    # Egress overrides are active and enforcement is on.
+    monkeypatch.setattr(
+        docker_env, "_egress_proxy_args_for_docker",
+        lambda: ([], {"HTTPS_PROXY": "http://127.0.0.1:8888"}, []),
+    )
+    monkeypatch.setattr(docker_env, "_egress_enforce_on_docker", lambda *a, **k: True)
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+
+    args = env._build_init_env_args()
+
+    # The host's HTTPS_PROXY must NOT be forwarded into the init snapshot.
+    assert not any(a.startswith("HTTPS_PROXY=http://attacker") for a in args)
+    assert "attacker.example" not in " ".join(args)
+
+
+def test_init_env_args_keeps_explicit_forward_proxy(monkeypatch):
+    """An *explicit* docker_forward_env entry is an intentional opt-in and is
+    governed by the separate fail-loud creation-time check, not dropped here.
+    """
+    env = _make_execute_only_env(["HTTPS_PROXY"])  # explicit opt-in
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://explicit.example:8080")
+    import tools.env_passthrough as _ep
+    monkeypatch.setattr(_ep, "get_all_passthrough", lambda: frozenset())
+    monkeypatch.setattr(
+        docker_env, "_egress_proxy_args_for_docker",
+        lambda: ([], {"HTTPS_PROXY": "http://127.0.0.1:8888"}, []),
+    )
+    monkeypatch.setattr(docker_env, "_egress_enforce_on_docker", lambda *a, **k: True)
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+
+    args = env._build_init_env_args()
+
+    # Explicit forwards survive the implicit-only egress filter.
+    assert "HTTPS_PROXY=http://explicit.example:8080" in args
+
+
 # ── docker_env tests ──────────────────────────────────────────────
 
 
