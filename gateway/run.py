@@ -9152,13 +9152,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+
+                _footer_git_context = ""
+                _footer_cwd = os.environ.get("TERMINAL_CWD", "")
+                if _footer_cwd and source.platform == Platform.FEISHU:
+                    try:
+                        from gateway.platforms.feishu_card import detect_git_context
+                        _footer_git_context = detect_git_context(_footer_cwd)
+                    except Exception:
+                        pass
+
+                _turn_elapsed = time.time() - _msg_start_time
+
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
+                    cwd=_footer_cwd,
+                    input_tokens=agent_result.get("input_tokens", 0) or 0,
+                    output_tokens=agent_result.get("output_tokens", 0) or 0,
+                    cache_tokens=agent_result.get("cache_read_tokens", 0) or 0,
+                    cost_usd=agent_result.get("estimated_cost_usd", 0.0) or 0.0,
+                    elapsed_seconds=_turn_elapsed,
+                    git_context=_footer_git_context,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -9463,11 +9481,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _foot_adapter = self.adapters.get(source.platform)
                         if _foot_adapter:
-                            await _foot_adapter.send(
-                                source.chat_id,
-                                _footer_line,
-                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
-                            )
+                            _streamed_msg_id = agent_result.get("_streamed_message_id")
+                            if (
+                                source.platform == Platform.FEISHU
+                                and _streamed_msg_id
+                                and getattr(_foot_adapter, '_card_mode_enabled', False)
+                            ):
+                                await _foot_adapter.edit_message(
+                                    chat_id=source.chat_id,
+                                    message_id=_streamed_msg_id,
+                                    content=response or "",
+                                    finalize=True,
+                                    metadata={
+                                        "footer_line": _footer_line,
+                                        "status_text": "✅ 回复完毕",
+                                    },
+                                )
+                            else:
+                                await _foot_adapter.send(
+                                    source.chat_id,
+                                    _footer_line,
+                                    metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
@@ -13961,6 +13996,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if event_type not in {"tool.started",}:
                 return
 
+            # Feishu card mode: route tool status to stream consumer as ephemeral
+            # suffix instead of separate progress messages.
+            if (
+                source.platform == Platform.FEISHU
+                and _stream_consumer is not None
+                and hasattr(_stream_consumer, 'on_tool_status')
+                and getattr(self.adapters.get(source.platform), '_card_mode_enabled', False)
+            ):
+                from gateway.platforms.feishu_card import get_tool_display
+                tool_display = get_tool_display(tool_name or "")
+                _stream_consumer.on_tool_status(f"⏳ *{tool_display}...*")
+                return
+
             # Suppress tool-progress bubbles once the user has sent `stop`.
             # When the LLM response carries N parallel tool calls, the agent
             # fires N "tool.started" events back-to-back before checking for
@@ -16346,6 +16394,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        if _sc and _sc.message_id:
+            if isinstance(response, dict):
+                response["_streamed_message_id"] = _sc.message_id
 
         return response
 

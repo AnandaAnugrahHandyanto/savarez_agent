@@ -88,6 +88,16 @@ def resolve_footer_config(
     return resolved
 
 
+def _format_token_short(value: int) -> str:
+    if value < 0:
+        value = 0
+    if value < 1000:
+        return str(value)
+    if value < 1_000_000:
+        return f"{value / 1000:.1f}k"
+    return f"{value / 1_000_000:.1f}M"
+
+
 def format_runtime_footer(
     *,
     model: Optional[str],
@@ -95,6 +105,12 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_tokens: int = 0,
+    cost_usd: float = 0.0,
+    elapsed_seconds: float = 0.0,
+    git_context: str = "",
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -115,6 +131,20 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "tokens_in":
+            parts.append(f"↑{_format_token_short(input_tokens)}")
+        elif field == "tokens_out":
+            parts.append(f"↓{_format_token_short(output_tokens)}")
+        elif field == "cache":
+            if cache_tokens > 0:
+                parts.append(f"cache:{_format_token_short(cache_tokens)}")
+        elif field == "cost":
+            parts.append(f"${cost_usd:.4f}")
+        elif field == "elapsed":
+            parts.append(f"⏳{int(elapsed_seconds)}s")
+        elif field == "git_context":
+            if git_context:
+                parts.append(f"@{git_context}")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +160,12 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_tokens: int = 0,
+    cost_usd: float = 0.0,
+    elapsed_seconds: float = 0.0,
+    git_context: str = "",
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,4 +182,10 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_tokens=cache_tokens,
+        cost_usd=cost_usd,
+        elapsed_seconds=elapsed_seconds,
+        git_context=git_context,
     )

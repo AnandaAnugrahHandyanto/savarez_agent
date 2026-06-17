@@ -1473,6 +1473,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        self._card_mode_enabled = True
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1783,6 +1784,25 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+
+        # Card mode: wrap content in interactive card
+        if getattr(self, "_card_mode_enabled", False):
+            try:
+                from gateway.platforms.feishu_card import build_card_json
+                card = build_card_json(content=formatted)
+                result = await self._send_card(
+                    chat_id=chat_id,
+                    card=card,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if result.success:
+                    return result
+                logger.warning("[Feishu] Card send failed, falling back to text: %s", result.error)
+            except Exception as exc:
+                logger.warning("[Feishu] Card wrapping failed, falling back to text: %s", exc)
+
+        # Original text path (also serves as fallback)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1835,12 +1855,34 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+
+        # Card mode: patch as interactive card
+        if getattr(self, "_card_mode_enabled", False):
+            try:
+                from gateway.platforms.feishu_card import build_card_json
+                _meta = metadata or {}
+                footer_line = _meta.get("footer_line") if finalize else None
+                status_text = _meta.get("status_text") if finalize else None
+                card = build_card_json(
+                    content=content,
+                    footer_line=footer_line,
+                    status_text=status_text,
+                )
+                result = await self._patch_card(message_id=message_id, card=card)
+                if result.success:
+                    return result
+                logger.warning("[Feishu] Card patch failed, falling back to text edit: %s", result.error)
+            except Exception as exc:
+                logger.warning("[Feishu] Card patch wrapping failed, falling back to text edit: %s", exc)
+
+        # Original text edit path (also serves as fallback)
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -1861,6 +1903,61 @@ class FeishuAdapter(BasePlatformAdapter):
             return result
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def _send_card(
+        self,
+        chat_id: str,
+        card: dict,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send an interactive card message."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "card send failed")
+        except Exception as exc:
+            logger.error("[Feishu] Card send error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def _patch_card(
+        self,
+        message_id: str,
+        card: dict,
+    ) -> "SendResult":
+        """Patch (full-replace) an existing card via im.v1.message.patch."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            from lark_oapi.api.im.v1 import (
+                PatchMessageRequest,
+                PatchMessageRequestBody,
+            )
+
+            payload = json.dumps(card, ensure_ascii=False)
+            body = PatchMessageRequestBody.builder().content(payload).build()
+            request = (
+                PatchMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(body)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+            result = self._finalize_send_result(response, "card patch failed")
+            if result.success:
+                result.message_id = message_id
+            return result
+        except Exception as exc:
+            logger.error("[Feishu] Card patch error for %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     async def send_exec_approval(

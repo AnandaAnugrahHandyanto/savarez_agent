@@ -260,3 +260,103 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+class TestNewFooterFields:
+    def test_tokens_in_field(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["tokens_in"], input_tokens=48,
+        )
+        assert result == "↑48"
+
+    def test_tokens_out_field(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["tokens_out"], output_tokens=11100,
+        )
+        assert result == "↓11.1k"
+
+    def test_cache_field_shown_when_positive(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["cache"], cache_tokens=3400000,
+        )
+        assert result == "cache:3.4M"
+
+    def test_cache_field_hidden_when_zero(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["cache"], cache_tokens=0,
+        )
+        assert result == ""
+
+    def test_cost_field(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["cost"], cost_usd=2.9475,
+        )
+        assert result == "$2.9475"
+
+    def test_cost_field_small(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["cost"], cost_usd=0.015,
+        )
+        assert result == "$0.0150"
+
+    def test_elapsed_field(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["elapsed"], elapsed_seconds=34.2,
+        )
+        assert result == "⏳34s"
+
+    def test_git_context_field(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["git_context"], git_context="nine:feat/xxx",
+        )
+        assert result == "@nine:feat/xxx"
+
+    def test_git_context_hidden_when_empty(self):
+        result = format_runtime_footer(
+            model=None, context_tokens=0, context_length=None,
+            fields=["git_context"], git_context="",
+        )
+        assert result == ""
+
+    def test_full_feishu_footer(self):
+        result = format_runtime_footer(
+            model="openai/gpt-5.5",
+            context_tokens=0,
+            context_length=None,
+            fields=["tokens_in", "tokens_out", "cache", "cost", "git_context", "elapsed", "model"],
+            input_tokens=48,
+            output_tokens=11100,
+            cache_tokens=3400000,
+            cost_usd=2.9475,
+            git_context="nine:feat/xxx",
+            elapsed_seconds=34.2,
+        )
+        assert result == "↑48 · ↓11.1k · cache:3.4M · $2.9475 · @nine:feat/xxx · ⏳34s · gpt-5.5"
+
+
+class TestFeishuFooterConfig:
+    def test_feishu_platform_override(self):
+        config = {
+            "display": {
+                "runtime_footer": {"enabled": True},
+                "platforms": {
+                    "feishu": {
+                        "runtime_footer": {
+                            "enabled": True,
+                            "fields": ["tokens_in", "tokens_out", "cache", "cost", "git_context", "elapsed", "model"],
+                        }
+                    }
+                },
+            }
+        }
+        resolved = resolve_footer_config(config, "feishu")
+        assert resolved["enabled"] is True
+        assert resolved["fields"] == ["tokens_in", "tokens_out", "cache", "cost", "git_context", "elapsed", "model"]

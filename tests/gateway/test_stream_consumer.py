@@ -1948,3 +1948,59 @@ class TestUtf16OverflowDetection:
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
 
+
+class TestToolStatus:
+    """Test on_tool_status ephemeral display in stream consumer."""
+
+    def test_on_tool_status_queues_sentinel(self):
+        from gateway.stream_consumer import GatewayStreamConsumer, _TOOL_STATUS
+        from unittest.mock import MagicMock
+
+        adapter = MagicMock()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        consumer.on_tool_status("⏳ Bash · 执行命令...")
+
+        item = consumer._queue.get_nowait()
+        assert isinstance(item, tuple)
+        assert item[0] is _TOOL_STATUS
+        assert item[1] == "⏳ Bash · 执行命令..."
+
+    def test_tool_status_cleared_on_text_delta(self):
+        from gateway.stream_consumer import GatewayStreamConsumer, _TOOL_STATUS
+        from unittest.mock import MagicMock
+
+        adapter = MagicMock()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        consumer._tool_status_text = "⏳ Read · 阅读文件..."
+        consumer._filter_and_accumulate("new text")
+        consumer._tool_status_text = None
+        assert consumer._tool_status_text is None
+
+    def test_tool_status_cleared_on_done(self):
+        """Regression: _tool_status_text must not leak into the final edit."""
+        from gateway.stream_consumer import GatewayStreamConsumer, _DONE, _TOOL_STATUS
+        from unittest.mock import MagicMock
+
+        adapter = MagicMock()
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        consumer._queue.put((_TOOL_STATUS, "⏳ Bash · 执行命令..."))
+        consumer._queue.put(_DONE)
+
+        got_done = False
+        import queue as _q
+        while True:
+            try:
+                item = consumer._queue.get_nowait()
+                if item is _DONE:
+                    got_done = True
+                    break
+                if isinstance(item, tuple) and len(item) == 2 and item[0] is _TOOL_STATUS:
+                    consumer._tool_status_text = item[1]
+                    continue
+            except _q.Empty:
+                break
+
+        assert got_done
+        assert consumer._tool_status_text == "⏳ Bash · 执行命令..."
+        consumer._tool_status_text = None
+        assert consumer._tool_status_text is None
