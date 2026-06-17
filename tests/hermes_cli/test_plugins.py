@@ -129,6 +129,46 @@ class TestPluginDiscovery:
 
         assert "proj_plugin" not in mgr._plugins
 
+    def test_bundled_core_plugins_auto_load(self, tmp_path, monkeypatch):
+        """Bundled core plugins load without requiring plugins.enabled."""
+        bundled_dir = tmp_path / "bundled_plugins"
+        _make_plugin_dir(
+            bundled_dir,
+            "core_time",
+            register_body='ctx.register_hook("pre_llm_call", lambda **kwargs: None)',
+            manifest_extra={"kind": "core", "hooks": ["pre_llm_call"]},
+            auto_enable=False,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled_dir)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "core_time" in mgr._plugins
+        assert mgr._plugins["core_time"].enabled
+
+    def test_core_plugin_list_status_is_enabled(self, tmp_path, monkeypatch, capsys):
+        """Plugin list should show bundled core plugins as enabled."""
+        from hermes_cli.plugins_cmd import cmd_list
+
+        bundled_dir = tmp_path / "bundled_plugins"
+        _make_plugin_dir(
+            bundled_dir,
+            "core_time",
+            manifest_extra={"kind": "core", "hooks": ["pre_llm_call"]},
+            auto_enable=False,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled_dir)
+
+        cmd_list()
+
+        output = capsys.readouterr().out
+        assert "core_time" in output
+        assert "not enabled" not in output
+        assert "enabled" in output
+
     def test_discover_is_idempotent(self, tmp_path, monkeypatch):
         """Calling discover_and_load() twice does not duplicate plugins."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

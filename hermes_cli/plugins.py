@@ -227,7 +227,7 @@ def _get_enabled_plugins() -> Optional[set]:
 # Data classes
 # ---------------------------------------------------------------------------
 
-_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "core", "backend", "exclusive", "platform", "model-provider"}
 
 
 @dataclass
@@ -246,6 +246,8 @@ class PluginManifest:
     # Plugin kind — see plugins.py module docstring for semantics.
     # ``standalone`` (default): hooks/tools of its own; opt-in via
     #                           ``plugins.enabled``.
+    # ``core``: bundled Hermes behavior that must auto-load without mutating
+    #           user config (for example per-turn context sync hooks).
     # ``backend``: pluggable backend for an existing core tool (e.g.
     #              image_gen). Built-in (bundled) backends auto-load;
     #              user-installed still gated by ``plugins.enabled``.
@@ -824,7 +826,7 @@ class PluginManager:
             # Bundled platform plugins (gateway adapters like IRC) auto-load
             # for the same reason: every platform Hermes ships must be
             # available out of the box without the user having to opt in.
-            if manifest.source == "bundled" and manifest.kind in ("backend", "platform"):
+            if manifest.source == "bundled" and manifest.kind in ("backend", "platform", "core"):
                 self._load_plugin(manifest)
                 continue
 

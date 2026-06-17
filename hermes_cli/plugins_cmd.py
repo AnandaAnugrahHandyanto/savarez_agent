@@ -783,9 +783,15 @@ def cmd_list() -> None:
     table.add_column("Source", style="dim")
 
     for name, version, description, source, _dir in entries:
+        kind = ""
+        try:
+            manifest = _read_manifest(_dir)
+            kind = str(manifest.get("kind", "")).strip().lower()
+        except Exception:
+            kind = ""
         if name in disabled:
             status = "[red]disabled[/red]"
-        elif name in enabled:
+        elif name in enabled or (source == "bundled" and kind == "core"):
             status = "[green]enabled[/green]"
         else:
             status = "[yellow]not enabled[/yellow]"

@@ -1,0 +1,7 @@
+name: timeline_sync
+version: "0.1.0"
+description: "Injects fresh real-world time and recent cross-platform context before each LLM turn."
+author: Hermes Agent
+kind: core
+hooks:
+  - pre_llm_call
