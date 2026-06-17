@@ -9,7 +9,10 @@ const DEFAULT_LOOP_MS = 1100
 // Mirrors agent.pet.constants.DEFAULT_SCALE — fallback only; the gateway sends
 // the configured scale.
 const DEFAULT_SCALE = 0.33
-const DEFAULT_STATE_ROWS = ['idle', 'wave', 'run', 'failed', 'review', 'jump', 'extra1', 'extra2']
+// Mirrors agent.pet.constants.STATE_ROWS: current Codex/petdex atlases are
+// 8 columns x 9 rows. Hermes drives the front-facing `run` row (row 7), not the
+// directional rows, and uses the shorter `wave` / `jump` state names.
+const DEFAULT_STATE_ROWS = ['idle', 'running-right', 'running-left', 'wave', 'jump', 'failed', 'waiting', 'run', 'review']
 
 interface PetSpriteProps {
   info: PetInfo
