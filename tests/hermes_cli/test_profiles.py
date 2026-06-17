@@ -35,6 +35,9 @@ from hermes_cli.profiles import (
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
+    find_alias_for_profile,
+    _get_wrapper_dir,
+    _MAX_WRAPPER_BYTES,
 )
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -1487,3 +1490,50 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+class TestFindAliasForProfile:
+    """Tests for find_alias_for_profile() wrapper-directory scanning."""
+
+    def _wrapper_dir(self):
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        return wrapper_dir
+
+    def test_finds_matching_wrapper(self, profile_env):
+        """A small wrapper whose body invokes the profile is discovered."""
+        wrapper_dir = self._wrapper_dir()
+        (wrapper_dir / "coder").write_text('#!/bin/sh\nexec hermes -p coder "$@"\n')
+        assert find_alias_for_profile("coder") == "coder"
+
+    def test_prefers_custom_alias_over_profile_named(self, profile_env):
+        """A custom-named alias is preferred over the profile-named wrapper."""
+        wrapper_dir = self._wrapper_dir()
+        (wrapper_dir / "coder").write_text('#!/bin/sh\nexec hermes -p coder "$@"\n')
+        (wrapper_dir / "cc").write_text('#!/bin/sh\nexec hermes -p coder "$@"\n')
+        assert find_alias_for_profile("coder") == "cc"
+
+    def test_skips_large_files_without_reading(self, profile_env, monkeypatch):
+        """Large files in the wrapper dir are skipped without being read.
+
+        Regression test: ~/.local/bin frequently also holds large, extensionless
+        CLI binaries. Reading those in full made the scan (and every command that
+        lists profiles/gateways) pathologically slow. The size guard must skip
+        them before any read_text() call.
+        """
+        wrapper_dir = self._wrapper_dir()
+        (wrapper_dir / "coder").write_text('#!/bin/sh\nexec hermes -p coder "$@"\n')
+        big = wrapper_dir / "codex"  # extensionless, like a real CLI binary
+        big.write_bytes(b"\x00" * (_MAX_WRAPPER_BYTES + 1))
+
+        read_paths = []
+        original_read_text = Path.read_text
+
+        def spy_read_text(self, *args, **kwargs):
+            read_paths.append(Path(self))
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", spy_read_text)
+
+        assert find_alias_for_profile("coder") == "coder"
+        assert big not in read_paths  # the large file was never read

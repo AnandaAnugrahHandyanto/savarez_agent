@@ -391,6 +391,15 @@ def _is_wrapper_dir_in_path() -> bool:
     return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
 
 
+# Wrapper scripts are a couple of lines of shell (POSIX) or .bat (Windows), so
+# they are always tiny. Anything larger in the wrapper directory cannot be one
+# of ours, and reading it would be wasteful — ~/.local/bin commonly also holds
+# unrelated, extensionless multi-hundred-MB CLI binaries. Skip files above this
+# size before reading them to keep wrapper scans cheap. See the read sites in
+# find_alias_for_profile() and remove_wrapper_script().
+_MAX_WRAPPER_BYTES = 64 * 1024
+
+
 def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[Path]:
     """Create a shell wrapper script at ~/.local/bin/<name>.
 
@@ -445,7 +454,11 @@ def remove_wrapper_script(name: str) -> bool:
     for wrapper_path in candidates:
         if wrapper_path.exists():
             try:
-                # Verify it's our wrapper before removing
+                # Verify it's our wrapper before removing. Guard against reading
+                # a large file: a profile could share a name with an unrelated
+                # big binary in ~/.local/bin, which is never one of our wrappers.
+                if wrapper_path.stat().st_size > _MAX_WRAPPER_BYTES:
+                    continue
                 content = wrapper_path.read_text()
                 if "hermes -p" in content:
                     wrapper_path.unlink()
@@ -515,6 +528,13 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
         if is_windows and entry.suffix != ".bat":
             continue
         if not is_windows and entry.suffix:
+            continue
+        # Skip large files before reading: our wrappers are tiny, and the
+        # wrapper dir (~/.local/bin) often also holds big unrelated binaries.
+        try:
+            if entry.stat().st_size > _MAX_WRAPPER_BYTES:
+                continue
+        except OSError:
             continue
         try:
             content = entry.read_text()
