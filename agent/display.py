@@ -1052,8 +1052,13 @@ def get_cute_tool_message(
         return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
     if tool_name == "execute_code":
         code = args.get("code", "")
-        first_line = code.strip().split("\n")[0] if code.strip() else ""
-        return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
+        lines = code.strip().split("\n") if code.strip() else []
+        if len(lines) <= 2:
+            preview = " | ".join(ln.strip() for ln in lines if ln.strip())
+        else:
+            # First line + line count for longer scripts
+            preview = f"{lines[0].strip()}  (+{len(lines)-1} lines)"
+        return _wrap(f"┊ 🐍 exec      {_trunc(preview, 55)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
