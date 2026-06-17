@@ -157,6 +157,74 @@ _MARKDOWN_HINT_RE = re.compile(
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+
+
+def _markdown_table_to_card(title: str, table_text: str) -> Optional[Dict[str, Any]]:
+    """Convert a Markdown table string to a Feishu interactive card JSON.
+
+    Returns None if the table cannot be parsed.
+    """
+    lines = table_text.strip().split("\n")
+    if len(lines) < 2:
+        return None
+
+    # Parse header
+    header_cells = [c.strip() for c in lines[0].strip().split("|")[1:-1]]
+    if not header_cells:
+        return None
+
+    # Skip separator line (line 1)
+    # Parse data rows
+    rows: list[Dict[str, str]] = []
+    for line in lines[2:]:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            break
+        cells = [c.strip() for c in stripped.split("|")[1:-1]]
+        if not cells or all(c == "" for c in cells):
+            continue
+        row_obj: Dict[str, str] = {}
+        for i, col_name in enumerate(header_cells):
+            row_obj[col_name] = cells[i] if i < len(cells) else ""
+        rows.append(row_obj)
+
+    if not rows:
+        return None
+
+    col_defs = [
+        {"name": c, "display_name": c, "data_type": "text"}
+        for c in header_cells
+    ]
+
+    return {
+        "header": {
+            "template": "blue",
+            "title": {
+                "content": title,
+                "tag": "plain_text",
+            },
+        },
+        "elements": [
+            {
+                "tag": "table",
+                "page_size": min(len(rows), 50),
+                "row_height": "low",
+                "header_style": {
+                    "text_align": "left",
+                    "text_size": "normal",
+                    "background_style": "none",
+                    "text_color": "grey",
+                    "bold": True,
+                    "lines": 1,
+                },
+                "columns": col_defs,
+                "rows": rows,
+            }
+        ],
+    }
+
+
+_POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -1778,11 +1846,104 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """Send a Feishu message.
+
+        When the content contains a Markdown table, the table is automatically
+        converted to an interactive card (table component) and sent separately,
+        while the remaining text is sent through the normal pipeline.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+
+        # --- Auto-convert Markdown tables to interactive cards ---
+        table_match = _MARKDOWN_TABLE_RE.search(formatted)
+        if table_match:
+            table_text = table_match.group(0)
+            before = formatted[: table_match.start()].rstrip("\n")
+            after = formatted[table_match.end():].lstrip("\n")
+
+            # Extract title from preceding text (first line or heading)
+            title = "📊 表格"
+            if before:
+                first_line = before.split("\n")[0].strip()
+                # Strip markdown heading markers
+                title = first_line.lstrip("#").strip() or "📊 表格"
+                if len(title) > 40:
+                    title = title[:37] + "..."
+
+            # Parse the Markdown table into card JSON
+            card = _markdown_table_to_card(title, table_text)
+            card_sent = False
+            card_result = SendResult(success=False, error="card parse failed")
+            if card:
+                card_result = await self.send_interactive_card(
+                    chat_id=chat_id,
+                    card=card,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if card_result.raw_response:
+                    reply_to = self._extract_response_field(
+                        card_result.raw_response, "message_id"
+                    )
+                card_sent = True
+            else:
+                card_sent = False
+
+            # Send remaining text (before + after the table)
+            remaining = "\n\n".join(filter(None, [before, after]))
+            if remaining.strip():
+                chunks = self.truncate_message(remaining, self.MAX_MESSAGE_LENGTH)
+                last_response = None
+                try:
+                    for chunk in chunks:
+                        msg_type, payload = self._build_outbound_payload(chunk)
+                        try:
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type=msg_type,
+                                payload=payload,
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                        except Exception as exc:
+                            if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                                raise
+                            logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type="text",
+                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                        if (
+                            msg_type == "post"
+                            and not self._response_succeeded(response)
+                            and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                        ):
+                            logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type="text",
+                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                        last_response = response
+                    return self._finalize_send_result(last_response, "send failed")
+                except Exception as exc:
+                    logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+                    return SendResult(success=False, error=str(exc))
+            else:
+                # Only table, no other text — return card result or fallback
+                if card_sent:
+                    return card_result
+                # card parsing failed — fall through to normal text path
+
+        # --- Normal path (no Markdown table detected) ---
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
