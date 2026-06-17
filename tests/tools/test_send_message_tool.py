@@ -29,6 +29,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _send_email,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -1345,6 +1346,38 @@ class TestEmailHomeChannelErrorHint:
                 )
             )
         assert "TELEGRAM_HOME_CHANNEL" in result["error"]
+
+
+class TestSendEmailTransportSelection:
+    def test_send_email_uses_outlook_oauth_path(self):
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@outlook.com",
+            "EMAIL_AUTH_MODE": "outlook_oauth",
+            "MS_CLIENT_ID": "client-id",
+            "MS_CLIENT_SECRET": "client-secret",
+            "MS_TENANT_ID": "tenant-id",
+        }, clear=True), \
+            patch("gateway.platforms.email._get_oauth_token_path") as mock_token_path, \
+            patch("gateway.platforms.email.EmailAdapter._send_outlook_mime_message", new_callable=AsyncMock) as mock_send, \
+            patch("smtplib.SMTP") as mock_smtp:
+            mock_token_path.return_value.exists.return_value = True
+            result = asyncio.run(_send_email({"auth_mode": "outlook_oauth"}, "user@test.com", "hello"))
+
+        assert result["success"] is True
+        mock_send.assert_awaited_once()
+        mock_smtp.assert_not_called()
+
+    def test_send_email_outlook_oauth_missing_config_returns_error(self):
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@outlook.com",
+            "EMAIL_AUTH_MODE": "outlook_oauth",
+        }, clear=True), \
+            patch("gateway.platforms.email._get_oauth_token_path") as mock_token_path:
+            mock_token_path.return_value.exists.return_value = False
+            result = asyncio.run(_send_email({"auth_mode": "outlook_oauth"}, "user@test.com", "hello"))
+
+        assert "error" in result
+        assert "Outlook OAuth" in result["error"]
 
 
 class TestSendDiscordThreadId:

@@ -1296,20 +1296,25 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
 
 async def _send_email(extra, chat_id, message):
-    """Send via SMTP (one-shot, no persistent connection needed)."""
+    """Send via the configured email transport."""
     import smtplib
     from email.mime.text import MIMEText
+    from gateway.config import PlatformConfig
+    from gateway.platforms.email import (
+        _determine_email_auth_mode,
+        _get_ms_oauth_settings,
+        _get_oauth_token_path,
+        EmailAdapter,
+    )
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    auth_mode = (extra.get("auth_mode") or _determine_email_auth_mode()).strip().lower()
     try:
         smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
     except (ValueError, TypeError):
         smtp_port = 587
-
-    if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
     try:
         msg = MIMEText(message, "plain", "utf-8")
@@ -1317,6 +1322,19 @@ async def _send_email(extra, chat_id, message):
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
+
+        if auth_mode == "outlook_oauth":
+            settings = _get_ms_oauth_settings()
+            token_path = _get_oauth_token_path()
+            if not address or not settings["tenant_id"] or not settings["client_id"] or not settings["client_secret"] or not token_path.exists():
+                return {"error": "Email not configured for Outlook OAuth (EMAIL_ADDRESS, MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, token cache required)"}
+
+            adapter = EmailAdapter(PlatformConfig(enabled=True, extra={"auth_mode": "outlook_oauth"}))
+            await adapter._send_outlook_mime_message(msg)
+            return {"success": True, "platform": "email", "chat_id": chat_id}
+
+        if not all([address, password, smtp_host]):
+            return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls(context=ssl.create_default_context())

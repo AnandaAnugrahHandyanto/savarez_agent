@@ -6945,7 +6945,7 @@ class GatewayRunner:
         elif platform == Platform.EMAIL:
             from gateway.platforms.email import EmailAdapter, check_email_requirements
             if not check_email_requirements():
-                logger.warning("Email: EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_IMAP_HOST, or EMAIL_SMTP_HOST not set")
+                logger.warning("Email: missing required basic-auth env vars or Outlook OAuth settings")
                 return None
             return EmailAdapter(config)
 

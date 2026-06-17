@@ -1470,7 +1470,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_pwd = os.getenv("EMAIL_PASSWORD")
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
-    if all([email_addr, email_pwd, email_imap, email_smtp]):
+    email_auth_mode = (os.getenv("EMAIL_AUTH_MODE") or "").strip().lower()
+    email_oauth_ready = bool(
+        email_addr
+        and (os.getenv("MS_CLIENT_ID") or os.getenv("MSGRAPH_CLIENT_ID"))
+        and (os.getenv("MS_CLIENT_SECRET") or os.getenv("MSGRAPH_CLIENT_SECRET"))
+        and (os.getenv("MS_TENANT_ID") or os.getenv("MSGRAPH_TENANT_ID"))
+    )
+    if all([email_addr, email_pwd, email_imap, email_smtp]) or email_auth_mode == "outlook_oauth" or email_oauth_ready:
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
         config.platforms[Platform.EMAIL].enabled = True
@@ -1479,6 +1486,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
+        if email_auth_mode:
+            config.platforms[Platform.EMAIL].extra["auth_mode"] = email_auth_mode
     email_home = os.getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
         config.platforms[Platform.EMAIL].home_channel = HomeChannel(
