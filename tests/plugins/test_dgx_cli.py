@@ -1104,6 +1104,19 @@ class TestHFCacheHelpers:
         result = _list_hf_models("dgx", "10.0.0.1")
         assert result == ["nvidia/foo"]
 
+    def test_list_hf_models_includes_single_segment_ids(self, monkeypatch):
+        # Regression: legacy single-segment repo ids (gpt2, bert-base-uncased,
+        # t5-base) are cached as models--<name> with no org separator. The old
+        # `if "--" in name` guard silently dropped them.
+        from plugins.dgx.cli import _list_hf_models
+        raw = "models--gpt2\nmodels--bert-base-uncased\nmodels--nvidia--Foo\n"
+        monkeypatch.setattr("plugins.dgx.cli._ssh_run", lambda *a, **k: (True, raw))
+        result = _list_hf_models("dgx", "10.0.0.1")
+        assert "gpt2" in result
+        assert "bert-base-uncased" in result
+        assert "nvidia/Foo" in result
+        assert len(result) == 3
+
     def test_list_hf_models_returns_empty_on_ssh_failure(self, monkeypatch):
         from plugins.dgx.cli import _list_hf_models
         monkeypatch.setattr("plugins.dgx.cli._ssh_run", lambda *a, **k: (False, "refused"))

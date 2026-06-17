@@ -356,11 +356,18 @@ def _list_hf_models(user: str, host: str) -> List[str]:
     models: List[str] = []
     for line in out.splitlines():
         name = line.strip()
-        if name.startswith("models--"):
-            name = name[len("models--"):]
-            if "--" in name:
-                idx = name.index("--")
-                models.append(name[:idx] + "/" + name[idx + 2:])
+        if not name.startswith("models--"):
+            continue
+        name = name[len("models--"):]
+        if "--" in name:
+            # org--name -> org/name. The first "--" is the org/name boundary
+            # (HF encodes the single "/"); anything after stays in the name.
+            idx = name.index("--")
+            models.append(name[:idx] + "/" + name[idx + 2:])
+        elif name:
+            # Single-segment repo id with no org prefix (e.g. gpt2,
+            # bert-base-uncased, t5-base) — keep it, don't silently drop it.
+            models.append(name)
     return models
 
 
