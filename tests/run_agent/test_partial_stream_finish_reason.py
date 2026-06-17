@@ -362,3 +362,59 @@ class TestConversationLoopPartialStreamContinuation:
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
+
+    def test_truncated_tool_call_json_recovers_instead_of_returning_length_error(
+        self, loop_agent,
+    ):
+        """When a provider hides truncation behind finish_reason='tool_calls',
+        incomplete tool JSON used to return the misleading final error
+        'Response truncated due to output length limit'. The loop should instead
+        feed a synthetic tool error back to the model so it can retry with
+        smaller/chunked arguments.
+        """
+
+        from tests.run_agent.test_run_agent import (
+            _mock_response,
+            _mock_tool_call,
+        )
+
+        truncated_tool_call = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    name="write_file",
+                    arguments='{"path": "/tmp/large.md", "content": "unfinished',
+                    call_id="call_truncated",
+                )
+            ],
+        )
+        continuation = _mock_response(
+            content="Recovered by using smaller chunks.",
+            finish_reason="stop",
+        )
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            truncated_tool_call,
+            continuation,
+        ]
+        loop_agent.valid_tool_names = {"write_file"}
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("write a large file")
+
+        assert result["completed"] is True
+        assert result.get("error") is None
+        assert result["final_response"] == "Recovered by using smaller chunks."
+        assert loop_agent.client.chat.completions.create.call_count == 2
+
+        second_call = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call.kwargs.get("messages") or second_call.args[0].get("messages")
+        last_user = next(m for m in reversed(msgs) if m.get("role") == "user")
+        assert "tool call arguments were truncated" in last_user["content"]
+        assert "smaller chunks" in last_user["content"]
+        assert not any(m.get("role") == "tool" for m in msgs)

@@ -3788,7 +3788,7 @@ def run_conversation(
                 
                 if invalid_json_args:
                     # Check if the invalid JSON is due to truncation rather
-                    # than a model formatting mistake.  Routers sometimes
+                    # than a model formatting mistake. Routers sometimes
                     # rewrite finish_reason from "length" to "tool_calls",
                     # hiding the truncation from the length handler above.
                     # Detect truncation: args that don't end with } or ]
@@ -3799,22 +3799,46 @@ def run_conversation(
                         if tc.function.name in {n for n, _ in invalid_json_args}
                     )
                     if _truncated:
-                        agent._vprint(
-                            f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
-                            f"(finish_reason={finish_reason!r}) — refusing to execute.",
-                            force=True,
+                        # Do not end the turn with the misleading generic
+                        # "output length limit" error. The tool was not
+                        # executed, but the model can usually recover if it is
+                        # told the arguments were cut off and must be chunked.
+                        # Do NOT append the malformed assistant tool_call to
+                        # history: the pre-request sanitizer will discard the
+                        # corrupted arguments before the next API call and can
+                        # replace our targeted recovery text with a generic
+                        # corruption notice. Instead append plain assistant +
+                        # user messages that preserve role alternation without
+                        # claiming a tool actually ran.
+                        agent._buffer_vprint(
+                            f"⚠️  Truncated tool call arguments detected "
+                            f"(finish_reason={finish_reason!r}) — asking model "
+                            f"to retry with smaller/chunked arguments."
                         )
                         agent._invalid_json_retries = 0
-                        agent._cleanup_task_resources(effective_task_id)
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": None,
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "partial": True,
-                            "error": "Response truncated due to output length limit",
-                        }
+                        invalid_names = {name for name, _ in invalid_json_args}
+                        tool_list = ", ".join(sorted(invalid_names)) or "unknown tool"
+                        messages.append({
+                            "role": "assistant",
+                            "content": (
+                                "[Hermes internal recovery: the previous tool "
+                                f"call arguments for {tool_list} were truncated "
+                                "before valid JSON was complete. No tool was "
+                                "executed.]"
+                            ),
+                        })
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[System: Your previous tool call arguments were "
+                                "truncated before valid JSON was complete, so the "
+                                "tool was NOT executed. Do not retry the same "
+                                "oversized tool call. Break large content into "
+                                "smaller chunks or use targeted patch calls, then "
+                                "call the tool again with complete valid JSON.]"
+                            ),
+                        })
+                        continue
 
                     # Track retries for invalid JSON arguments
                     agent._invalid_json_retries += 1

@@ -4428,8 +4428,9 @@ class TestRunConversation:
 
     def test_truncated_tool_args_detected_when_finish_reason_not_length(self, agent):
         """When a router rewrites finish_reason from 'length' to 'tool_calls',
-        truncated JSON arguments should still be detected and refused rather
-        than wasting 3 retry attempts."""
+        truncated JSON arguments should still be detected, but the turn should
+        recover by telling the model to retry with smaller/chunked arguments
+        instead of ending with the misleading output-length error."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
         bad_tc = _mock_tool_call(
@@ -4440,7 +4441,8 @@ class TestRunConversation:
         resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[bad_tc],
         )
-        agent.client.chat.completions.create.return_value = resp
+        final_resp = _mock_response(content="Recovered.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp, final_resp]
 
         with (
             patch("run_agent.handle_function_call") as mock_handle_function_call,
@@ -4450,10 +4452,14 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("write the report")
 
-        assert result["completed"] is False
-        assert result["partial"] is True
-        assert "truncated due to output length limit" in result["error"]
+        assert result["completed"] is True
+        assert result.get("error") is None
+        assert result["final_response"] == "Recovered."
         mock_handle_function_call.assert_not_called()
+        second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        assert second_call_messages[-1]["role"] == "user"
+        assert "tool call arguments were truncated" in second_call_messages[-1]["content"]
+        assert "smaller chunks" in second_call_messages[-1]["content"]
 
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
         """Regression: kanban worker must signal the dispatcher when its
