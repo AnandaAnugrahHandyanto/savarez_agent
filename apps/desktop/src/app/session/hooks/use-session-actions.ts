@@ -63,6 +63,7 @@ interface SessionActionsOptions {
   getRouteToken: () => string
   navigate: NavigateFunction
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  resetViewSync: () => void
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -379,6 +380,7 @@ export function useSessionActions({
   getRouteToken,
   navigate,
   requestGateway,
+  resetViewSync,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
   selectedStoredSessionIdRef,
@@ -392,6 +394,7 @@ export function useSessionActions({
 
   const startFreshSessionDraft = useCallback(
     (replaceRoute = false) => {
+      resetViewSync()
       busyRef.current = false
       setBusy(false)
       setAwaitingResponse(false)
@@ -424,7 +427,7 @@ export function useSessionActions({
       // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
     },
-    [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
+    [activeSessionIdRef, busyRef, navigate, resetViewSync, selectedStoredSessionIdRef]
   )
 
   const createBackendSessionForSend = useCallback(
@@ -478,6 +481,7 @@ export function useSessionActions({
           return null
         }
 
+        resetViewSync()
         activeSessionIdRef.current = created.session_id
         selectedStoredSessionIdRef.current = stored
         ensureSessionState(created.session_id, stored)
@@ -525,6 +529,7 @@ export function useSessionActions({
       getRouteToken,
       navigate,
       requestGateway,
+      resetViewSync,
       selectedStoredSessionIdRef,
       updateSessionState
     ]
@@ -577,12 +582,14 @@ export function useSessionActions({
       // resume entry").
       setFreshDraftReady(false)
       clearNotifications()
+      resetViewSync()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
 
       const warmRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      const warmState = warmRuntimeId && sessionStateByRuntimeIdRef.current.get(warmRuntimeId)
 
-      if (!warmRuntimeId || !sessionStateByRuntimeIdRef.current.get(warmRuntimeId)) {
+      if (!warmRuntimeId || !warmState || warmState.storedSessionId !== storedSessionId) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
         setMessages([])
@@ -604,7 +611,7 @@ export function useSessionActions({
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
-      if (cachedRuntimeId && cachedState) {
+      if (cachedRuntimeId && cachedState && cachedState.storedSessionId === storedSessionId) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
 
         const cachedViewState =
@@ -790,6 +797,7 @@ export function useSessionActions({
       busyRef,
       copy,
       requestGateway,
+      resetViewSync,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,
