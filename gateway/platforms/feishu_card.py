@@ -172,3 +172,34 @@ def detect_git_context(cwd: str) -> str:
         return f"{repo_name}:{branch_name}"
     except (subprocess.TimeoutExpired, OSError):
         return ""
+
+
+def _model_short(model: str) -> str:
+    if not model:
+        return ""
+    return model.rsplit("/", 1)[-1]
+
+
+def build_card_footer_line(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_tokens: int = 0,
+    cost_usd: float = 0.0,
+    git_context: str = "",
+    elapsed_seconds: float = 0.0,
+    model: str = "",
+) -> str:
+    parts: list[str] = []
+    parts.append(f"↑{format_token_count(input_tokens)}")
+    parts.append(f"↓{format_token_count(output_tokens)}")
+    if cache_tokens > 0:
+        parts.append(f"cache:{format_token_count(cache_tokens)}")
+    parts.append(f"${cost_usd:.4f}")
+    if git_context:
+        parts.append(f"@{git_context}")
+    parts.append(f"⏳{int(elapsed_seconds)}s")
+    m = _model_short(model)
+    if m:
+        parts.append(f"🧠{m}")
+    return "📊 " + " | ".join(parts)

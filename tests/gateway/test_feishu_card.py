@@ -182,3 +182,43 @@ class TestDetectGitContext:
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=1)
         result = detect_git_context("/some/path")
         assert result == ""
+
+
+from gateway.platforms.feishu_card import build_card_footer_line
+
+class TestBuildCardFooterLine:
+    def test_full_footer(self):
+        result = build_card_footer_line(
+            input_tokens=48,
+            output_tokens=11100,
+            cache_tokens=3400000,
+            cost_usd=2.9475,
+            git_context="nine:feat/xxx",
+            elapsed_seconds=34.2,
+            model="openai/gpt-5.5",
+        )
+        assert result == "📊 ↑48 | ↓11.1k | cache:3.4M | $2.9475 | @nine:feat/xxx | ⏳34s | 🧠gpt-5.5"
+
+    def test_no_cache(self):
+        result = build_card_footer_line(
+            input_tokens=1200,
+            output_tokens=5600,
+            cache_tokens=0,
+            cost_usd=0.015,
+            git_context="nine:main",
+            elapsed_seconds=12.0,
+            model="anthropic/claude-opus-4",
+        )
+        assert result == "📊 ↑1.2k | ↓5.6k | $0.0150 | @nine:main | ⏳12s | 🧠claude-opus-4"
+
+    def test_no_git(self):
+        result = build_card_footer_line(
+            input_tokens=100,
+            output_tokens=200,
+            cache_tokens=0,
+            cost_usd=0.001,
+            git_context="",
+            elapsed_seconds=5.0,
+            model="gpt-5.5",
+        )
+        assert result == "📊 ↑100 | ↓200 | $0.0010 | ⏳5s | 🧠gpt-5.5"
