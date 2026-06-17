@@ -249,6 +249,93 @@ def media_assets_payload(paths: AgentsOSPaths) -> dict[str, Any]:
     return {"local_only": True, "generation_enabled": False, "posting_enabled": False, "assets": assets}
 
 
+def _safe_json_preview(value: Any, *, limit: int = 900) -> Any:
+    """Return a bounded, non-secret preview for UI read-only surfaces."""
+    if value is None:
+        return None
+    text = str(value)
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("api_key", "apikey", "authorization", "bearer ", "token", "secret", "password", "cookie")):
+        return "[redacted-sensitive-preview]"
+    try:
+        parsed = json.loads(text)
+        dumped = json.dumps(parsed, ensure_ascii=False)
+        if len(dumped) > limit:
+            return dumped[:limit] + "…"
+        return parsed
+    except Exception:
+        return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _table_rows(paths: AgentsOSPaths, table: str, *, order: str = "created_at DESC", limit: int = 100) -> list[dict[str, Any]]:
+    allowed = {"tasks", "approvals", "runs", "events", "artifacts", "reviews", "state_snapshots"}
+    if table not in allowed:
+        raise ValueError(f"unsupported table: {table}")
+    with connect(paths) as conn:
+        rows = [row_to_dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY {order} LIMIT ?", (limit,)).fetchall()]
+    return rows
+
+
+def tasks_payload(paths: AgentsOSPaths) -> dict[str, Any]:
+    rows = _table_rows(paths, "tasks", order="CASE status WHEN 'ready' THEN 0 WHEN 'pending' THEN 1 WHEN 'needs_approval' THEN 2 WHEN 'review' THEN 3 WHEN 'blocked' THEN 4 WHEN 'completed' THEN 8 ELSE 7 END, priority ASC, created_at DESC", limit=160)
+    counts: dict[str, int] = {}
+    for item in rows:
+        counts[item.get("status") or "unknown"] = counts.get(item.get("status") or "unknown", 0) + 1
+        item["approval_required"] = bool(item.get("approval_required"))
+    return {"local_only": True, "read_only": True, "counts": counts, "items": rows}
+
+
+def approvals_payload(paths: AgentsOSPaths) -> dict[str, Any]:
+    rows = _table_rows(paths, "approvals", order="CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC", limit=120)
+    counts: dict[str, int] = {}
+    for item in rows:
+        counts[item.get("status") or "unknown"] = counts.get(item.get("status") or "unknown", 0) + 1
+        item["payload_preview"] = _safe_json_preview(item.pop("payload", None))
+        item["safe_actions"] = []
+        item["resolution_enabled"] = False
+    return {"local_only": True, "read_only": True, "credentials_visible": False, "resolution_enabled": False, "counts": counts, "items": rows}
+
+
+def runs_payload(paths: AgentsOSPaths) -> dict[str, Any]:
+    rows = _table_rows(paths, "runs", order="created_at DESC", limit=120)
+    counts: dict[str, int] = {}
+    for item in rows:
+        counts[item.get("status") or "unknown"] = counts.get(item.get("status") or "unknown", 0) + 1
+        item["input_preview"] = _safe_json_preview(item.pop("input", None))
+    return {"local_only": True, "read_only": True, "counts": counts, "items": rows}
+
+
+def events_payload(paths: AgentsOSPaths) -> dict[str, Any]:
+    rows = _table_rows(paths, "events", order="created_at DESC", limit=160)
+    counts: dict[str, int] = {}
+    for item in rows:
+        counts[item.get("event_type") or "unknown"] = counts.get(item.get("event_type") or "unknown", 0) + 1
+        item["payload_preview"] = _safe_json_preview(item.pop("payload", None))
+    return {"local_only": True, "read_only": True, "counts": counts, "items": rows}
+
+
+def cron_readiness_payload(paths: AgentsOSPaths) -> dict[str, Any]:
+    cron_dir = paths.home / "cron"
+    scripts_dir = paths.home / "scripts"
+    agents_log = paths.root / "logs" / "mission-control-18791.log"
+    launchers = paths.root / "launchers"
+    launcher = launchers / "start_agents_os_mission_control.sh"
+    watchdog = launchers / "watch_agents_os_mission_control.sh"
+    desktop_launcher = Path("/mnt/c/Users/goran/Desktop/Agents OS Mission Control.bat")
+    return {
+        "local_only": True,
+        "read_only": True,
+        "cron_mutation_enabled": False,
+        "startup_mutation_enabled": False,
+        "watchdog": {"path": str(watchdog), "exists": watchdog.exists()},
+        "launcher": {"path": str(launcher), "exists": launcher.exists()},
+        "desktop_launcher": {"path": str(desktop_launcher), "exists": desktop_launcher.exists()},
+        "logs": {"mission_control": str(agents_log), "exists": agents_log.exists()},
+        "cron_dir": {"path": str(cron_dir), "exists": cron_dir.exists()},
+        "scripts_dir": {"path": str(scripts_dir), "exists": scripts_dir.exists()},
+    }
+
+
 def _bounded_file_count(root: Path, *, name: str | None = None, max_scan: int = 600) -> tuple[int, bool]:
     """Fast bounded local status count; avoids slow recursive scans in UI requests."""
     if not root.exists():
@@ -766,17 +853,159 @@ def create_idea_action(service: AgentsOSService, data: dict[str, Any]) -> dict[s
     return {"mode": mode, "task_id": task_id, "approval_id": approval_id, "artifact_id": artifact_id, "artifact_path": artifact_path, "draft": draft, "execution_created": False}
 
 
+def _redact_collection_payloads(items: list[dict[str, Any]], *fields: str) -> list[dict[str, Any]]:
+    redacted = []
+    for item in items:
+        copy = dict(item)
+        for field in fields:
+            if field in copy:
+                copy[f"{field}_preview"] = _safe_json_preview(copy.pop(field))
+        redacted.append(copy)
+    return redacted
+
+
+def _risk_taxonomy(risk: str | None, payload_preview: Any) -> dict[str, Any]:
+    risk_value = (risk or "unknown").lower()
+    text = json.dumps(payload_preview, ensure_ascii=False).lower() if payload_preview is not None else ""
+    flags = []
+    if "external" in risk_value or "public" in risk_value:
+        flags.append("external_or_public_action")
+    if any(word in text for word in ["deploy", "push", "publish", "email", "send"]):
+        flags.append("outbound_or_publish_intent")
+    if payload_preview == "[redacted-sensitive-preview]":
+        flags.append("sensitive_payload_redacted")
+    if not flags:
+        flags.append("manual_review_required")
+    severity = "high" if any(flag in flags for flag in ["external_or_public_action", "sensitive_payload_redacted"]) else "medium"
+    return {"risk": risk or "unknown", "severity": severity, "flags": flags, "deterministic": True}
+
+
 def task_detail_payload(paths: AgentsOSPaths, task_id: str) -> dict[str, Any]:
     with connect(paths) as conn:
         task = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if task is None:
-            return {"status": "not_found", "task_id": task_id}
+            return {"status": "not_found", "task_id": task_id, "local_only": True, "read_only": True}
         approvals = [row_to_dict(r) for r in conn.execute("SELECT * FROM approvals WHERE task_id=? ORDER BY created_at DESC", (task_id,)).fetchall()]
         runs = [row_to_dict(r) for r in conn.execute("SELECT * FROM runs WHERE task_id=? ORDER BY created_at DESC", (task_id,)).fetchall()]
         events = [row_to_dict(r) for r in conn.execute("SELECT * FROM events WHERE task_id=? ORDER BY created_at DESC", (task_id,)).fetchall()]
         artifacts = [row_to_dict(r) for r in conn.execute("SELECT * FROM artifacts WHERE task_id=? ORDER BY created_at DESC", (task_id,)).fetchall()]
         reviews = [row_to_dict(r) for r in conn.execute("SELECT * FROM reviews WHERE task_id=? ORDER BY created_at DESC", (task_id,)).fetchall()]
-    return {"status": "ok", "task": row_to_dict(task), "acceptance_criteria": ["planned", "implemented", "verified", "evidence linked"], "approvals": approvals, "runs": runs, "events": events, "artifacts": artifacts, "reviews": reviews, "judge_status": "pending" if not reviews else "review_available"}
+    task_payload = row_to_dict(task)
+    task_payload["approval_required"] = bool(task_payload.get("approval_required"))
+    return {
+        "status": "ok",
+        "local_only": True,
+        "read_only": True,
+        "task": task_payload,
+        "relationships": {"parent": None, "children": [], "dependencies": []},
+        "dependency_status": "not_modeled",
+        "acceptance_criteria": ["planned", "implemented", "verified", "evidence linked"],
+        "approvals": _redact_collection_payloads(approvals, "payload"),
+        "runs": _redact_collection_payloads(runs, "input"),
+        "events": _redact_collection_payloads(events, "payload"),
+        "artifacts": artifacts,
+        "reviews": reviews,
+        "evidence_summary": {"artifact_count": len(artifacts), "review_count": len(reviews), "event_count": len(events)},
+        "safe_actions": ["copy_task_id", "open_related_artifact_read_only"],
+        "mutation_actions_enabled": False,
+        "judge_status": "pending" if not reviews else "review_available",
+    }
+
+
+def approval_detail_payload(paths: AgentsOSPaths, approval_id: str) -> dict[str, Any]:
+    with connect(paths) as conn:
+        approval = conn.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone()
+        if approval is None:
+            return {"status": "not_found", "approval_id": approval_id, "local_only": True, "read_only": True}
+        item = row_to_dict(approval)
+        task = conn.execute("SELECT id,title,status,workflow,approval_required FROM tasks WHERE id=?", (item.get("task_id"),)).fetchone() if item.get("task_id") else None
+    payload_preview = _safe_json_preview(item.pop("payload", None))
+    return {
+        "status": "ok",
+        "local_only": True,
+        "read_only": True,
+        "credentials_visible": False,
+        "resolution_enabled": False,
+        "approval": {**item, "payload_preview": payload_preview},
+        "task_summary": row_to_dict(task) if task else None,
+        "risk_taxonomy": _risk_taxonomy(item.get("risk"), payload_preview),
+        "stale_warning": item.get("status") == "pending",
+        "blocked_actions": ["approve", "deny", "resolve", "execute"],
+        "allowed_now": False,
+        "next_required_human_decision": "Explicit Goran approval is required before any approve/deny/resolve action.",
+    }
+
+
+def run_detail_payload(paths: AgentsOSPaths, run_id: str) -> dict[str, Any]:
+    with connect(paths) as conn:
+        run = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        if run is None:
+            return {"status": "not_found", "run_id": run_id, "local_only": True, "read_only": True}
+        run_item = row_to_dict(run)
+        task = conn.execute("SELECT * FROM tasks WHERE id=?", (run_item.get("task_id"),)).fetchone() if run_item.get("task_id") else None
+        events = [row_to_dict(r) for r in conn.execute("SELECT * FROM events WHERE run_id=? ORDER BY created_at DESC", (run_id,)).fetchall()]
+        artifacts = [row_to_dict(r) for r in conn.execute("SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at DESC", (run_id,)).fetchall()]
+    return {"status": "ok", "local_only": True, "read_only": True, "run": _redact_collection_payloads([run_item], "input")[0], "task": row_to_dict(task) if task else None, "events": _redact_collection_payloads(events, "payload"), "artifacts": artifacts, "mutation_actions_enabled": False}
+
+
+def _artifact_credential_like_path(value: str) -> bool:
+    lowered = str(value).lower()
+    return any(marker in lowered for marker in (".env", "auth.json", "token", "secret", "credential", "password", "api_key", "apikey", "cookie"))
+
+
+def _artifact_allowed(path: Path, paths: AgentsOSPaths) -> bool:
+    allowed_roots = [paths.artifacts, paths.vault_root, Path("/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni")]
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return any(resolved == root.resolve() or root.resolve() in resolved.parents for root in allowed_roots if root.exists())
+
+
+def artifact_detail_payload(paths: AgentsOSPaths, artifact_id: str) -> dict[str, Any]:
+    with connect(paths) as conn:
+        row = conn.execute("SELECT * FROM artifacts WHERE id=?", (artifact_id,)).fetchone()
+        if row is None:
+            return {"status": "not_found", "artifact_id": artifact_id, "local_only": True, "read_only": True}
+        item = row_to_dict(row)
+    path = Path(item.get("path") or "")
+    info = _path_info(str(path))
+    preview = None
+    preview_status = "not_previewed"
+    if info["exists"] and info["suffix"] in {".md", ".txt", ".json", ".log"} and _artifact_allowed(path, paths) and not _artifact_credential_like_path(str(path)):
+        preview = _safe_json_preview(path.read_text(errors="replace"), limit=2500)
+        preview_status = "ok"
+    elif _artifact_credential_like_path(str(path)):
+        preview_status = "blocked_sensitive_path"
+    elif not _artifact_allowed(path, paths):
+        preview_status = "blocked_outside_allowlist"
+    return {"status": "ok", "local_only": True, "read_only": True, "artifact": {**item, **info}, "preview_status": preview_status, "preview": preview, "mutation_actions_enabled": False}
+
+
+def skills_visibility_payload(paths: AgentsOSPaths) -> dict[str, Any]:
+    skills_root = paths.home / "skills"
+    items = []
+    if skills_root.exists():
+        for skill_file in sorted(skills_root.rglob("SKILL.md"))[:160]:
+            text = skill_file.read_text(errors="replace")[:2000]
+            name = skill_file.parent.name
+            desc = ""
+            for line in text.splitlines():
+                if line.startswith("name:"):
+                    name = line.split(":",1)[1].strip().strip('"')
+                if line.startswith("description:"):
+                    desc = line.split(":",1)[1].strip().strip('"')
+            items.append({"name": name, "description": desc, "path": str(skill_file), "category": str(skill_file.parent.parent.relative_to(skills_root)) if skill_file.parent.parent != skills_root else "root"})
+    return {"local_only": True, "read_only": True, "content_visible": False, "mutation_actions_enabled": False, "count": len(items), "items": items}
+
+
+def sessions_visibility_payload(paths: AgentsOSPaths) -> dict[str, Any]:
+    sessions_dir = paths.home / "sessions"
+    items = []
+    if sessions_dir.exists():
+        for file in sorted(sessions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:40]:
+            items.append({"file": file.name, "path": str(file), "size_bytes": file.stat().st_size, "modified": int(file.stat().st_mtime), "raw_transcript_visible": False})
+    return {"local_only": True, "read_only": True, "metadata_only": True, "raw_transcript_visible": False, "mutation_actions_enabled": False, "count": len(items), "items": items}
 
 
 def mission_control_html(service: AgentsOSService) -> str:
@@ -803,17 +1032,23 @@ main {{ padding:24px 34px 60px; }} section {{ display:none; }} section.active {{
 <body>
 <header><h1>Agents OS Mission Control</h1><div class=\"sub\">Local-only Doni operator cockpit · gateway restart: false · vault/reference graph, not runtime memory merge</div></header>
 <nav class=\"tabs\">
-<button data-tab=\"overview\" class=\"active\">Overview</button><button data-tab=\"idea\">Idea Factory</button><button data-tab=\"agents\">Agent Registry</button><button data-tab=\"knowledge\">Knowledge Galaxy</button><button data-tab=\"artifacts\">Artifact Library</button><button data-tab=\"seo\">SEO Mission Control</button><button data-tab=\"operator\">Operator Loop</button><button data-tab=\"media\">Media Studio</button><button data-tab=\"manage\">Manage / Status</button><button data-tab=\"voice\">Voice / Jarvis</button>
+<button data-tab=\"overview\" class=\"active\">Overview</button><button data-tab=\"tasks\">Task board</button><button data-tab=\"approvals\">Approvals</button><button data-tab=\"runs\">Runs</button><button data-tab=\"events\">Events / Logs</button><button data-tab=\"idea\">Idea Factory</button><button data-tab=\"agents\">Agent Registry</button><button data-tab=\"knowledge\">Knowledge Galaxy</button><button data-tab=\"artifacts\">Artifact Library</button><button data-tab=\"seo\">SEO Mission Control</button><button data-tab=\"operator\">Operator Loop</button><button data-tab=\"media\">Media Studio</button><button data-tab=\"skills\">Skills</button><button data-tab=\"sessions\">Sessions</button><button data-tab=\"manage\">Manage / Status</button><button data-tab=\"voice\">Voice / Jarvis</button>
 </nav>
 <main>
 <section id=\"overview\" class=\"active\"><div class=\"grid\"><div class=\"card\"><h2>HEALTH <span class=\"ok\">OK</span></h2><div class=\"kv\">State DB: {status.get('state_db')}</div><div class=\"kv\">Schema: {status.get('schema_version')}</div></div><div class=\"card\"><h2>Queue</h2><pre id=\"queueSummary\"></pre></div></div></section>
+<section id=\"tasks\"><h2>Task board / Tasks</h2><div class=\"kv\">Read-only task surface. No status mutation from UI.</div><pre id=\"taskDetail\"></pre><pre id=\"tasksPayload\"></pre><div id=\"tasksList\" class=\"grid\"></div></section>
+<section id=\"approvals\"><h2>Approvals</h2><div class=\"kv\">Read-only approval visibility. Approve/deny/resolve is disabled without explicit operator decision.</div><pre id=\"approvalDetail\"></pre><pre id=\"approvalsPayload\"></pre><div id=\"approvalsList\" class=\"grid\"></div></section>
+<section id=\"runs\"><h2>Runs / Executions</h2><div class=\"kv\">Read-only run lifecycle surface.</div><pre id=\"runDetail\"></pre><pre id=\"runsPayload\"></pre><div id=\"runsList\" class=\"grid\"></div></section>
+<section id=\"events\"><h2>Events / Logs</h2><div class=\"kv\">Read-only recent event log with bounded redacted payload preview.</div><pre id=\"eventsPayload\"></pre><div id=\"eventsList\" class=\"grid\"></div></section>
 <section id=\"idea\"><div class=\"card\"><h2>Idea Factory</h2><textarea id=\"ideaText\">Obradi YouTube video</textarea><p><button id=\"draftIdea\">Draft only</button> <button id=\"createIdea\">Create safe task / approval draft</button></p><pre id=\"ideaResult\"></pre><div class=\"kv\">Fields: classification · risk class · recommended lane · plan steps · approval badge · expected artifacts · acceptance criteria</div></div></section>
 <section id=\"agents\"><h2>Paperclip Agent Registry</h2><div id=\"agentsList\" class=\"grid\"></div></section>
 <section id=\"knowledge\"><h2>Knowledge / Memory Galaxy v0</h2><div class=\"kv\">Read-only vault/reference graph, not runtime memory merge.</div><div id=\"knowledgeList\" class=\"grid\"></div></section>
-<section id=\"artifacts\"><h2>Artifact / Project Library</h2><div id=\"artifactList\" class=\"grid\"></div></section>
+<section id=\"artifacts\"><h2>Artifact / Project Library</h2><pre id=\"artifactDetail\"></pre><div id=\"artifactList\" class=\"grid\"></div></section>
 <section id=\"seo\"><h2>SEO Mission Control</h2><div class=\"card\"><h3>Draft-only SEO/AISO lane</h3><div class=\"kv\">publish disabled · outreach disabled · live metrics require approval-gated credentials</div><pre id=\"seoPayload\"></pre></div><div id=\"seoList\" class=\"grid\"></div></section>
 <section id=\"operator\"><h2>Operator Loop / Judge / Evidence</h2><pre id=\"operatorPayload\"></pre></section>
 <section id=\"media\"><h2>Media Studio Browser v0</h2><div class=\"kv\">Read-only. No generation. No posting.</div><div id=\"mediaList\" class=\"grid\"></div></section>
+<section id=\"skills\"><h2>Skills read-only</h2><div class=\"kv\">Metadata only. No install/edit/delete.</div><div id=\"skillsList\" class=\"grid\"></div></section>
+<section id=\"sessions\"><h2>Sessions read-only</h2><div class=\"kv\">Metadata only. Raw transcripts are not displayed.</div><div id=\"sessionsList\" class=\"grid\"></div></section>
 <section id=\"manage\"><h2>Manage / Update / Status</h2><pre id=\"managePayload\"></pre></section>
 <section id=\"voice\"><h2>Voice / Jarvis gated panel</h2><div class=\"card\"><h3>Jarvis / Oracle Briefing</h3><div class=\"kv\">wake/show/build/act · dry-run only · no always-on microphone · no computer-control</div><pre id=\"jarvisPayload\"></pre></div><div class=\"card\"><h3>Push-to-talk v0.1</h3><div class=\"kv\">Record command captures local browser audio, stores local artefacts, returns raw transcript + cleaned transcript + intent preview. Deterministic gate remains authority.</div><p><button id=\"recordJarvis\">Record command</button> <button id=\"stopJarvis\" disabled>Stop</button> <button id=\"previewJarvis\">Preview typed command</button> <button id=\"replyJarvis\">Voice Reply</button></p><textarea id=\"jarvisTranscript\">Prikaži zadnje BP24 stanje</textarea><h3>Command Preview</h3><pre id=\"jarvisCommandCard\"></pre><h3>Voice Reply</h3><pre id=\"jarvisReply\"></pre><audio id=\"jarvisAudio\" controls></audio></div><pre id=\"voicePayload\"></pre></section>
 </main>
@@ -827,14 +1062,26 @@ function escapeHtml(v) {{ return String(v ?? '').replace(/[&<>"']/g, c => ({{'&'
 async function j(url, opts={{}}) {{ const r = await fetch(url, {{headers:{{'content-type':'application/json'}}, ...opts}}); return await r.json(); }}
 function showPre(sel, obj) {{ $(sel).textContent = JSON.stringify(obj, null, 2); }}
 $$('button[data-tab]').forEach(b => b.addEventListener('click', () => {{ $$('button[data-tab]').forEach(x=>x.classList.remove('active')); $$('section').forEach(x=>x.classList.remove('active')); b.classList.add('active'); $('#' + b.dataset.tab).classList.add('active'); }}));
+async function showTaskDetail(id) {{ showPre('#taskDetail', await j('/api/tasks/' + encodeURIComponent(id))); }}
+async function showApprovalDetail(id) {{ showPre('#approvalDetail', await j('/api/approvals/' + encodeURIComponent(id))); }}
+async function showRunDetail(id) {{ showPre('#runDetail', await j('/api/runs/' + encodeURIComponent(id))); }}
+async function showArtifactDetail(id) {{ showPre('#artifactDetail', await j('/api/artifacts/' + encodeURIComponent(id))); }}
 async function loadAll() {{
  const boot = JSON.parse($('#bootstrap').textContent); showPre('#queueSummary', boot.dashboard.queue_summary || {{}});
+ const tasks = await j('/api/tasks'); showPre('#tasksPayload', tasks); $('#tasksList').innerHTML = tasks.items.slice(0,30).map(t => asCard(t.title || t.id, '<div class="kv">' + escapeHtml(t.id) + ' · ' + escapeHtml(t.status) + ' · ' + escapeHtml(t.workflow) + '</div><div class="kv">priority=' + escapeHtml(t.priority) + ' approval_required=' + escapeHtml(t.approval_required) + '</div><p><button data-detail-id="' + escapeHtml(t.id) + '" onclick="showTaskDetail(this.dataset.detailId)">Open task detail</button></p>')).join('') || '<div class="card kv">No tasks.</div>';
+ const approvals = await j('/api/approvals'); showPre('#approvalsPayload', approvals); $('#approvalsList').innerHTML = approvals.items.slice(0,30).map(a => asCard(a.title || a.id, '<div class="kv">' + escapeHtml(a.id) + ' · ' + escapeHtml(a.status) + ' · risk=' + escapeHtml(a.risk) + '</div><div class="kv">resolution enabled: ' + escapeHtml(a.resolution_enabled) + '</div><p><button data-detail-id="' + escapeHtml(a.id) + '" onclick="showApprovalDetail(this.dataset.detailId)">Open approval detail</button></p>')).join('') || '<div class="card kv">No approvals.</div>';
+ const runs = await j('/api/runs'); showPre('#runsPayload', runs); $('#runsList').innerHTML = runs.items.slice(0,30).map(r => asCard(r.id, '<div class="kv">' + escapeHtml(r.status) + ' · ' + escapeHtml(r.workflow) + '</div><div class="kv">task=' + escapeHtml(r.task_id) + '</div><p><button data-detail-id="' + escapeHtml(r.id) + '" onclick="showRunDetail(this.dataset.detailId)">Open run detail</button></p>')).join('') || '<div class="card kv">No runs.</div>';
+ const events = await j('/api/events'); showPre('#eventsPayload', events); $('#eventsList').innerHTML = events.items.slice(0,30).map(e => asCard(e.event_type || e.id, '<div class="kv">' + escapeHtml(e.id) + ' · ' + escapeHtml(e.created_at) + '</div><div class="kv">task=' + escapeHtml(e.task_id) + ' run=' + escapeHtml(e.run_id) + '</div>')).join('') || '<div class="card kv">No events.</div>';
  const agents = await j('/api/agents'); $('#agentsList').innerHTML = agents.agents.map(a => asCard(a.name, '<div class="kv">' + escapeHtml(a.id) + ' · ' + escapeHtml(a.status) + '</div><p>' + (a.capabilities||[]).map(pill).join('') + '</p><div class="kv">Memory: ' + escapeHtml(a.memory_boundary) + '</div><div class="kv">Auth: ' + escapeHtml(a.auth_boundary) + '</div><div class="kv">Gates: ' + (a.approval_gates||[]).map(escapeHtml).join(', ') + '</div>')).join('');
  const knowledge = await j('/api/knowledge/index'); $('#knowledgeList').innerHTML = knowledge.nodes.map(n => asCard(n.label, '<div class="kv">' + escapeHtml(n.kind) + ' · exists=' + escapeHtml(n.exists) + '</div><div class="kv">' + escapeHtml(n.path) + '</div>')).join('');
- const artifacts = await j('/api/artifacts'); $('#artifactList').innerHTML = artifacts.items.slice(0,40).map(a => asCard(a.title, '<div class="kv">' + escapeHtml(a.kind) + ' · ' + escapeHtml(a.preview_type||a.suffix) + '</div><div class="kv">' + escapeHtml(a.path) + '</div>')).join('');
+ const artifacts = await j('/api/artifacts'); $('#artifactList').innerHTML = artifacts.items.slice(0,40).map(a => asCard(a.title, '<div class="kv">' + escapeHtml(a.kind) + ' · ' + escapeHtml(a.preview_type||a.suffix) + '</div><div class="kv">' + escapeHtml(a.path) + '</div><p><button data-detail-id="' + escapeHtml(a.id) + '" onclick="showArtifactDetail(this.dataset.detailId)">Open artifact preview</button></p>')).join('');
  const seo = await j('/api/seo'); showPre('#seoPayload', seo); $('#seoList').innerHTML = ['goals','keyword_queue','draft_queue','review_gates'].map(k => asCard(k, '<div class="kv">' + escapeHtml((seo[k]||[]).length) + ' item(s)</div>')).join('');
  const operator = await j('/api/operator-loop'); showPre('#operatorPayload', operator);
  const media = await j('/api/media'); $('#mediaList').innerHTML = media.assets.map(m => asCard(m.title, '<div class="kv">' + escapeHtml(m.mime) + ' · ' + escapeHtml(m.size_bytes) + ' bytes</div><div class="kv">' + escapeHtml(m.path) + '</div>')).join('') || '<div class="card kv">No local media assets found.</div>';
+ const skills = await j('/api/skills'); $('#skillsList').innerHTML = skills.items.slice(0,80).map(s => asCard(s.name, '<div class="kv">' + escapeHtml(s.category) + '</div><div class="kv">' + escapeHtml(s.description) + '</div>')).join('') || '<div class="card kv">No skills metadata.</div>';
+ const sessions = await j('/api/sessions'); $('#sessionsList').innerHTML = sessions.items.map(s => asCard(s.file, '<div class="kv">size=' + escapeHtml(s.size_bytes) + ' raw_transcript_visible=' + escapeHtml(s.raw_transcript_visible) + '</div>')).join('') || '<div class="card kv">No sessions metadata.</div>';
+ if (location.search.includes('demo=task-detail') && tasks.items.length) {{ document.querySelector('button[data-tab="tasks"]').click(); await showTaskDetail(tasks.items[0].id); }}
+ if (location.search.includes('demo=approval-detail') && approvals.items.length) {{ document.querySelector('button[data-tab="approvals"]').click(); await showApprovalDetail(approvals.items[0].id); }}
  showPre('#managePayload', await j('/api/manage/status')); showPre('#voicePayload', await j('/api/voice/status')); showPre('#jarvisPayload', await j('/api/jarvis/briefing'));
 }}
 $('#draftIdea').addEventListener('click', async () => showPre('#ideaResult', await j('/api/idea-factory/draft', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})));
@@ -852,7 +1099,7 @@ $('#recordJarvis').addEventListener('click', async () => {{
    stream.getTracks().forEach(t => t.stop());
    const blob = new Blob(jarvisChunks, {{type: jarvisRecorder.mimeType || 'audio/webm'}});
    const reader = new FileReader();
-   reader.onloadend = async () => showPre('#jarvisCommandCard', await j('/api/jarvis/transcribe', {{method:'POST', body:JSON.stringify({{audio_base64:String(reader.result), audio_mime:blob.type, transcript_text:$('#jarvisTranscript').value}})}}));
+   reader.onloadend = async () => {{ showPre('#jarvisCommandCard', await j('/api/jarvis/transcribe', {{method:'POST', body:JSON.stringify({{audio_base64:String(reader.result), audio_mime:blob.type, transcript_text:$('#jarvisTranscript').value}})}})); }};
    reader.readAsDataURL(blob); $('#recordJarvis').disabled = false; $('#stopJarvis').disabled = true;
  }};
  jarvisRecorder.start(); $('#recordJarvis').disabled = true; $('#stopJarvis').disabled = false; showPre('#jarvisCommandCard', {{status:'recording', execution_created:false}});
@@ -880,6 +1127,20 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, payload)
             elif path == "/api/dashboard":
                 _send_json(self, self.service.dashboard_payload())
+            elif path == "/api/tasks":
+                _send_json(self, tasks_payload(self.service.paths))
+            elif path == "/api/approvals":
+                _send_json(self, approvals_payload(self.service.paths))
+            elif path.startswith("/api/approvals/"):
+                _send_json(self, approval_detail_payload(self.service.paths, path.rsplit("/", 1)[-1]))
+            elif path == "/api/runs":
+                _send_json(self, runs_payload(self.service.paths))
+            elif path.startswith("/api/runs/"):
+                _send_json(self, run_detail_payload(self.service.paths, path.rsplit("/", 1)[-1]))
+            elif path == "/api/events":
+                _send_json(self, events_payload(self.service.paths))
+            elif path == "/api/cron":
+                _send_json(self, cron_readiness_payload(self.service.paths))
             elif path == "/api/idea-factory/schema":
                 _send_json(self, self.service.idea_factory_schema_payload())
             elif path == "/api/agents":
@@ -888,6 +1149,12 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, knowledge_index_payload(self.service.paths))
             elif path == "/api/artifacts":
                 _send_json(self, artifacts_payload(self.service.paths))
+            elif path.startswith("/api/artifacts/"):
+                _send_json(self, artifact_detail_payload(self.service.paths, path.rsplit("/", 1)[-1]))
+            elif path == "/api/skills":
+                _send_json(self, skills_visibility_payload(self.service.paths))
+            elif path == "/api/sessions":
+                _send_json(self, sessions_visibility_payload(self.service.paths))
             elif path == "/api/seo":
                 _send_json(self, seo_mission_control_payload(self.service.paths))
             elif path == "/api/operator-loop":
