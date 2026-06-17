@@ -9,7 +9,6 @@ import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { PetBubble } from './pet-bubble'
 import { PetSprite } from './pet-sprite'
 
 // v2: positions are now top/left anchored (v1 stored bottom-anchored values,
@@ -270,21 +269,6 @@ export function FloatingPet() {
         zIndex: 60
       }}
     >
-      <div
-        style={{
-          bottom: '100%',
-          display: 'flex',
-          justifyContent: 'center',
-          left: '50%',
-          marginBottom: 4,
-          pointerEvents: 'none',
-          position: 'absolute',
-          transform: 'translateX(-50%)',
-          zIndex: 2
-        }}
-      >
-        <PetBubble />
-      </div>
       <div
         aria-hidden
         style={{

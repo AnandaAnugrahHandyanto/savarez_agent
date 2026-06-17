@@ -5,9 +5,11 @@ import { AlertCircle, Clock, type IconComponent } from '@/lib/icons'
 import { $petActivity, $petState, type PetState } from '@/store/pet'
 
 /**
- * Speech bubble + status glyph that sits above the floating pet — the
+ * Speech bubble + status glyph for the popped-out pet overlay — the
  * "notification" half of the mascot. It externalizes what the agent is doing
- * (Codex-style) so a glance at the pet replaces switching back to the window.
+ * (Codex-style) so a glance at the desktop pet replaces switching back to the
+ * window. The in-window pet doesn't show it (the app itself is the surface);
+ * only the overlay renders it.
  *
  * Text is derived purely from the same `$petState` / `$petActivity` the sprite
  * already reacts to, so it never drifts from the animation. The bubble is shown
