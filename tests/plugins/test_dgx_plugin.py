@@ -71,3 +71,31 @@ class TestRegister:
         dgx_cmd = next(c for c in commands if c["name"] == "dgx")
         sub = argparse.ArgumentParser()
         dgx_cmd["setup_fn"](sub)  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# dgx-ollama model provider removal (C2)
+# ---------------------------------------------------------------------------
+
+class TestDgxOllamaProviderRemoved:
+    """C2: the dedicated dgx-ollama provider was dead. It declared
+    auth_type="api_key" with env_vars=(), so auth.py's auto-extension skipped
+    it (it only adds api_key providers with NON-empty env_vars), and
+    resolve_provider() then raised "Unknown provider 'dgx-ollama'". It also
+    could not be fixed without either a core edit to auth.py (which the repo's
+    own auto-extension comment forbids for new providers) or a new *_BASE_URL
+    env var (which would recreate the HERMES_* config violation). The DGX is
+    reachable via the working custom path, so the dead provider is removed.
+    """
+
+    def test_provider_plugin_dir_removed(self):
+        provider_dir = Path(__file__).parents[2] / "plugins" / "model-providers" / "dgx-ollama"
+        assert not provider_dir.exists()
+
+    def test_dgx_endpoint_resolves_to_a_runnable_provider(self):
+        # apply_endpoint(ollama) writes model.provider="ollama"; vllm/litellm
+        # write "custom". Both resolve to a runnable provider — no dedicated
+        # dgx-ollama profile is needed.
+        from hermes_cli.auth import resolve_provider
+        assert resolve_provider("ollama") == "custom"
+        assert resolve_provider("custom") == "custom"
