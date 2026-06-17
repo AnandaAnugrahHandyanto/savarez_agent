@@ -1,0 +1,596 @@
+"""XMemo memory provider plugin for Hermes Agent.
+
+Provides user-owned cloud memory via XMemo's REST API: orchestrated recall,
+semantic search, durable fact storage, working state, reminders, and session
+snapshots.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+from typing import Any, Dict, List, Optional
+
+from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
+
+logger = logging.getLogger(__name__)
+
+# Circuit breaker: pause API calls after consecutive failures.
+_BREAKER_THRESHOLD = 5
+_BREAKER_COOLDOWN_SECONDS = 120
+
+
+# ---------------------------------------------------------------------------
+# Tool schemas
+# ---------------------------------------------------------------------------
+
+SEARCH_SCHEMA = {
+    "name": "xmemo_search",
+    "description": (
+        "Search XMemo memories by natural-language query. "
+        "Returns relevant facts ranked by semantic similarity. "
+        "Use this when the user asks about saved information or when prior "
+        "context could change the answer."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What to search for.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default 5, max 20).",
+            },
+            "memory_type": {
+                "type": "string",
+                "description": "Optional memory type filter (e.g. semantic, episodic, working).",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+REMEMBER_SCHEMA = {
+    "name": "xmemo_remember",
+    "description": (
+        "Save a durable fact to XMemo. Use for explicit preferences, decisions, "
+        "conventions, architecture notes, action items, or bug-fix context that "
+        "should survive across sessions. Skip transient chat."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The fact to remember. One clear concept per call.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Logical path or category, e.g. 'notes/decisions' or 'hermes/preferences'.",
+            },
+            "memory_type": {
+                "type": "string",
+                "description": "Memory type: semantic, episodic, procedural, working, identity (default semantic).",
+            },
+            "importance": {
+                "type": "number",
+                "description": "Importance from 0.0 to 1.0 (default 0.7).",
+            },
+        },
+        "required": ["content", "path"],
+    },
+}
+
+UPDATE_STATE_SCHEMA = {
+    "name": "xmemo_update_state",
+    "description": (
+        "Save the current working state to XMemo with TTL. Use for active task, "
+        "next action, or blocker during long-running work so future sessions can resume."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "current_task": {
+                "type": "string",
+                "description": "Short description of the active task.",
+            },
+            "next_action": {
+                "type": "string",
+                "description": "The very next step the agent should take.",
+            },
+            "blocked_reason": {
+                "type": "string",
+                "description": "Why work is blocked, if applicable.",
+            },
+            "ttl_seconds": {
+                "type": "integer",
+                "description": "Time-to-live in seconds (default 86400 = 1 day).",
+            },
+        },
+        "required": [],
+    },
+}
+
+ALL_TOOL_SCHEMAS = [SEARCH_SCHEMA, REMEMBER_SCHEMA, UPDATE_STATE_SCHEMA]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _is_trivial_prompt(text: str) -> bool:
+    """Skip recall for acknowledgements, slash commands, and empty input."""
+    if not text or not text.strip():
+        return True
+    cleaned = text.strip().lower()
+    if cleaned.startswith("/"):
+        return True
+    return bool(
+        re.match(
+            r"^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|"
+            r"continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)$",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _format_search_results(results: List[Dict[str, Any]]) -> str:
+    """Format search results into a concise text block."""
+    if not results:
+        return ""
+    lines = []
+    for i, item in enumerate(results, 1):
+        content = item.get("content", "")
+        if not content:
+            continue
+        memory_type = item.get("memory_type", "semantic")
+        path = item.get("path", "")
+        score = item.get("similarity") or item.get("score")
+        header = f"{i}. [{memory_type}]"
+        if path:
+            header += f" {path}"
+        if score is not None:
+            header += f" (sim {score:.3f})"
+        lines.append(header)
+        lines.append(f"   {content.strip()}")
+    return "\n".join(lines)
+
+
+def _format_recall_context(context: Dict[str, Any]) -> str:
+    """Extract context_text from a recall_context response."""
+    if not context:
+        return ""
+    text = context.get("context_text", "")
+    if text and text.strip():
+        return text.strip()
+    # Fallback: assemble from items if context_text is missing
+    items = context.get("items", [])
+    if not items:
+        return ""
+    lines = []
+    for i, item in enumerate(items, 1):
+        content = item.get("content", "")
+        if not content:
+            continue
+        lines.append(f"{i}. {content.strip()}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# MemoryProvider implementation
+# ---------------------------------------------------------------------------
+
+class XMemoMemoryProvider(MemoryProvider):
+    """XMemo cloud memory provider for Hermes Agent."""
+
+    def __init__(self):
+        self._config: Dict[str, Any] = {}
+        self._client: Optional[Any] = None
+        self._client_lock = threading.Lock()
+        self._prefetch_result = ""
+        self._prefetch_lock = threading.Lock()
+        self._prefetch_thread: Optional[threading.Thread] = None
+        self._sync_thread: Optional[threading.Thread] = None
+
+        # Circuit breaker state
+        self._consecutive_failures = 0
+        self._breaker_open_until = 0.0
+
+        # Session metadata
+        self._session_id = ""
+        self._turn_count = 0
+
+    @property
+    def name(self) -> str:
+        return "xmemo"
+
+    def is_available(self) -> bool:
+        """Check if XMemo is configured. No network calls."""
+        try:
+            from plugins.memory.xmemo.config import load_config
+            cfg = load_config()
+            return bool(cfg.get("api_key"))
+        except Exception:
+            return False
+
+    def get_config_schema(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "key": "api_key",
+                "description": "XMemo service token",
+                "secret": True,
+                "required": True,
+                "env_var": "XMEMO_KEY",
+                "url": "https://xmemo.dev",
+            },
+            {
+                "key": "base_url",
+                "description": "XMemo service URL",
+                "default": "https://xmemo.dev",
+            },
+            {
+                "key": "agent_id",
+                "description": "Agent family identifier",
+                "default": "hermes",
+            },
+            {
+                "key": "bucket",
+                "description": "Default storage namespace",
+                "default": "work",
+                "choices": ["work", "private", "public"],
+            },
+            {
+                "key": "scope",
+                "description": "Default project/session scope",
+                "default": "hermes/default",
+            },
+            {
+                "key": "timeout_seconds",
+                "description": "REST request timeout",
+                "default": "5.0",
+            },
+        ]
+
+    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+        """Write non-secret config to $HERMES_HOME/xmemo.json."""
+        from plugins.memory.xmemo.config import save_config as _save_config
+        _save_config(values, hermes_home=hermes_home)
+
+    def _is_breaker_open(self) -> bool:
+        if self._consecutive_failures < _BREAKER_THRESHOLD:
+            return False
+        if time.monotonic() >= self._breaker_open_until:
+            self._consecutive_failures = 0
+            return False
+        return True
+
+    def _record_success(self) -> None:
+        self._consecutive_failures = 0
+
+    def _record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _BREAKER_THRESHOLD:
+            self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECONDS
+            logger.warning(
+                "XMemo circuit breaker tripped after %d consecutive failures. "
+                "Pausing API calls for %ds.",
+                self._consecutive_failures,
+                _BREAKER_COOLDOWN_SECONDS,
+            )
+
+    def _get_client(self):
+        """Thread-safe client accessor with lazy initialization."""
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            from plugins.memory.xmemo.client import XMemoClient
+            self._client = XMemoClient(
+                base_url=self._config.get("base_url", "https://xmemo.dev"),
+                api_key=self._config.get("api_key", ""),
+                agent_id=self._config.get("agent_id", "hermes"),
+                agent_instance_id=self._config.get("agent_instance_id", ""),
+                timeout=float(self._config.get("timeout_seconds", 5.0)),
+            )
+            return self._client
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        """Initialize XMemo provider for a session."""
+        from plugins.memory.xmemo.config import load_config, save_config
+
+        self._config = load_config()
+        self._session_id = session_id or ""
+        self._turn_count = 0
+
+        # Scope per-profile if the active Hermes profile differs from default
+        profile = kwargs.get("agent_identity") or "default"
+        configured_scope = self._config.get("scope", "hermes/default")
+        if configured_scope == "hermes/default" and profile != "default":
+            self._config["scope"] = f"hermes/{profile}"
+            try:
+                save_config(self._config)
+            except Exception:
+                pass
+
+        if not self._config.get("api_key"):
+            logger.debug("XMemo not configured — plugin inactive")
+            return
+
+        # Optional lightweight health check; failure does not block startup.
+        try:
+            client = self._get_client()
+            client.health()
+            self._record_success()
+        except Exception as exc:
+            logger.debug("XMemo health check failed (non-blocking): %s", exc)
+
+    def system_prompt_block(self) -> str:
+        """Return static provider instructions for the system prompt."""
+        if not self._config.get("api_key"):
+            return ""
+        scope = self._config.get("scope", "hermes/default")
+        return (
+            "# XMemo Memory\n"
+            "Active. User-owned cloud memory is available.\n"
+            f"Scope: {scope}.\n"
+            "Use xmemo_search to recall saved facts before answering. "
+            "Use xmemo_remember to store durable facts (preferences, decisions, conventions, action items). "
+            "Use xmemo_update_state to save the current task state with TTL."
+        )
+
+    def prefetch(self, query: str, *, session_id: str = "") -> str:
+        """Return prefetched XMemo context for the upcoming turn."""
+        if self._is_breaker_open():
+            return ""
+
+        if _is_trivial_prompt(query):
+            return ""
+
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=3.0)
+
+        with self._prefetch_lock:
+            result = self._prefetch_result
+            self._prefetch_result = ""
+
+        if not result:
+            return ""
+        return f"## XMemo Memory\n{result}"
+
+    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        """Fire a background recall for the next turn."""
+        if self._is_breaker_open():
+            return
+        if not self._config.get("api_key"):
+            return
+        if _is_trivial_prompt(query):
+            return
+
+        # Guard against a hung prior thread
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            logger.debug("XMemo prefetch skipped: prior thread still running")
+            return
+
+        def _run() -> None:
+            try:
+                client = self._get_client()
+                context = client.recall_context(
+                    query=query,
+                    bucket=self._config.get("bucket", "work"),
+                    scope=self._config.get("scope", "hermes/default"),
+                    max_items=int(self._config.get("prefetch_max_items", 5)),
+                    max_tokens=int(self._config.get("prefetch_max_tokens", 900)),
+                    prefer_working=True,
+                )
+                text = _format_recall_context(context)
+                if text:
+                    with self._prefetch_lock:
+                        self._prefetch_result = text
+                self._record_success()
+            except Exception as exc:
+                self._record_failure()
+                logger.debug("XMemo prefetch failed: %s", exc)
+
+        self._prefetch_thread = threading.Thread(
+            target=_run, daemon=True, name="xmemo-prefetch"
+        )
+        self._prefetch_thread.start()
+
+    def sync_turn(
+        self, user_content: str, assistant_content: str, *, session_id: str = ""
+    ) -> None:
+        """Persist a completed turn to XMemo (non-blocking)."""
+        if self._is_breaker_open():
+            return
+        if not self._config.get("api_key"):
+            return
+
+        self._turn_count += 1
+
+        # MVP: record a lightweight timeline event rather than extracting facts.
+        # Future phases can add server-side capture policy or LLM-based extraction.
+        def _sync() -> None:
+            try:
+                client = self._get_client()
+                summary = f"Turn {self._turn_count}: user asked about {user_content[:120]}..."
+                client.record_event(
+                    content=summary,
+                    event_type="session_event",
+                    bucket=self._config.get("bucket", "work"),
+                    scope=self._config.get("scope", "hermes/default"),
+                    session_id=session_id or self._session_id,
+                )
+                self._record_success()
+            except Exception as exc:
+                self._record_failure()
+                logger.debug("XMemo sync_turn failed: %s", exc)
+
+        # Wait for any previous sync before starting a new one
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=5.0)
+
+        self._sync_thread = threading.Thread(
+            target=_sync, daemon=True, name="xmemo-sync"
+        )
+        self._sync_thread.start()
+
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        return ALL_TOOL_SCHEMAS
+
+    def handle_tool_call(
+        self, tool_name: str, args: Dict[str, Any], **kwargs
+    ) -> str:
+        """Route a tool call to the correct XMemo API."""
+        if self._is_breaker_open():
+            return json.dumps({
+                "error": "XMemo API temporarily unavailable after multiple failures. Will retry automatically."
+            })
+
+        try:
+            client = self._get_client()
+        except Exception as exc:
+            return tool_error(str(exc))
+
+        if tool_name == "xmemo_search":
+            return self._handle_search(client, args)
+        if tool_name == "xmemo_remember":
+            return self._handle_remember(client, args)
+        if tool_name == "xmemo_update_state":
+            return self._handle_update_state(client, args)
+
+        return tool_error(f"Unknown XMemo tool: {tool_name}")
+
+    def _handle_search(self, client, args: Dict[str, Any]) -> str:
+        query = args.get("query", "").strip()
+        if not query:
+            return tool_error("Missing required parameter: query")
+
+        limit = min(int(args.get("limit", 5)), 20)
+        memory_type = args.get("memory_type", "%")
+
+        try:
+            results = client.search(
+                query=query,
+                bucket=self._config.get("bucket", "work"),
+                scope=self._config.get("scope", "hermes/default"),
+                memory_type=memory_type,
+                limit=limit,
+            )
+            self._record_success()
+            if not results:
+                return json.dumps({"result": "No relevant XMemo memories found."})
+            return json.dumps({
+                "results": results,
+                "formatted": _format_search_results(results),
+                "count": len(results),
+            })
+        except Exception as exc:
+            self._record_failure()
+            return tool_error(f"XMemo search failed: {exc}")
+
+    def _handle_remember(self, client, args: Dict[str, Any]) -> str:
+        content = args.get("content", "").strip()
+        path = args.get("path", "").strip()
+        if not content:
+            return tool_error("Missing required parameter: content")
+        if not path:
+            return tool_error("Missing required parameter: path")
+
+        memory_type = args.get("memory_type", "semantic")
+        importance = args.get("importance")
+        if importance is not None:
+            try:
+                importance = float(importance)
+            except ValueError:
+                importance = None
+
+        try:
+            result = client.remember(
+                content=content,
+                path=path,
+                bucket=self._config.get("bucket", "work"),
+                scope=self._config.get("scope", "hermes/default"),
+                memory_type=memory_type,
+                importance=importance,
+            )
+            self._record_success()
+            memory_id = result.get("id") if isinstance(result, dict) else None
+            return json.dumps({
+                "result": "Saved to XMemo.",
+                "memory_id": memory_id,
+            })
+        except Exception as exc:
+            self._record_failure()
+            return tool_error(f"XMemo remember failed: {exc}")
+
+    def _handle_update_state(self, client, args: Dict[str, Any]) -> str:
+        current_task = args.get("current_task", "").strip()
+        next_action = args.get("next_action", "").strip()
+        blocked_reason = args.get("blocked_reason", "").strip()
+        ttl_seconds = int(args.get("ttl_seconds", 86400))
+
+        if not any([current_task, next_action, blocked_reason]):
+            return tool_error("At least one of current_task, next_action, or blocked_reason is required")
+
+        try:
+            result = client.update_state(
+                current_task=current_task,
+                next_action=next_action,
+                blocked_reason=blocked_reason,
+                bucket=self._config.get("bucket", "work"),
+                scope=self._config.get("scope", "hermes/default"),
+                ttl_seconds=ttl_seconds,
+            )
+            self._record_success()
+            return json.dumps({
+                "result": "Working state saved to XMemo.",
+                "state_key": result.get("state_key") if isinstance(result, dict) else None,
+                "id": result.get("id") if isinstance(result, dict) else None,
+            })
+        except Exception as exc:
+            self._record_failure()
+            return tool_error(f"XMemo update_state failed: {exc}")
+
+    def shutdown(self) -> None:
+        """Clean shutdown: flush threads and close client."""
+        for t in (self._prefetch_thread, self._sync_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
+        with self._client_lock:
+            if self._client is not None:
+                try:
+                    self._client.close()
+                except Exception as exc:
+                    logger.debug("XMemo client close failed: %s", exc)
+                self._client = None
+
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        """Capture a restart snapshot at session end."""
+        if self._is_breaker_open() or not self._config.get("api_key"):
+            return
+
+        def _snapshot() -> None:
+            try:
+                client = self._get_client()
+                client.create_restart_snapshot(
+                    session_id=self._session_id,
+                    bucket=self._config.get("bucket", "work"),
+                    scope=self._config.get("scope", "hermes/default"),
+                )
+                self._record_success()
+            except Exception as exc:
+                self._record_failure()
+                logger.debug("XMemo session-end snapshot failed: %s", exc)
+
+        threading.Thread(target=_snapshot, daemon=True, name="xmemo-snapshot").start()
+
+
+def register(ctx) -> None:
+    """Register XMemo as a memory provider plugin."""
+    ctx.register_memory_provider(XMemoMemoryProvider())
