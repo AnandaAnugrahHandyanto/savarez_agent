@@ -13,6 +13,7 @@ interface HarnessProps {
   gatewayState: string
   locationPathname: string
   resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeFailedSessionId?: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
@@ -20,8 +21,8 @@ interface HarnessProps {
   startFreshSessionDraft: (focus: boolean) => unknown
 }
 
-function RouteResumeHarness(props: HarnessProps) {
-  useRouteResume(props)
+function RouteResumeHarness({ resumeFailedSessionId = null, ...props }: HarnessProps) {
+  useRouteResume({ ...props, resumeFailedSessionId })
 
   return null
 }
@@ -254,5 +255,104 @@ describe('useRouteResume', () => {
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+})
+
+describe('useRouteResume bounded auto-retry after a failed resume', () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  // Common stranded-window props: gateway open, route on the session, no runtime
+  // yet, and the ref already synced to the route (resumeSession sets it at entry
+  // before failing) — the exact state that defeats the main effect's self-heal.
+  function strandedProps(resumeSession: (sid: string, focus: boolean) => Promise<unknown>) {
+    return {
+      activeSessionId: null,
+      activeSessionIdRef: { current: null } as MutableRefObject<null | string>,
+      creatingSessionRef: { current: false },
+      currentView: 'chat',
+      freshDraftReady: false,
+      gatewayState: 'open',
+      locationPathname: '/session-1',
+      resumeSession,
+      routedSessionId: 'session-1',
+      runtimeIdByStoredSessionIdRef: { current: new Map<string, string>() },
+      selectedStoredSessionId: 'session-1',
+      // Synced to the route by the failed resume's synchronous entry-write.
+      selectedStoredSessionIdRef: { current: 'session-1' } as MutableRefObject<null | string>,
+      startFreshSessionDraft: vi.fn()
+    }
+  }
+
+  it('retries the resume on backoff when the routed session is flagged as failed', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+
+    render(<RouteResumeHarness {...strandedProps(resumeSession)} resumeFailedSessionId="session-1" />)
+
+    // The main effect fires one resume on mount (pathname-changed). Clear it so
+    // we assert purely the bounded-retry effect's scheduled retry below.
+    resumeSession.mockClear()
+
+    // No immediate fire — the retry is scheduled behind the backoff timer.
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    // First backoff window (1s) elapses → one retry.
+    vi.advanceTimersByTime(1_000)
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('does NOT retry a failed session that is not the routed one', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+
+    // The failure flag points at a different session than the route.
+    render(<RouteResumeHarness {...strandedProps(resumeSession)} resumeFailedSessionId="other-session" />)
+    resumeSession.mockClear() // drop the mount resume
+
+    vi.advanceTimersByTime(10_000)
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
+  it('skips the scheduled retry if the session already recovered when the timer fires', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    resumeSession.mockClear() // drop the mount resume
+
+    // A resume landed while we waited: runtime is now bound.
+    props.activeSessionIdRef.current = 'runtime-1'
+
+    vi.advanceTimersByTime(8_000)
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
+  it('stops retrying after MAX_RESUME_RETRIES consecutive failures', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    // Model the real re-arm loop: resumeSession clears $resumeFailedSessionId at
+    // entry (null) and a repeat failure re-sets it ('session-1'). That null->id
+    // toggle is what re-runs the effect and advances the bounded counter. The
+    // routed session never changes, so the counter is NOT reset between cycles.
+    const { rerender } = render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    resumeSession.mockClear() // drop the mount resume; count only the retries
+
+    for (let i = 0; i < 8; i += 1) {
+      vi.advanceTimersByTime(8_000) // fire the scheduled retry (if any)
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId={null} />) // cleared at entry
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />) // re-armed on failure
+    }
+
+    // Capped at MAX_RESUME_RETRIES (4): a persistently dead backend can't
+    // hot-loop the resume forever.
+    expect(resumeSession.mock.calls.length).toBe(4)
   })
 })
