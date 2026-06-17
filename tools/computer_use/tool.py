@@ -81,15 +81,25 @@ _DESTRUCTIVE_ACTIONS = frozenset({
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
 # regardless of approval level (e.g. logout kills the session Hermes runs in).
+# The Windows backend aliases 'cmd' to ctrl, so the macOS combos below also
+# shadow their ctrl-equivalents there.
 _BLOCKED_KEY_COMBOS = {
     frozenset({"cmd", "shift", "backspace"}),   # empty trash
     frozenset({"cmd", "option", "backspace"}),   # force delete
     frozenset({"cmd", "ctrl", "q"}),             # lock screen
     frozenset({"cmd", "shift", "q"}),            # log out
     frozenset({"cmd", "option", "shift", "q"}),  # force log out
+    # Windows
+    frozenset({"win", "l"}),                     # lock workstation — kills the session
+    frozenset({"ctrl", "option", "delete"}),     # secure attention sequence
+    frozenset({"ctrl", "option", "del"}),
+    frozenset({"option", "f4"}),                 # closes the foreground window blind
 }
 
-_KEY_ALIASES = {"command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cmd", "⌥": "option"}
+_KEY_ALIASES = {
+    "command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cmd", "⌥": "option",
+    "windows": "win", "super": "win", "meta": "win",
+}
 
 
 def _canon_key_combo(keys: str) -> frozenset:
@@ -128,14 +138,24 @@ _session_auto_approve = False
 _always_allow: set = set()  # action names the user unlocked for the session
 
 
+def _default_backend_name() -> str:
+    """Platform-appropriate default when HERMES_COMPUTER_USE_BACKEND is unset."""
+    return "windows" if sys.platform == "win32" else "cua"
+
+
 def _get_backend() -> ComputerUseBackend:
     global _backend
     with _backend_lock:
         if _backend is None:
-            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-            if backend_name in {"cua", "cua-driver", ""}:
+            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "").lower()
+            if not backend_name:
+                backend_name = _default_backend_name()
+            if backend_name in {"cua", "cua-driver"}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
                 _backend = CuaDriverBackend()
+            elif backend_name == "windows":
+                from tools.computer_use.windows_backend import WindowsUIABackend
+                _backend = WindowsUIABackend()
             elif backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             else:
@@ -406,6 +426,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.set_value(value=str(value), element=args.get("element"))
         return _maybe_follow_capture(backend, res, capture_after)
 
+    if action == "switch_desktop":
+        direction = args.get("direction", "")
+        if not hasattr(backend, "switch_desktop"):
+            return json.dumps({"error": "switch_desktop not supported by current backend"})
+        res = backend.switch_desktop(str(direction))
+        return _maybe_follow_capture(backend, res, capture_after)
+
     return json.dumps({"error": f"unknown action {action!r}"})
 
 
@@ -562,10 +589,39 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             routed = _route_capture_through_aux_vision(cap, summary)
             if routed is not None:
                 return routed
-            # Aux routing was requested but failed (no vision client, aux
-            # call raised, etc.). Fall through to the multimodal envelope —
-            # better to surface a tool-result error from the main model
-            # than to silently drop the screenshot entirely.
+            # Aux routing was requested but failed (vision node down, aux
+            # call raised, etc.). Routing being *requested* means the main
+            # model cannot consume images — falling through to the
+            # multimodal envelope would put a screenshot in front of a
+            # text-only model and break the capture with a provider error.
+            # Degrade to the AX/SOM text payload instead: the element index
+            # still supports element-targeted actions, so the agent can
+            # keep driving blind until vision comes back.
+            summary_lines.append(
+                "  (vision unavailable: the auxiliary vision model could not "
+                "be reached; screenshot omitted. Element-index actions still "
+                "work — drive via the element list above.)"
+            )
+            if truncated_elements:
+                summary_lines.append(
+                    f"  (response truncated to {len(visible_elements)} of "
+                    f"{total_elements} elements; raise max_elements or pass "
+                    "app= to narrow)"
+                )
+            payload = {
+                "mode": cap.mode,
+                "width": response_width,
+                "height": response_height,
+                "app": cap.app,
+                "window_title": cap.window_title,
+                "elements": [_element_to_dict(e) for e in visible_elements],
+                "total_elements": total_elements,
+                "summary": "\n".join(summary_lines),
+                "vision_unavailable": True,
+            }
+            if truncated_elements:
+                payload["truncated_elements"] = truncated_elements
+            return json.dumps(payload)
 
         # Detect actual image format from base64 magic bytes so the MIME type
         # matches what the data contains (cua-driver may return JPEG or PNG).
@@ -612,6 +668,37 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
 # ---------------------------------------------------------------------------
 # auxiliary.vision routing for captured screenshots (#24015)
 # ---------------------------------------------------------------------------
+
+# Longest image side handed to the aux vision model. Full-resolution desktop
+# captures (e.g. 1920x1032) tokenize to thousands of vision tokens and
+# overflow small local-model context windows ("the vision API rejected the
+# image"); ~1456px keeps SOM badges legible while fitting comfortably and
+# cutting per-capture vision latency roughly in half.
+_MAX_VISION_DIM = 1456
+
+
+def _shrink_capture_for_vision(raw: bytes, ext: str,
+                               max_dim: int = _MAX_VISION_DIM) -> bytes:
+    """Downscale encoded image bytes so the longest side is <= max_dim.
+
+    Returns the original bytes unchanged when the image already fits or when
+    Pillow is unavailable/fails — the vision call then proceeds with the
+    full-size image, which is no worse than the pre-shrink behavior.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(raw))
+        if max(img.size) <= max_dim:
+            return raw
+        img.thumbnail((max_dim, max_dim))
+        out = BytesIO()
+        img.save(out, format="JPEG" if ext == ".jpg" else "PNG")
+        return out.getvalue()
+    except Exception as exc:
+        logger.debug("computer_use: vision downscale skipped: %s", exc)
+        return raw
+
 
 def _should_route_through_aux_vision() -> bool:
     """Return True when ``_capture_response`` should hand the PNG to aux vision.
@@ -690,10 +777,12 @@ def _route_capture_through_aux_vision(
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+
+        raw = _shrink_capture_for_vision(raw, ext)
         temp_image_path.write_bytes(raw)
 
         prompt = (
-            "Describe what is visible in this macOS application screenshot in "
+            "Describe what is visible in this application screenshot in "
             "concise but specific terms. Mention the app name and window "
             "title if visible, the overall layout, any labelled buttons, "
             "menus or text fields, and any prominent text content the user "
@@ -810,12 +899,19 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    macOS: cua-driver binary installed (or override via env).
+    Windows: uiautomation + Pillow importable (see windows_backend).
     """
-    if sys.platform != "darwin":
-        return False
-    from tools.computer_use.cua_backend import cua_driver_binary_available
-    return cua_driver_binary_available()
+    if sys.platform == "darwin":
+        from tools.computer_use.cua_backend import cua_driver_binary_available
+        return cua_driver_binary_available()
+    if sys.platform == "win32":
+        try:
+            from tools.computer_use.windows_backend import windows_backend_available
+            return windows_backend_available()
+        except Exception:
+            return False
+    return False
 
 
 def get_computer_use_schema() -> Dict[str, Any]:
