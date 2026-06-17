@@ -3188,6 +3188,26 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
 
+        # Proactively resize oversized screenshots before calling the vision
+        # API.  Full-page screenshots on long pages can easily exceed 20 MB
+        # as base64.  Without proactive resizing the API rejects the payload
+        # with a 400 error that is not retryable and bricks the session.
+        try:
+            from tools.vision_tools import (
+                _resize_image_for_vision, _RESIZE_TARGET_BYTES,
+            )
+            if len(data_url) > _RESIZE_TARGET_BYTES:
+                logger.info(
+                    "browser_vision: proactive resize — screenshot base64 "
+                    "%.1f MB exceeds target %.0f MB",
+                    len(data_url) / (1024 * 1024),
+                    _RESIZE_TARGET_BYTES / (1024 * 1024),
+                )
+                data_url = _resize_image_for_vision(
+                    screenshot_path, mime_type="image/png")
+        except ImportError:
+            pass  # Pillow not available; fall through to reactive retry
+
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"
             f"User's question: {question}\n\n"
