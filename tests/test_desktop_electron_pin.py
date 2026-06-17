@@ -17,8 +17,10 @@ These tests lock the contract that prevents that drift, without hard-coding the
 specific version (which is allowed to move):
 
 1. the Electron dependency is an *exact* version (Electron Builder needs the
-   installed binary to match ``electronVersion`` / ``electronDist``), and
-2. the dependency, ``build.electronVersion``, and the resolved lockfile entry
+   installed binary to match ``electronVersion`` / ``electronDist``),
+2. ``electronDist`` points at the workspace-local Electron package npm actually
+   installs for apps/desktop, and
+3. the dependency, ``build.electronVersion``, and the resolved lockfile entry
    all agree — so ``npm ci`` installs exactly what the build packages.
 """
 

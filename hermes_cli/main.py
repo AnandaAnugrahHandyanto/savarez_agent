@@ -4519,12 +4519,26 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
     return False
 
 
+def _npm_build_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an npm build env that always installs/runs dev dependencies.
+
+    Hermes Desktop launches updates from a production runtime. npm interprets
+    ``NODE_ENV=production`` and ``NPM_CONFIG_OMIT=dev`` as "skip dev deps",
+    which removes build-only tools such as TypeScript and Vite.
+    """
+    env = {**os.environ, **(extra or {})}
+    env["NODE_ENV"] = "development"
+    env["NPM_CONFIG_OMIT"] = ""
+    return env
+
+
 def _run_with_idle_timeout(
     cmd: list[str],
-    cwd: Path,
     *,
+    cwd: Path,
     idle_timeout_seconds: int = 180,
     indent: str = "    ",
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a subprocess that streams output, with an idle-output timeout.
 
@@ -4559,6 +4573,7 @@ def _run_with_idle_timeout(
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=env,
         )
     except OSError as exc:
         # E.g. npm not on PATH between the which() check and now.
@@ -4690,7 +4705,7 @@ def _run_npm_install_deterministic(
     # unicode-animations' postinstall animates to /dev/tty (bypasses
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
     # install path and nix/lib.nix npm ci hooks.
-    run_env = {**os.environ, **(env or {}), "CI": "1"}
+    run_env = {**_npm_build_env(env), "CI": "1"}
 
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
@@ -5110,16 +5125,29 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     return removed
 
 
-def _electron_dist_binary(project_root: Path) -> Path:
-    """Return the path to the Electron main binary inside ``node_modules``.
+def _electron_dir(project_root: Path) -> Path:
+    """Return the Electron package directory used by the desktop workspace.
 
-    electron-builder reads the binary from ``build.electronDist``
-    (``node_modules/electron/dist``) since #38673, so this is the exact file
-    whose absence makes a pack fail with "The specified electronDist does not
-    exist". The basename differs per OS (the platform Electron is named for the
-    host the build runs on).
+    npm may keep workspace-only dev dependencies under
+    ``apps/desktop/node_modules`` instead of hoisting them to the repo root.
+    Prefer that local package because ``apps/desktop/package.json`` points
+    electron-builder's ``electronDist`` there.
     """
-    dist = project_root / "node_modules" / "electron" / "dist"
+    desktop_local = project_root / "apps" / "desktop" / "node_modules" / "electron"
+    if desktop_local.exists():
+        return desktop_local
+    return project_root / "node_modules" / "electron"
+
+
+def _electron_dist_binary(project_root: Path) -> Path:
+    """Return the path to the Electron main binary inside the installed package.
+
+    electron-builder reads the binary from ``build.electronDist`` since #38673,
+    so this is the exact file whose absence makes a pack fail with "The
+    specified electronDist does not exist". The basename differs per OS (the
+    platform Electron is named for the host the build runs on).
+    """
+    dist = _electron_dir(project_root) / "dist"
     if sys.platform == "darwin":
         return dist / "Electron.app" / "Contents" / "MacOS" / "Electron"
     if sys.platform == "win32":
@@ -5169,7 +5197,7 @@ def _redownload_electron_dist(
     if _electron_dist_ok(project_root):
         return True
 
-    electron_dir = project_root / "node_modules" / "electron"
+    electron_dir = _electron_dir(project_root)
     installer = electron_dir / "install.js"
     if not installer.is_file():
         return False
@@ -5387,9 +5415,9 @@ def cmd_gui(args: argparse.Namespace):
                 print("  Pre-build first:  cd apps/desktop && npm run build")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
-            if not (PROJECT_ROOT / "node_modules" / "electron" / "package.json").exists():
-                print("✗ --skip-build --source requires existing workspace dependencies.")
-                print(f"  Install first:  cd {PROJECT_ROOT} && npm ci")
+            if not (_electron_dir(PROJECT_ROOT) / "package.json").exists():
+                print("✗ --skip-build --source requires existing desktop workspace dependencies.")
+                print(f"  Install first:  cd {PROJECT_ROOT} && NODE_ENV=development NPM_CONFIG_OMIT= npm ci")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
             print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")

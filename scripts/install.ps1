@@ -2161,15 +2161,26 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
-# True when node_modules\electron\dist holds a usable Electron binary.
-# electron-builder reads the binary from build.electronDist
-# (node_modules\electron\dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing electron.exe (partial extraction / aborted
-# postinstall) is NOT ok.
+# Return the Electron package directory used by the desktop workspace. npm may
+# keep workspace-only dev dependencies under apps/desktop/node_modules instead
+# of hoisting them to the repo root, and apps/desktop/package.json points
+# electron-builder's electronDist there.
+function Get-ElectronDir {
+    param([string]$InstallDir)
+    $desktopLocal = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
+    if (Test-Path -LiteralPath $desktopLocal) { return $desktopLocal }
+    return (Join-Path $InstallDir 'node_modules\electron')
+}
+
+# True when the desktop workspace electronDist holds a usable Electron binary.
+# electron-builder reads the binary from build.electronDist since #38673, so
+# this is the exact file whose absence makes a pack fail with "The specified
+# electronDist does not exist". A dist dir that exists but is missing
+# electron.exe (partial extraction / aborted postinstall) is NOT ok.
 function Test-ElectronDist {
     param([string]$InstallDir)
-    $distExe = Join-Path $InstallDir 'node_modules\electron\dist\electron.exe'
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    $distExe = Join-Path $electronDir 'dist\electron.exe'
     return (Test-Path -LiteralPath $distExe)
 }
 
@@ -2193,7 +2204,7 @@ function Restore-ElectronDist {
     param([string]$InstallDir, [string]$Mirror)
     if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
 
-    $electronDir = Join-Path $InstallDir 'node_modules\electron'
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
     $distExe = Join-Path $electronDir 'dist\electron.exe'
     $installer = Join-Path $electronDir 'install.js'
     if (-not (Test-Path -LiteralPath $installer)) { return $false }
@@ -2307,6 +2318,10 @@ function Install-Desktop {
         # is the artifact), but on failure we scan $npmOut for the TLS-trust
         # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
         # instead of an opaque "exit 1" (issue #38016).
+        $prevNodeEnv = $env:NODE_ENV
+        $prevNpmOmit = $env:NPM_CONFIG_OMIT
+        $env:NODE_ENV = "development"
+        $env:NPM_CONFIG_OMIT = ""
         & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
         $code = $LASTEXITCODE
         if ($code -ne 0) {
@@ -2314,6 +2329,8 @@ function Install-Desktop {
             & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
             $code = $LASTEXITCODE
         }
+        $env:NODE_ENV = $prevNodeEnv
+        $env:NPM_CONFIG_OMIT = $prevNpmOmit
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
             Show-NpmCertHint ($npmOut -join "`n") | Out-Null
@@ -2321,6 +2338,8 @@ function Install-Desktop {
         }
         Write-Success "Desktop workspace dependencies installed"
     } catch {
+        $env:NODE_ENV = $prevNodeEnv
+        $env:NPM_CONFIG_OMIT = $prevNpmOmit
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         Pop-Location
         throw
@@ -2354,11 +2373,13 @@ function Install-Desktop {
     $prevCSCAuto = $env:CSC_IDENTITY_AUTO_DISCOVERY
     $prevWinCscLink = $env:WIN_CSC_LINK
     $prevWinCscKeyPassword = $env:WIN_CSC_KEY_PASSWORD
+    $prevBuildNpmOmit = $env:NPM_CONFIG_OMIT
     try {
         $ErrorActionPreference = "Continue"
         $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
         $env:WIN_CSC_LINK = ""
         $env:WIN_CSC_KEY_PASSWORD = ""
+        $env:NPM_CONFIG_OMIT = ""
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
         if ($code -ne 0) {
@@ -2412,7 +2433,7 @@ function Install-Desktop {
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
             } else {
-                Write-Warn "Could not re-download Electron from the mirror (node_modules\electron\dist still missing)"
+                Write-Warn "Could not re-download Electron from the mirror (apps\desktop\node_modules\electron\dist still missing)"
             }
         }
         $ErrorActionPreference = $prevEAP
@@ -2439,6 +2460,7 @@ function Install-Desktop {
         $env:CSC_IDENTITY_AUTO_DISCOVERY = $prevCSCAuto
         $env:WIN_CSC_LINK = $prevWinCscLink
         $env:WIN_CSC_KEY_PASSWORD = $prevWinCscKeyPassword
+        $env:NPM_CONFIG_OMIT = $prevBuildNpmOmit
     }
     Pop-Location
 

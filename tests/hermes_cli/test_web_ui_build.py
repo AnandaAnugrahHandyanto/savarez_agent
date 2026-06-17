@@ -156,6 +156,37 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["env"]["CI"] == "1"
         assert kwargs["env"]["PYTHON"] == "/nix/store/python"
 
+    def test_npm_install_forces_dev_dependencies_when_parent_env_is_production(self, tmp_path, monkeypatch):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("NODE_ENV", "production")
+        monkeypatch.setenv("NPM_CONFIG_OMIT", "dev")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["env"]["NODE_ENV"] == "development"
+        assert kwargs["env"].get("NPM_CONFIG_OMIT", "") == ""
+
+    def test_web_build_installs_dev_dependencies_when_parent_env_is_production(self, tmp_path, monkeypatch):
+        web_dir, _ = _make_web_dir(tmp_path)
+        monkeypatch.setenv("NODE_ENV", "production")
+        monkeypatch.setenv("NPM_CONFIG_OMIT", "dev")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        _, kwargs = mock_run.call_args
+        assert kwargs["env"]["NODE_ENV"] == "development"
+        assert kwargs["env"].get("NPM_CONFIG_OMIT", "") == ""
+
     def test_npm_install_uses_workspace_web_scope(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         # Real workspace checkout: the single lockfile lives at the root, so

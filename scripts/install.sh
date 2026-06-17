@@ -2392,9 +2392,9 @@ _desktop_pack() {
     local desktop_dir="$1"
     local mirror="${2:-}"
     if [ -n "$mirror" ]; then
-        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+        ( cd "$desktop_dir" && NPM_CONFIG_OMIT= ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
     else
-        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+        ( cd "$desktop_dir" && NPM_CONFIG_OMIT= CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
     fi
 }
 
@@ -2407,15 +2407,29 @@ _desktop_pack() {
 # failed, and we never override a user-pinned ELECTRON_MIRROR.
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
-# True (returns 0) when node_modules/electron/dist holds a usable Electron
-# binary. electron-builder reads the binary from build.electronDist
-# (node_modules/electron/dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing the binary (partial extraction / aborted
-# postinstall) is NOT ok. $1 = the workspace root holding node_modules.
+# Return the Electron package directory used by the desktop workspace. npm may
+# keep workspace-only dev dependencies under apps/desktop/node_modules instead
+# of hoisting them to the repo root, and apps/desktop/package.json points
+# electron-builder's electronDist there.
+_electron_dir() {
+    local install_dir="$1"
+    if [ -d "$install_dir/apps/desktop/node_modules/electron" ]; then
+        printf '%s\n' "$install_dir/apps/desktop/node_modules/electron"
+    else
+        printf '%s\n' "$install_dir/node_modules/electron"
+    fi
+}
+
+# True (returns 0) when the desktop workspace electronDist holds a usable
+# Electron binary. electron-builder reads the binary from build.electronDist
+# since #38673, so this is the exact file whose absence makes a pack fail with
+# "The specified electronDist does not exist". A dist dir that exists but is
+# missing the binary (partial extraction / aborted postinstall) is NOT ok.
+# $1 = the workspace root holding node_modules.
 _electron_dist_ok() {
     local install_dir="$1"
-    local electron_dir="$install_dir/node_modules/electron"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
     if [ "$OS" = "macos" ]; then
         [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
     else
@@ -2442,7 +2456,8 @@ _electron_dist_ok() {
 _restore_electron_dist() {
     local install_dir="$1"
     local mirror="${2:-}"
-    local electron_dir="$install_dir/node_modules/electron"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
     _electron_dist_ok "$install_dir" && return 0
 
     [ -f "$electron_dir/install.js" ] || return 1
@@ -2500,7 +2515,7 @@ install_desktop() {
     #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
     #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
+    ( cd "$INSTALL_DIR" && NODE_ENV=development NPM_CONFIG_OMIT= npm ci ) || ( cd "$INSTALL_DIR" && NODE_ENV=development NPM_CONFIG_OMIT= npm install ) || {
         log_error "Desktop workspace npm install failed"
         # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
         # ~/.npm, so this non-root install can't write the shared cache. npm hides
@@ -2511,7 +2526,7 @@ install_desktop() {
         log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
         log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
         log_info "Then re-run this installer, or build manually:"
-        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
+        log_info "  cd \"$INSTALL_DIR\" && NODE_ENV=development NPM_CONFIG_OMIT= npm ci && cd apps/desktop && NODE_ENV=development NPM_CONFIG_OMIT= npm run pack"
         return 1
     }
     log_success "Desktop workspace dependencies installed"
@@ -2582,8 +2597,8 @@ install_desktop() {
         # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
         log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
         log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
-        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
-        log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
+        log_info "    bash -c 'cd \"$desktop_dir\" && NODE_ENV=development NPM_CONFIG_OMIT= CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        log_info "Otherwise build manually: cd $desktop_dir && NODE_ENV=development NPM_CONFIG_OMIT= npm run pack"
         return 1
     fi
 
