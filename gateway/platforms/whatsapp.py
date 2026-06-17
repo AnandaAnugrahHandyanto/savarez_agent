@@ -195,7 +195,7 @@ from gateway.session import build_session_key
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
-    
+
     WhatsApp requires a Node.js bridge for most implementations.
     """
     # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
@@ -219,17 +219,17 @@ def check_whatsapp_requirements() -> bool:
 class WhatsAppAdapter(BasePlatformAdapter):
     """
     WhatsApp adapter.
-    
+
     This implementation uses a simple HTTP bridge pattern where:
     1. A Node.js process runs the WhatsApp Web client
     2. Messages are forwarded via HTTP/IPC to this Python adapter
     3. Responses are sent back through the bridge
-    
+
     The actual Node.js bridge implementation can vary:
     - whatsapp-web.js based
     - Baileys based
     - Business API based
-    
+
     Configuration:
     - bridge_script: Path to the Node.js bridge script
     - bridge_port: Port for HTTP communication (default: 3000)
@@ -239,7 +239,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     - group_policy: "open" | "allowlist" | "disabled" — which groups are processed (default: "open")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
     """
-    
+
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
@@ -416,6 +416,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
             normalized = normalized.replace(":", "@", 1)
         return normalized
 
+    @staticmethod
+    def _is_status_broadcast_id(value: Optional[str]) -> bool:
+        """Return True for WhatsApp status/story pseudo-chats."""
+        normalized = WhatsAppAdapter._normalize_whatsapp_id(value).lower()
+        return normalized in {"status@broadcast", "status@s.whatsapp.net"}
+
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
         for candidate in data.get("botIds") or []:
@@ -479,12 +485,28 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # are real DMs delivered through a broadcast list — the sender is a
         # normal contact and we route replies to them. Only status updates
         # and channel/newsletter posts are unaddressable.
-        def _is_unaddressable_broadcast(jid: str) -> bool:
-            cid = (jid or "").strip().lower()
-            return cid == "status@broadcast" or cid.endswith("@newsletter")
+        #
+        # Exception: Status updates (Stories) may be opted into via the
+        # ``statuses`` configuration (enabled=true + ingest=true) when the
+        # WhatsApp status primitives are in use; otherwise they are dropped.
+        is_status = any(
+            self._is_status_broadcast_id(data.get(field))
+            for field in ("chatId", "from", "senderId")
+        )
+        if is_status:
+            statuses_cfg = (self.config.extra or {}).get("statuses") or {}
+            if not (
+                statuses_cfg.get("enabled") is True
+                and statuses_cfg.get("ingest") is True
+            ):
+                return False
+        else:
+            def _is_unaddressable_broadcast(jid: str) -> bool:
+                cid = (jid or "").strip().lower()
+                return cid == "status@broadcast" or cid.endswith("@newsletter")
 
-        if _is_unaddressable_broadcast(raw_chat_id) or _is_unaddressable_broadcast(raw_sender_id):
-            return False
+            if _is_unaddressable_broadcast(raw_chat_id) or _is_unaddressable_broadcast(raw_sender_id):
+                return False
 
         is_group = data.get("isGroup", False)
         if is_group:
@@ -511,11 +533,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._message_mentions_bot(data):
             return True
         return self._message_matches_mention_patterns(data)
-    
+
     async def connect(self) -> bool:
         """
         Start the WhatsApp bridge.
-        
+
         This launches the Node.js bridge process and waits for it to be ready.
         """
         if not check_whatsapp_requirements():
@@ -526,7 +548,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 retryable=False,
             )
             return False
-        
+
         bridge_path = Path(self._bridge_script)
         if not bridge_path.exists():
             logger.warning("[%s] Bridge script not found: %s", self.name, bridge_path)
@@ -560,7 +582,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return False
 
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
-        
+
         # Acquire scoped lock to prevent duplicate sessions
         lock_acquired = False
         try:
@@ -600,7 +622,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
-            
+
             # Check if bridge is already running and connected
             import aiohttp
             try:
@@ -623,12 +645,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
                 pass  # Bridge not running, start a new one
-            
+
             # Kill any orphaned bridge from a previous gateway run
             _kill_stale_bridge_by_pidfile(self._session_path)
             _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)
-            
+
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
             # messages are preserved for troubleshooting.
@@ -663,7 +685,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 env=bridge_env,
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
-            
+
             # Wait for the bridge to connect to WhatsApp.
             # Phase 1: wait for the HTTP server to come up (up to 15s).
             # Phase 2: wait for WhatsApp status: connected (up to 15s more).
@@ -697,7 +719,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 print(f"[{self.name}] Check log: {self._bridge_log}")
                 self._close_bridge_log()
                 return False
-            
+
             # Phase 2: HTTP is up but WhatsApp may still be connecting.
             # Give it more time to authenticate with saved credentials.
             if data.get("status") != "connected":
@@ -728,17 +750,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
-            
+
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
 
             # Start message polling task
             self._poll_task = asyncio.create_task(self._poll_messages())
-            
+
             self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
             return True
-            
+
         except Exception as e:
             logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
             return False
@@ -747,7 +769,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 if lock_acquired:
                     self._release_platform_lock()
                 self._close_bridge_log()
-    
+
     def _close_bridge_log(self) -> None:
         """Close the bridge log file handle if open."""
         if self._bridge_log_fh:
@@ -841,7 +863,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_process = None
         self._close_bridge_log()
         print(f"[{self.name}] Disconnected")
-    
+
     def format_message(self, content: str) -> str:
         """Convert standard markdown to WhatsApp-compatible formatting.
 
@@ -1000,6 +1022,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         media_type: str,
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Send any media file via bridge /send-media endpoint."""
         if not self._running or not self._http_session:
@@ -1024,6 +1047,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 payload["fileName"] = file_name
             media_upload_timeout_ms = self._media_upload_timeout_ms(file_path, media_type)
             payload["mediaUploadTimeoutMs"] = media_upload_timeout_ms
+            if reply_to:
+                payload["replyTo"] = reply_to
 
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/send-media",
@@ -1069,7 +1094,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         """Download image URL to cache, send natively via bridge."""
         try:
             local_path = await cache_image_from_url(image_url)
-            return await self._send_media_to_bridge(chat_id, local_path, "image", caption)
+            return await self._send_media_to_bridge(chat_id, local_path, "image", caption, reply_to=reply_to)
         except Exception:
             return await super().send_image(chat_id, image_url, caption, reply_to)
 
@@ -1082,7 +1107,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a local image file natively via bridge."""
-        return await self._send_media_to_bridge(chat_id, image_path, "image", caption)
+        return await self._send_media_to_bridge(chat_id, image_path, "image", caption, reply_to=reply_to)
 
     async def send_video(
         self,
@@ -1093,7 +1118,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a video natively via bridge — plays inline in WhatsApp."""
-        return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
+        return await self._send_media_to_bridge(chat_id, video_path, "video", caption, reply_to=reply_to)
 
     async def send_voice(
         self,
@@ -1104,7 +1129,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send an audio file as a WhatsApp voice message via bridge."""
-        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
+        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption, reply_to=reply_to)
 
     async def send_document(
         self,
@@ -1119,6 +1144,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return await self._send_media_to_bridge(
             chat_id, file_path, "document", caption,
             file_name or os.path.basename(file_path),
+            reply_to=reply_to,
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -1127,7 +1153,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return
         if await self._check_managed_bridge_exit():
             return
-        
+
         try:
             import aiohttp
 
@@ -1142,14 +1168,94 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
         except Exception:
             pass  # Ignore typing indicator failures
-    
+
+    async def _post_bridge_action(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        timeout_seconds: int = 30,
+    ) -> SendResult:
+        """Post a structured action to the WhatsApp bridge."""
+        if not self._running or not self._http_session:
+            return SendResult(success=False, error="Not connected")
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return SendResult(success=False, error=bridge_exit)
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/{endpoint.lstrip('/')}",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+            ) as resp:
+                try:
+                    data = await resp.json()
+                except Exception:
+                    data = {"error": await resp.text()}
+                if resp.status == 200:
+                    return SendResult(success=True, message_id=data.get("messageId"), raw_response=data)
+                return SendResult(success=False, error=data.get("error") or str(data), raw_response=data)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def react_to_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+    ) -> SendResult:
+        """React to a cached WhatsApp message via the bridge."""
+        return await self._post_bridge_action(
+            "react",
+            {"chatId": chat_id, "messageId": message_id, "emoji": emoji},
+        )
+
+    async def reply_to_status(
+        self,
+        status_message_id: str,
+        message: str,
+        status_author_jid: Optional[str] = None,
+    ) -> SendResult:
+        """Privately reply to a cached WhatsApp status/story."""
+        payload = {"statusMessageId": status_message_id, "message": message}
+        if status_author_jid:
+            payload["statusAuthorJid"] = status_author_jid
+        return await self._post_bridge_action("status-reply", payload)
+
+    async def react_to_status(
+        self,
+        status_message_id: str,
+        emoji: str,
+        status_author_jid: Optional[str] = None,
+    ) -> SendResult:
+        """React to a cached WhatsApp status/story."""
+        payload = {"statusMessageId": status_message_id, "emoji": emoji}
+        if status_author_jid:
+            payload["statusAuthorJid"] = status_author_jid
+        return await self._post_bridge_action("status-react", payload)
+
+    async def post_text_status(
+        self,
+        text: str,
+        status_jid_list: list[str],
+        background_color: Optional[str] = None,
+        font: Optional[int] = None,
+    ) -> SendResult:
+        """Post a WhatsApp text status/story to an explicit recipient list."""
+        payload: Dict[str, Any] = {"text": text, "statusJidList": status_jid_list}
+        if background_color:
+            payload["backgroundColor"] = background_color
+        if font is not None:
+            payload["font"] = font
+        return await self._post_bridge_action("post-status", payload)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""
         if not self._running or not self._http_session:
             return {"name": "Unknown", "type": "dm"}
         if await self._check_managed_bridge_exit():
             return {"name": chat_id, "type": "dm"}
-        
+
         try:
             import aiohttp
 
@@ -1166,7 +1272,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     }
         except Exception as e:
             logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
-        
+
         return {"name": chat_id, "type": "dm"}
 
     # ------------------------------------------------------------------
@@ -1345,7 +1451,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     msg_type = MessageType.VOICE
                 else:
                     msg_type = MessageType.DOCUMENT
-            
+
             # Determine chat type
             is_group = data.get("isGroup", False)
             chat_type = "group" if is_group else "dm"
@@ -1376,7 +1482,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 user_name=data.get("senderName"),
                 chat_id_alt=source_chat_id_alt,
             )
-            
+
             # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.
             raw_urls = data.get("mediaUrls", [])
@@ -1467,6 +1573,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 source=source,
                 raw_message=data,
                 message_id=data.get("messageId"),
+                reply_to_message_id=data.get("quotedMessageId") or None,
+                reply_to_text=data.get("quotedText") or None,
                 media_urls=cached_urls,
                 media_types=media_types,
             )
