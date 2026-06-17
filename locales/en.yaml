@@ -341,6 +341,7 @@ gateway:
     label_total:              "Total: {count}"
     label_api_calls:          "API calls: {count}"
     label_cost:               "Cost: {prefix}${amount}"
+    label_cost_source:        "Pricing source: {source}"
     label_cost_included:      "Cost: included"
     label_context:            "Context: {used} / {total} ({pct}%)"
     label_compressions:       "Compressions: {count}"

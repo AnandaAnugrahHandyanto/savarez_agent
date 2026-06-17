@@ -138,6 +138,31 @@ model:
 #   # order: ["anthropic", "google", "together"]
 #
 #   # Require providers to support all parameters in your request
+# =============================================================================
+# Custom pricing overrides (optional)
+# =============================================================================
+# Use this when provider metadata is missing or your billed rates differ from
+# public list pricing.
+#
+# pricing:
+#   custom_overrides:
+#     enabled: true
+#     currency: USD
+#     active_plans:
+#       custom: enterprise-2026
+#     providers:
+#       - provider: custom
+#         plan: enterprise-2026
+#         billing_mode: custom_contract
+#         default:
+#           input_cost_per_million: 0.7
+#           output_cost_per_million: 2.1
+#         models:
+#           - model: llama3.3:70b
+#             input_cost_per_million: 0.0
+#             output_cost_per_million: 0.0
+#             request_cost: 0.0
+#             reason: internal-labs-promo
 #   # require_parameters: true
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data

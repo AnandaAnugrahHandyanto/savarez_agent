@@ -175,6 +175,24 @@ class TestUsageCachedAgent:
 
         assert "Cost: included" in result
 
+    @pytest.mark.asyncio
+    async def test_cost_override_source_is_shown(self):
+        agent = _make_mock_agent(provider="custom")
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(
+                amount_usd=0.1234,
+                status="estimated",
+                source="custom_contract",
+            )
+            result = await runner._handle_usage_command(event)
+
+        assert "Cost: ~$0.1234" in result
+        assert "Pricing source: custom contract" in result
+
 
 class TestUsageAccountSection:
     """Account-limits section appended to /usage output (PR #2486)."""

@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
@@ -250,3 +252,187 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+def test_custom_pricing_override_exact_model_wins(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing": {
+                "custom_overrides": {
+                    "enabled": True,
+                    "providers": [
+                        {
+                            "provider": "custom",
+                            "billing_mode": "user_override",
+                            "models": [
+                                {
+                                    "model": "llama3.3:70b",
+                                    "input_cost_per_million": 1.2,
+                                    "output_cost_per_million": 4.8,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry("llama3.3:70b", provider="custom", base_url="http://localhost:11434/v1")
+
+    assert entry is not None
+    assert entry.source == "user_override"
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == pytest.approx(1.2)
+    assert float(entry.output_cost_per_million) == pytest.approx(4.8)
+
+
+def test_custom_pricing_override_provider_default_fallback(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing": {
+                "custom_overrides": {
+                    "enabled": True,
+                    "providers": [
+                        {
+                            "provider": "custom",
+                            "billing_mode": "custom_contract",
+                            "default": {
+                                "input_cost_per_million": 0.7,
+                                "output_cost_per_million": 2.1,
+                            },
+                            "models": [],
+                        }
+                    ],
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry("gemma-3-27b", provider="custom", base_url="http://localhost:11434/v1")
+
+    assert entry is not None
+    assert entry.source == "custom_contract"
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == pytest.approx(0.7)
+    assert float(entry.output_cost_per_million) == pytest.approx(2.1)
+
+
+def test_custom_pricing_override_active_plan_bucket_wins(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing": {
+                "custom_overrides": {
+                    "enabled": True,
+                    "active_plans": {"custom": "enterprise-2026"},
+                    "providers": [
+                        {
+                            "provider": "custom",
+                            "default": {
+                                "input_cost_per_million": 0.7,
+                                "output_cost_per_million": 2.1,
+                            },
+                        },
+                        {
+                            "provider": "custom",
+                            "plan": "enterprise-2026",
+                            "billing_mode": "custom_contract",
+                            "models": [
+                                {
+                                    "model": "gemma-3-27b",
+                                    "input_cost_per_million": 0.5,
+                                    "output_cost_per_million": 1.5,
+                                }
+                            ],
+                        },
+                    ],
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry("gemma-3-27b", provider="custom", base_url="http://localhost:11434/v1")
+
+    assert entry is not None
+    assert entry.source == "custom_contract"
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == pytest.approx(0.5)
+    assert float(entry.output_cost_per_million) == pytest.approx(1.5)
+
+
+def test_custom_pricing_override_generic_exact_beats_plan_default(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing": {
+                "custom_overrides": {
+                    "enabled": True,
+                    "active_plans": {"custom": "enterprise-2026"},
+                    "providers": [
+                        {
+                            "provider": "custom",
+                            "models": [
+                                {
+                                    "model": "gemma-3-27b",
+                                    "input_cost_per_million": 1.1,
+                                    "output_cost_per_million": 3.3,
+                                }
+                            ],
+                        },
+                        {
+                            "provider": "custom",
+                            "plan": "enterprise-2026",
+                            "billing_mode": "custom_contract",
+                            "default": {
+                                "input_cost_per_million": 0.5,
+                                "output_cost_per_million": 1.5,
+                            },
+                        },
+                    ],
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry("gemma-3-27b", provider="custom", base_url="http://localhost:11434/v1")
+
+    assert entry is not None
+    assert entry.source == "user_override"
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == pytest.approx(1.1)
+    assert float(entry.output_cost_per_million) == pytest.approx(3.3)
+
+
+def test_custom_pricing_override_effective_dates_filter_entries(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "pricing": {
+                "custom_overrides": {
+                    "enabled": True,
+                    "providers": [
+                        {
+                            "provider": "custom",
+                            "default": {
+                                "input_cost_per_million": 0.7,
+                                "output_cost_per_million": 2.1,
+                                "effective_from": "2099-01-01",
+                            },
+                            "models": [],
+                        }
+                    ],
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry("gemma-3-27b", provider="custom", base_url="http://localhost:11434/v1")
+
+    assert entry is None

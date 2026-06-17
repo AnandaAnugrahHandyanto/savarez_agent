@@ -11065,7 +11065,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "model", "pairing", "plugins", "pricing", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -11525,6 +11525,12 @@ def cmd_plugins(args):
     plugins_command(args)
 
 
+def cmd_pricing(args):
+    from hermes_cli.pricing_cli import pricing_command
+
+    pricing_command(args)
+
+
 def cmd_mcp(args):
     from hermes_cli.mcp_config import mcp_command
 
@@ -11857,6 +11863,13 @@ def main():
     # config command  (parser built in hermes_cli/subcommands/config.py)
     # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
+
+    # =========================================================================
+    # pricing command — manage custom token pricing overrides
+    # =========================================================================
+    from hermes_cli.pricing_cli import register_pricing_subparser
+
+    register_pricing_subparser(subparsers)
 
     # =========================================================================
     # pairing command  (parser built in hermes_cli/subcommands/pairing.py)

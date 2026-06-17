@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
@@ -617,6 +617,166 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
     return None
 
 
+def _parse_iso_date(value: Any) -> Optional[date]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw).date()
+    except ValueError:
+        return None
+
+
+def _override_is_effective(entry: dict[str, Any]) -> bool:
+    today = _UTC_NOW().date()
+    effective_from = _parse_iso_date(entry.get("effective_from"))
+    effective_until = _parse_iso_date(entry.get("effective_until"))
+    if effective_from and today < effective_from:
+        return False
+    if effective_until and today > effective_until:
+        return False
+    return True
+
+
+def _pricing_entry_from_override(entry: dict[str, Any], *, source: CostSource) -> Optional[PricingEntry]:
+    input_cost = _to_decimal(entry.get("input_cost_per_million"))
+    output_cost = _to_decimal(entry.get("output_cost_per_million"))
+    cache_read = _to_decimal(entry.get("cache_read_cost_per_million"))
+    cache_write = _to_decimal(entry.get("cache_write_cost_per_million"))
+    request_cost = _to_decimal(entry.get("request_cost"))
+    if all(value is None for value in (input_cost, output_cost, cache_read, cache_write, request_cost)):
+        return None
+    return PricingEntry(
+        input_cost_per_million=input_cost,
+        output_cost_per_million=output_cost,
+        cache_read_cost_per_million=cache_read,
+        cache_write_cost_per_million=cache_write,
+        request_cost=request_cost,
+        source=source,
+        source_url="config.yaml#pricing.custom_overrides",
+        pricing_version="custom-pricing-overrides",
+    )
+
+
+def _override_source(bucket: dict[str, Any]) -> CostSource:
+    raw = str(bucket.get("billing_mode") or "user_override").strip().lower()
+    if raw == "custom_contract":
+        return "custom_contract"
+    return "user_override"
+
+
+def _model_id_matches(pattern: str, model_name: str) -> bool:
+    candidate = pattern.strip().lower()
+    target = (model_name or "").strip().lower()
+    if not candidate or not target:
+        return False
+    if candidate in {"*", "default"}:
+        return True
+    if candidate == target:
+        return True
+    return candidate.split("/", 1)[-1] == target.split("/", 1)[-1]
+
+
+def _bucket_default_entry(bucket: dict[str, Any]) -> Optional[dict[str, Any]]:
+    default_entry = bucket.get("default")
+    if isinstance(default_entry, dict) and _override_is_effective(default_entry):
+        return default_entry
+    models = bucket.get("models")
+    if not isinstance(models, list):
+        return None
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        if _model_id_matches(str(item.get("model", "")), "*") and _override_is_effective(item):
+            return item
+    return None
+
+
+def _active_pricing_plan(config: dict[str, Any], provider: str) -> str:
+    pricing = config.get("pricing") if isinstance(config.get("pricing"), dict) else {}
+    custom_overrides = pricing.get("custom_overrides") if isinstance(pricing, dict) else {}
+    active_plans = custom_overrides.get("active_plans") if isinstance(custom_overrides, dict) else {}
+    if isinstance(active_plans, dict):
+        plan = str(active_plans.get(provider, "")).strip()
+        if plan:
+            return plan
+    providers_cfg = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    provider_cfg = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else {}
+    if isinstance(provider_cfg, dict):
+        for key in ("pricing_plan", "billing_plan", "plan"):
+            plan = str(provider_cfg.get(key, "")).strip()
+            if plan:
+                return plan
+    return ""
+
+
+def _custom_override_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    try:
+        from hermes_cli.config import load_config_readonly
+    except Exception:
+        return None
+    try:
+        config = load_config_readonly()
+    except Exception:
+        return None
+    pricing = config.get("pricing") if isinstance(config.get("pricing"), dict) else {}
+    custom_overrides = pricing.get("custom_overrides") if isinstance(pricing, dict) else {}
+    if not isinstance(custom_overrides, dict) or not custom_overrides.get("enabled"):
+        return None
+    providers = custom_overrides.get("providers")
+    if not isinstance(providers, list):
+        return None
+
+    provider = route.provider.strip().lower()
+    active_plan = _active_pricing_plan(config, provider)
+    matching_plan_buckets: list[dict[str, Any]] = []
+    provider_buckets: list[dict[str, Any]] = []
+    for bucket in providers:
+        if not isinstance(bucket, dict):
+            continue
+        if str(bucket.get("provider", "")).strip().lower() != provider:
+            continue
+        bucket_plan = str(bucket.get("plan", "")).strip()
+        if active_plan and bucket_plan == active_plan:
+            matching_plan_buckets.append(bucket)
+        elif not bucket_plan:
+            provider_buckets.append(bucket)
+
+    def _find_exact(buckets: list[dict[str, Any]]) -> Optional[PricingEntry]:
+        for bucket in buckets:
+            models = bucket.get("models")
+            if not isinstance(models, list):
+                continue
+            for item in models:
+                if not isinstance(item, dict) or not _override_is_effective(item):
+                    continue
+                if not _model_id_matches(str(item.get("model", "")), route.model):
+                    continue
+                if str(item.get("model", "")).strip().lower() in {"*", "default"}:
+                    continue
+                entry = _pricing_entry_from_override(item, source=_override_source(bucket))
+                if entry is not None:
+                    return entry
+        return None
+
+    def _find_default(buckets: list[dict[str, Any]]) -> Optional[PricingEntry]:
+        for bucket in buckets:
+            default_entry = _bucket_default_entry(bucket)
+            if default_entry is None:
+                continue
+            entry = _pricing_entry_from_override(default_entry, source=_override_source(bucket))
+            if entry is not None:
+                return entry
+        return None
+
+    return (
+        _find_exact(matching_plan_buckets)
+        or _find_exact(provider_buckets)
+        or _find_default(matching_plan_buckets)
+        or _find_default(provider_buckets)
+    )
+
+
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     return _pricing_entry_from_metadata(
         fetch_model_metadata(),
@@ -686,6 +846,9 @@ def get_pricing_entry(
             source="none",
             pricing_version="included-route",
         )
+    override_entry = _custom_override_pricing_entry(route)
+    if override_entry is not None:
+        return override_entry
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
     if route.base_url:
