@@ -4,10 +4,53 @@ Delegates to the existing adapter functions in agent/anthropic_adapter.py.
 This transport owns format conversion and normalization — NOT client lifecycle.
 """
 
+import html
+import json
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse
+from agent.transports.types import NormalizedResponse, ToolCall
+
+
+_INVOKE_BLOCK_RE = re.compile(
+    r"<invoke\b(?P<attrs>[^>]*)>(?P<body>.*?)</invoke>",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+_PARAM_BLOCK_RE = re.compile(
+    r"<parameter\b(?P<attrs>[^>]*)>(?P<value>.*?)</parameter>",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+_ATTR_RE = re.compile(
+    r"\b(?P<name>[A-Za-z_:][\w:.-]*)\s*=\s*"
+    r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)"
+)
+_EMPTY_FUNCTION_CALLS_RE = re.compile(
+    r"<(?:(?:antml|anthropic):)?function_calls\b[^>]*>\s*"
+    r"</(?:(?:antml|anthropic):)?function_calls>\s*",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+_FUNCTION_CALLS_TAG_RE = re.compile(
+    r"</?(?:(?:antml|anthropic):)?function_calls\b[^>]*>\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def _parse_attrs(raw_attrs: str) -> dict[str, str]:
+    return {
+        match.group("name").lower(): html.unescape(match.group("value"))
+        for match in _ATTR_RE.finditer(raw_attrs or "")
+    }
+
+
+def _coerce_parameter_value(raw_value: str) -> Any:
+    value = html.unescape(raw_value).strip()
+    if not value:
+        return ""
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 class AnthropicTransport(ProviderTransport):
@@ -16,6 +59,8 @@ class AnthropicTransport(ProviderTransport):
     Wraps the existing functions in anthropic_adapter.py behind the
     ProviderTransport ABC.  Each method delegates — no logic is duplicated.
     """
+
+    _MCP_PREFIX = "mcp_"
 
     @property
     def api_mode(self) -> str:
@@ -48,7 +93,6 @@ class AnthropicTransport(ProviderTransport):
         """Build Anthropic messages.create() kwargs.
 
         Calls convert_messages and convert_tools internally.
-
         params (all optional):
             max_tokens: int
             reasoning_config: dict | None
@@ -77,18 +121,73 @@ class AnthropicTransport(ProviderTransport):
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
         )
 
+    def _normalize_tool_name(self, name: str, strip_tool_prefix: bool) -> str:
+        if strip_tool_prefix and name.startswith(self._MCP_PREFIX):
+            stripped = name[len(self._MCP_PREFIX):]
+            # Only strip the mcp_ prefix for OAuth-injected tools
+            # (where Hermes adds the prefix when sending to Anthropic and must
+            # remove it on the way back). Native MCP server tools (from
+            # mcp_servers: in config.yaml) are registered in the tool registry
+            # under their FULL mcp_<server>_<tool> name and must NOT be
+            # stripped. GH-25255.
+            from tools.registry import registry as _tool_registry
+            if (_tool_registry.get_entry(stripped)
+                    and not _tool_registry.get_entry(name)):
+                return stripped
+        return name
+
+    def _salvage_text_invoke_tool_calls(
+        self,
+        text: str,
+        *,
+        strip_tool_prefix: bool,
+    ) -> tuple[str | None, list[ToolCall]]:
+        """Promote complete Anthropic invoke XML leaked as text.
+
+        Some Anthropic-compatible serving layers occasionally return the raw
+        ``<function_calls><invoke ...>`` markup in a text block instead of a
+        structured ``tool_use`` block. Only salvage complete ``</invoke>``
+        pairs and only when the normal structured path found no tools, so
+        genuine final answers and truncated stream tails remain untouched.
+        """
+        tool_calls: list[ToolCall] = []
+        for index, match in enumerate(_INVOKE_BLOCK_RE.finditer(text)):
+            attrs = _parse_attrs(match.group("attrs"))
+            name = attrs.get("name")
+            if not name:
+                continue
+            arguments: dict[str, Any] = {}
+            for param in _PARAM_BLOCK_RE.finditer(match.group("body")):
+                param_attrs = _parse_attrs(param.group("attrs"))
+                param_name = param_attrs.get("name")
+                if not param_name:
+                    continue
+                arguments[param_name] = _coerce_parameter_value(param.group("value"))
+            tool_calls.append(
+                ToolCall(
+                    id=f"call_anthropic_text_{index}",
+                    name=self._normalize_tool_name(name, strip_tool_prefix),
+                    arguments=json.dumps(arguments),
+                )
+            )
+
+        if not tool_calls:
+            return text, []
+
+        cleaned = _INVOKE_BLOCK_RE.sub("", text)
+        cleaned = _EMPTY_FUNCTION_CALLS_RE.sub("", cleaned)
+        cleaned = _FUNCTION_CALLS_TAG_RE.sub("", cleaned).strip()
+        return cleaned or None, tool_calls
+
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Anthropic response to NormalizedResponse.
 
         Parses content blocks (text, thinking, tool_use), maps stop_reason
         to OpenAI finish_reason, and collects reasoning_details in provider_data.
         """
-        import json
         from agent.anthropic_adapter import _to_plain_data, _sanitize_replay_block
-        from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        _MCP_PREFIX = "mcp_"
 
         text_parts = []
         reasoning_parts = []
@@ -130,19 +229,7 @@ class AnthropicTransport(ProviderTransport):
                 elif isinstance(block_dict, dict):
                     reasoning_details.append(block_dict)
             elif block.type == "tool_use":
-                name = block.name
-                if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    stripped = name[len(_MCP_PREFIX):]
-                    # Only strip the mcp_ prefix for OAuth-injected tools
-                    # (where Hermes adds the prefix when sending to Anthropic
-                    # and must remove it on the way back).  Native MCP server
-                    # tools (from mcp_servers: in config.yaml) are registered
-                    # in the tool registry under their FULL mcp_<server>_<tool>
-                    # name and must NOT be stripped.  GH-25255.
-                    from tools.registry import registry as _tool_registry
-                    if (_tool_registry.get_entry(stripped)
-                            and not _tool_registry.get_entry(name)):
-                        name = stripped
+                name = self._normalize_tool_name(block.name, strip_tool_prefix)
                 tool_calls.append(
                     ToolCall(
                         id=block.id,
@@ -152,6 +239,15 @@ class AnthropicTransport(ProviderTransport):
                 )
 
         finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
+        content = "\n".join(text_parts) if text_parts else None
+        if not tool_calls and content:
+            content, salvaged_tool_calls = self._salvage_text_invoke_tool_calls(
+                content,
+                strip_tool_prefix=strip_tool_prefix,
+            )
+            if salvaged_tool_calls:
+                tool_calls = salvaged_tool_calls
+                finish_reason = "tool_calls"
 
         provider_data = {}
         if reasoning_details:
@@ -175,7 +271,7 @@ class AnthropicTransport(ProviderTransport):
             provider_data["anthropic_content_blocks"] = ordered_blocks
 
         return NormalizedResponse(
-            content="\n".join(text_parts) if text_parts else None,
+            content=content,
             tool_calls=tool_calls or None,
             finish_reason=finish_reason,
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
