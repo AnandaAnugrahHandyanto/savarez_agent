@@ -8701,18 +8701,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # and prevented hygiene from ever firing for ~200K models (GLM-5).
 
                 # Hard safety valve: force compression if message count is
-                # extreme, regardless of token estimates.  This breaks the
-                # death spiral where API disconnects prevent token data
-                # collection, which prevents compression, which causes more
-                # disconnects.  400 messages is well above normal sessions
-                # but catches runaway growth before it becomes unrecoverable.
+                # extreme on unattended messaging platforms, regardless of
+                # token estimates.  This breaks the death spiral where API
+                # disconnects prevent token data collection, which prevents
+                # compression, which causes more disconnects.  400 messages
+                # is well above normal chat sessions but catches runaway
+                # growth before it becomes unrecoverable.  Local/Desktop/API
+                # sessions are different: the user can see token pressure and
+                # explicitly compact, so message count alone must not compact
+                # a 1M-context session at ~100K tokens.
                 # Threshold is configurable via
                 # compression.hygiene_hard_message_limit.
                 # (#2153)
                 _HARD_MSG_LIMIT = _hyg_hard_msg_limit
+                _hard_msg_force_enabled = source.platform not in {
+                    Platform.LOCAL,
+                    Platform.API_SERVER,
+                    Platform.WEBHOOK,
+                }
                 _needs_compress = (
                     _approx_tokens >= _compress_token_threshold
-                    or _msg_count >= _HARD_MSG_LIMIT
+                    or (
+                        _hard_msg_force_enabled
+                        and _msg_count >= _HARD_MSG_LIMIT
+                    )
                 )
 
                 if _needs_compress:
