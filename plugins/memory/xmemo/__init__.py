@@ -17,11 +17,18 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
+from .client import XMemoClient
+from .config import load_config, save_config
+
 logger = logging.getLogger(__name__)
 
 # Circuit breaker: pause API calls after consecutive failures.
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECONDS = 120
+
+# Max time prefetch() may wait for an in-flight background recall. Keep this
+# short because prefetch() runs on the API-call critical path.
+_PREFETCH_JOIN_TIMEOUT_SECONDS = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -257,35 +264,45 @@ MARK_USED_SCHEMA = {
 FORGET_SCHEMA = {
     "name": "xmemo_forget",
     "description": (
-        "Delete a memory from XMemo. Use when the user explicitly asks to forget "
-        "or remove a specific saved fact. target can be 'current' or an exact memory ID."
+        "Delete a memory from XMemo. Use only when the user explicitly asks to "
+        "forget or remove a specific saved fact. Requires an exact memory ID."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "target": {
+            "memory_id": {
                 "type": "string",
-                "description": "'current' or exact memory ID from xmemo_search.",
+                "description": "Exact memory ID from xmemo_search.",
             },
             "reason": {
                 "type": "string",
                 "description": "Optional reason for deletion.",
             },
         },
-        "required": ["target"],
+        "required": ["memory_id"],
     },
 }
 
-ALL_TOOL_SCHEMAS = [
+# Schemas exposed by default. Workflow/destructive tools are opt-in via config.
+_CORE_TOOL_SCHEMAS = [
+    RECALL_CONTEXT_SCHEMA,
     SEARCH_SCHEMA,
     REMEMBER_SCHEMA,
     UPDATE_STATE_SCHEMA,
-    RECALL_CONTEXT_SCHEMA,
+]
+
+_WORKFLOW_TOOL_SCHEMAS = [
     RECORD_EVENT_SCHEMA,
     CREATE_REMINDER_SCHEMA,
     LIST_REMINDERS_SCHEMA,
     COMPLETE_REMINDER_SCHEMA,
+]
+
+_FEEDBACK_TOOL_SCHEMAS = [
     MARK_USED_SCHEMA,
+]
+
+_DESTRUCTIVE_TOOL_SCHEMAS = [
     FORGET_SCHEMA,
 ]
 
@@ -340,7 +357,6 @@ def _format_recall_context(context: Dict[str, Any]) -> str:
     text = context.get("context_text", "")
     if text and text.strip():
         return text.strip()
-    # Fallback: assemble from items if context_text is missing
     items = context.get("items", [])
     if not items:
         return ""
@@ -353,6 +369,54 @@ def _format_recall_context(context: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _session_key(session_id: str) -> str:
+    """Normalize session id for cache keys."""
+    return session_id or "__default__"
+
+
+def _as_bool(value: Any) -> bool:
+    """Parse bool-like values from JSON/config strings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _is_high_signal_turn(user_content: str, assistant_content: str) -> bool:
+    """Detect turns that likely contain durable facts without LLM extraction."""
+    text = f"{user_content} {assistant_content}".lower()
+    high_signal_phrases = [
+        "remember",
+        "save this",
+        "write this down",
+        "keep in mind",
+        "going forward",
+        "from now on",
+        "we decided",
+        "decision:",
+        "architecture decision",
+        "root cause",
+        "fix was",
+        "lesson learned",
+        "runbook",
+        "handoff",
+        "blocked by",
+        "blocker:",
+    ]
+    return any(phrase in text for phrase in high_signal_phrases)
+
+
+def _redact_for_log(text: str, max_len: int = 200) -> str:
+    """Truncate and lightly redact sensitive-looking content for debug logs."""
+    if not text:
+        return ""
+    if len(text) > max_len:
+        text = text[:max_len] + "..."
+    # Mask likely tokens/keys in logs (best-effort).
+    return re.sub(r"\b([a-zA-Z0-9_-]{24,})\b", r"\1[:redacted]", text)
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
@@ -362,30 +426,32 @@ class XMemoMemoryProvider(MemoryProvider):
 
     def __init__(self):
         self._config: Dict[str, Any] = {}
-        self._client: Optional[Any] = None
+        self._client: Optional[XMemoClient] = None
         self._client_lock = threading.Lock()
-        self._prefetch_result = ""
+
+        # Per-session prefetch cache
+        self._prefetch_results: Dict[str, str] = {}
+        self._prefetch_threads: Dict[str, threading.Thread] = {}
         self._prefetch_lock = threading.Lock()
-        self._prefetch_thread: Optional[threading.Thread] = None
-        self._sync_thread: Optional[threading.Thread] = None
 
         # Circuit breaker state
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
 
-        # Session metadata
+        # Session / runtime metadata
         self._session_id = ""
         self._turn_count = 0
+        self._agent_context = "primary"
+        self._auto_write_enabled = True
 
     @property
     def name(self) -> str:
         return "xmemo"
 
     def is_available(self) -> bool:
-        """Check if XMemo is configured. No network calls."""
+        """Check if XMemo is configured. No network calls and no file writes."""
         try:
-            from plugins.memory.xmemo.config import load_config
-            cfg = load_config()
+            cfg = load_config(create_instance=False)
             return bool(cfg.get("api_key"))
         except Exception:
             return False
@@ -426,16 +492,33 @@ class XMemoMemoryProvider(MemoryProvider):
                 "description": "REST request timeout",
                 "default": "5.0",
             },
+            {
+                "key": "enable_workflow_tools",
+                "description": "Expose reminder/event workflow tools",
+                "default": "false",
+                "choices": ["true", "false"],
+            },
+            {
+                "key": "enable_destructive_tools",
+                "description": "Expose the xmemo_forget destructive tool",
+                "default": "false",
+                "choices": ["true", "false"],
+            },
+            {
+                "key": "capture_timeline",
+                "description": "Record high-signal turns to the XMemo timeline",
+                "default": "false",
+                "choices": ["true", "false"],
+            },
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """Write non-secret config to $HERMES_HOME/xmemo.json."""
-        from plugins.memory.xmemo.config import save_config as _save_config
-        _save_config(values, hermes_home=hermes_home)
+        save_config(values, hermes_home=hermes_home)
 
     def post_setup(self, hermes_home: str, config: Dict[str, Any]) -> None:
         """Run the full XMemo setup wizard after provider selection."""
-        from plugins.memory.xmemo.cli import cmd_setup
+        from .cli import cmd_setup
         cmd_setup(provider=self, hermes_home=hermes_home, config=config)
 
     def _is_breaker_open(self) -> bool:
@@ -460,12 +543,11 @@ class XMemoMemoryProvider(MemoryProvider):
                 _BREAKER_COOLDOWN_SECONDS,
             )
 
-    def _get_client(self):
+    def _get_client(self) -> XMemoClient:
         """Thread-safe client accessor with lazy initialization."""
         with self._client_lock:
             if self._client is not None:
                 return self._client
-            from plugins.memory.xmemo.client import XMemoClient
             self._client = XMemoClient(
                 base_url=self._config.get("base_url", "https://xmemo.dev"),
                 api_key=self._config.get("api_key", ""),
@@ -477,11 +559,12 @@ class XMemoMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize XMemo provider for a session."""
-        from plugins.memory.xmemo.config import load_config, save_config
-
-        self._config = load_config()
+        self._config = load_config(create_instance=True)
         self._session_id = session_id or ""
         self._turn_count = 0
+
+        self._agent_context = kwargs.get("agent_context", "primary") or "primary"
+        self._auto_write_enabled = self._agent_context == "primary"
 
         # Scope per-profile if the active Hermes profile differs from default
         profile = kwargs.get("agent_identity") or "default"
@@ -527,12 +610,13 @@ class XMemoMemoryProvider(MemoryProvider):
         if _is_trivial_prompt(query):
             return ""
 
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
+        key = _session_key(session_id or self._session_id)
+        thread = self._prefetch_threads.get(key)
+        if thread and thread.is_alive():
+            thread.join(timeout=_PREFETCH_JOIN_TIMEOUT_SECONDS)
 
         with self._prefetch_lock:
-            result = self._prefetch_result
-            self._prefetch_result = ""
+            result = self._prefetch_results.pop(key, "")
 
         if not result:
             return ""
@@ -547,9 +631,12 @@ class XMemoMemoryProvider(MemoryProvider):
         if _is_trivial_prompt(query):
             return
 
-        # Guard against a hung prior thread
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            logger.debug("XMemo prefetch skipped: prior thread still running")
+        key = _session_key(session_id or self._session_id)
+
+        # Guard against a hung prior thread for this session
+        prior = self._prefetch_threads.get(key)
+        if prior and prior.is_alive():
+            logger.debug("XMemo prefetch skipped: prior thread still running for session %s", key)
             return
 
         def _run() -> None:
@@ -566,57 +653,61 @@ class XMemoMemoryProvider(MemoryProvider):
                 text = _format_recall_context(context)
                 if text:
                     with self._prefetch_lock:
-                        self._prefetch_result = text
+                        self._prefetch_results[key] = text
                 self._record_success()
             except Exception as exc:
                 self._record_failure()
                 logger.debug("XMemo prefetch failed: %s", exc)
 
-        self._prefetch_thread = threading.Thread(
-            target=_run, daemon=True, name="xmemo-prefetch"
-        )
-        self._prefetch_thread.start()
+        t = threading.Thread(target=_run, daemon=True, name=f"xmemo-prefetch-{key}")
+        with self._prefetch_lock:
+            self._prefetch_threads[key] = t
+        t.start()
 
     def sync_turn(
         self, user_content: str, assistant_content: str, *, session_id: str = ""
     ) -> None:
-        """Persist a completed turn to XMemo (non-blocking)."""
+        """Persist a completed turn to XMemo if it is high-signal."""
         if self._is_breaker_open():
             return
         if not self._config.get("api_key"):
             return
+        if not self._auto_write_enabled:
+            return
 
         self._turn_count += 1
 
-        # MVP: record a lightweight timeline event rather than extracting facts.
-        # Future phases can add server-side capture policy or LLM-based extraction.
-        def _sync() -> None:
-            try:
-                client = self._get_client()
-                summary = f"Turn {self._turn_count}: user asked about {user_content[:120]}..."
-                client.record_event(
-                    content=summary,
-                    event_type="session_event",
-                    bucket=self._config.get("bucket", "work"),
-                    scope=self._config.get("scope", "hermes/default"),
-                    session_id=session_id or self._session_id,
-                )
-                self._record_success()
-            except Exception as exc:
-                self._record_failure()
-                logger.debug("XMemo sync_turn failed: %s", exc)
+        capture_timeline = _as_bool(self._config.get("capture_timeline", False))
+        if not capture_timeline and not _is_high_signal_turn(user_content, assistant_content):
+            return
 
-        # Wait for any previous sync before starting a new one
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
+        # Defensive truncation to avoid storing long raw outputs or secrets.
+        safe_user = _redact_for_log(user_content, max_len=240)
+        safe_asst = _redact_for_log(assistant_content, max_len=240)
+        summary = f"Turn {self._turn_count}: {safe_user[:120]}..."
 
-        self._sync_thread = threading.Thread(
-            target=_sync, daemon=True, name="xmemo-sync"
-        )
-        self._sync_thread.start()
+        try:
+            client = self._get_client()
+            client.record_event(
+                content=summary,
+                event_type="session_event",
+                bucket=self._config.get("bucket", "work"),
+                scope=self._config.get("scope", "hermes/default"),
+                session_id=session_id or self._session_id,
+            )
+            self._record_success()
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("XMemo sync_turn failed: %s", exc)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return ALL_TOOL_SCHEMAS
+        schemas = list(_CORE_TOOL_SCHEMAS)
+        if _as_bool(self._config.get("enable_workflow_tools", False)):
+            schemas.extend(_WORKFLOW_TOOL_SCHEMAS)
+        if _as_bool(self._config.get("enable_destructive_tools", False)):
+            schemas.extend(_DESTRUCTIVE_TOOL_SCHEMAS)
+        # Feedback tools remain internal by default; can be exposed via config later.
+        return schemas
 
     def handle_tool_call(
         self, tool_name: str, args: Dict[str, Any], **kwargs
@@ -655,12 +746,15 @@ class XMemoMemoryProvider(MemoryProvider):
 
         return tool_error(f"Unknown XMemo tool: {tool_name}")
 
-    def _handle_search(self, client, args: Dict[str, Any]) -> str:
+    def _handle_search(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         query = args.get("query", "").strip()
         if not query:
             return tool_error("Missing required parameter: query")
 
-        limit = min(int(args.get("limit", 5)), 20)
+        try:
+            limit = min(int(args.get("limit", 5)), 20)
+        except (ValueError, TypeError):
+            limit = 5
         memory_type = args.get("memory_type", "%")
 
         try:
@@ -683,7 +777,7 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo search failed: {exc}")
 
-    def _handle_remember(self, client, args: Dict[str, Any]) -> str:
+    def _handle_remember(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         content = args.get("content", "").strip()
         path = args.get("path", "").strip()
         if not content:
@@ -696,7 +790,7 @@ class XMemoMemoryProvider(MemoryProvider):
         if importance is not None:
             try:
                 importance = float(importance)
-            except ValueError:
+            except (ValueError, TypeError):
                 importance = None
 
         try:
@@ -718,11 +812,14 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo remember failed: {exc}")
 
-    def _handle_update_state(self, client, args: Dict[str, Any]) -> str:
+    def _handle_update_state(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         current_task = args.get("current_task", "").strip()
         next_action = args.get("next_action", "").strip()
         blocked_reason = args.get("blocked_reason", "").strip()
-        ttl_seconds = int(args.get("ttl_seconds", 86400))
+        try:
+            ttl_seconds = int(args.get("ttl_seconds", 86400))
+        except (ValueError, TypeError):
+            ttl_seconds = 86400
 
         if not any([current_task, next_action, blocked_reason]):
             return tool_error("At least one of current_task, next_action, or blocked_reason is required")
@@ -746,12 +843,15 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo update_state failed: {exc}")
 
-    def _handle_recall_context(self, client, args: Dict[str, Any]) -> str:
+    def _handle_recall_context(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         query = args.get("query", "").strip()
         if not query:
             return tool_error("Missing required parameter: query")
 
-        max_items = min(int(args.get("max_items", 5)), 20)
+        try:
+            max_items = min(int(args.get("max_items", 5)), 20)
+        except (ValueError, TypeError):
+            max_items = 5
         memory_type = args.get("memory_type", "auto")
 
         try:
@@ -776,7 +876,7 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo recall_context failed: {exc}")
 
-    def _handle_record_event(self, client, args: Dict[str, Any]) -> str:
+    def _handle_record_event(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         content = args.get("content", "").strip()
         if not content:
             return tool_error("Missing required parameter: content")
@@ -800,7 +900,7 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo record_event failed: {exc}")
 
-    def _handle_create_reminder(self, client, args: Dict[str, Any]) -> str:
+    def _handle_create_reminder(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         content = args.get("content", "").strip()
         if not content:
             return tool_error("Missing required parameter: content")
@@ -824,9 +924,12 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo create_reminder failed: {exc}")
 
-    def _handle_list_reminders(self, client, args: Dict[str, Any]) -> str:
+    def _handle_list_reminders(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         item_status = args.get("item_status", "open") or "open"
-        limit = min(int(args.get("limit", 20)), 100)
+        try:
+            limit = min(int(args.get("limit", 20)), 100)
+        except (ValueError, TypeError):
+            limit = 20
 
         try:
             items = client.list_reminders(
@@ -846,7 +949,7 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo list_reminders failed: {exc}")
 
-    def _handle_complete_reminder(self, client, args: Dict[str, Any]) -> str:
+    def _handle_complete_reminder(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         todo_id = args.get("todo_id", "").strip()
         if not todo_id:
             return tool_error("Missing required parameter: todo_id")
@@ -869,7 +972,7 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo complete_reminder failed: {exc}")
 
-    def _handle_mark_used(self, client, args: Dict[str, Any]) -> str:
+    def _handle_mark_used(self, client: XMemoClient, args: Dict[str, Any]) -> str:
         memory_id = args.get("memory_id", "").strip()
         if not memory_id:
             return tool_error("Missing required parameter: memory_id")
@@ -892,16 +995,16 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"XMemo mark_used failed: {exc}")
 
-    def _handle_forget(self, client, args: Dict[str, Any]) -> str:
-        target = args.get("target", "").strip()
-        if not target:
-            return tool_error("Missing required parameter: target")
+    def _handle_forget(self, client: XMemoClient, args: Dict[str, Any]) -> str:
+        memory_id = args.get("memory_id", "").strip()
+        if not memory_id:
+            return tool_error("Missing required parameter: memory_id")
 
         reason = args.get("reason", "").strip()
 
         try:
             result = client.forget(
-                target=target,
+                memory_id=memory_id,
                 reason=reason,
                 bucket=self._config.get("bucket", "work"),
                 scope=self._config.get("scope", "hermes/default"),
@@ -909,7 +1012,7 @@ class XMemoMemoryProvider(MemoryProvider):
             self._record_success()
             return json.dumps({
                 "result": "Memory deleted from XMemo.",
-                "memory_id": result.get("id") if isinstance(result, dict) else target,
+                "memory_id": result.get("id") if isinstance(result, dict) else memory_id,
             })
         except Exception as exc:
             self._record_failure()
@@ -917,9 +1020,9 @@ class XMemoMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         """Clean shutdown: flush threads and close client."""
-        for t in (self._prefetch_thread, self._sync_thread):
+        for t in list(self._prefetch_threads.values()):
             if t and t.is_alive():
-                t.join(timeout=5.0)
+                t.join(timeout=1.0)
         with self._client_lock:
             if self._client is not None:
                 try:
@@ -928,9 +1031,69 @@ class XMemoMemoryProvider(MemoryProvider):
                     logger.debug("XMemo client close failed: %s", exc)
                 self._client = None
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        rewound: bool = False,
+        **kwargs,
+    ) -> None:
+        """Update session tracking and clean stale prefetch cache."""
+        old_key = _session_key(self._session_id)
+        self._session_id = new_session_id or ""
+
+        if reset or rewound:
+            with self._prefetch_lock:
+                self._prefetch_results.pop(old_key, None)
+                old_thread = self._prefetch_threads.pop(old_key, None)
+            if old_thread and old_thread.is_alive():
+                old_thread.join(timeout=1.0)
+
+        if reset:
+            self._turn_count = 0
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror Hermes built-in memory writes to XMemo."""
+        if self._is_breaker_open():
+            return
+        if not self._config.get("api_key"):
+            return
+        if not self._auto_write_enabled:
+            return
+        if action not in {"add", "replace"}:
+            # Remove is not mirrored until we have stable remote id mapping.
+            return
+        if not content:
+            return
+
+        path = f"hermes/builtin-memory/{target}"
+        try:
+            client = self._get_client()
+            client.remember(
+                content=content,
+                path=path,
+                bucket=self._config.get("bucket", "work"),
+                scope=self._config.get("scope", "hermes/default"),
+                memory_type="semantic",
+            )
+            self._record_success()
+        except Exception as exc:
+            self._record_failure()
+            logger.debug("XMemo on_memory_write mirror failed: %s", exc)
+
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Capture a restart snapshot at session end."""
         if self._is_breaker_open() or not self._config.get("api_key"):
+            return
+        if not self._auto_write_enabled:
             return
 
         def _snapshot() -> None:

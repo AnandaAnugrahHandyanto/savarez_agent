@@ -189,7 +189,7 @@ def cmd_setup(provider: Any | None = None, hermes_home: str = "", config: Dict[s
     from hermes_constants import get_hermes_home
 
     if provider is None:
-        from plugins.memory.xmemo import XMemoMemoryProvider
+        from . import XMemoMemoryProvider
         provider = XMemoMemoryProvider()
 
     if not hermes_home:

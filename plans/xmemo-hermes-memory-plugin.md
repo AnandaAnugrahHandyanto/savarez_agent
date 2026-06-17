@@ -1,971 +1,780 @@
-# XMemo x Hermes Agent 记忆体插件实施计划（审核增强版）
+# XMemo x Hermes Agent 记忆体插件执行后深度审核与提升计划
 
-> 状态：审核后可执行计划  
-> 原计划结论：方向可行，但需要修正依赖策略、setup 流程、prefetch 语义、profile 隔离和工具分期。  
+> 状态：执行后审核修订版  
 > 审核日期：2026-06-18  
 > 审核者：pc-codex  
-> 目标：让 XMemo 成为 Hermes Agent 的可选外部 `MemoryProvider`，与 Honcho、Mem0、Hindsight 等 provider 并列。
+> 目标：让 XMemo 记忆体工具真正符合 Hermes Agent 的插件边界、缓存约束、profile 隔离、工具面成本和 XMemo REST 合约。
 
 ---
 
-## 0. 审核结论
+## 0. 最终判断
 
-### 0.1 总体判断
+### 0.1 结论
 
-**可行，建议推进，但必须先做 Phase 0 的接口校准。**
+当前实现已经证明：**XMemo 作为 Hermes `MemoryProvider` 的技术路线可行**。
 
-Hermes 已经具备外部记忆 provider 的完整接入点：
+但它还不能被称为“完美匹配 Hermes”或“符合 Hermes 官方插件发布要求”。主要原因不是 `MemoryProvider` ABC 本身，而是以下执行后偏差：
 
-- `plugins/memory/<name>/` 自动发现。
-- `MemoryProvider` 生命周期覆盖启动、prefetch、turn sync、session end、session switch、built-in memory mirror、delegation。
-- `hermes memory setup` 可消费 provider 的 `get_config_schema()` 和 `save_config()`。
-- `run_agent.py` 已经把 prefetched memory 作为当前 user message 的临时上下文注入，不写入持久会话，也不破坏系统 prompt 的稳定前缀。
+- Hermes 根规则已经明确：**新 memory provider 不应再加入 `plugins/memory/` 树内**，应作为外部插件安装到 `$HERMES_HOME/plugins/<name>/` 或经官方确认的独立分发方式。
+- 当前 XMemo provider 放在 `plugins/memory/xmemo/`，并且内部使用 `from plugins.memory.xmemo...` 绝对导入；这在树内可用，但对用户安装的外部插件形态不兼容。
+- 当前默认暴露 10 个工具，包含 destructive `xmemo_forget` 和多个高级 workflow 工具，工具面偏大，不符合 Hermes “核心窄腰 / 工具 schema 成本高”的风格。
+- `sync_turn()` 现在每轮都写 timeline event，和原计划“只写高信号事实/状态”的原则冲突，会制造低信号噪声并可能记录敏感用户内容。
+- prefetch cache 不是按 `session_id` 分桶，gateway 多会话下存在召回串扰风险。
+- XMemo REST client 有两个路径与 Memory OS 官方 client/API 不一致：`mark_used` 和 `forget`。
+- 配置层仍允许从 `xmemo.json` 读取 `api_key`，与“secret 只来自 env/secret store，不写普通 JSON”的要求冲突。
+- 本地测试没有跑通：按 Hermes 要求执行 `bash scripts/run_tests.sh ...` 时，当前 checkout 缺少 `.venv`/`venv`，测试 wrapper 直接退出。
 
-XMemo 侧也具备所需能力：
+### 0.2 Go / No-Go
 
-- REST / Python client 能覆盖 `recall_context`、`search`、`remember`、`update_state`、`record_event`、reminders、pending decisions、restart snapshots、usage feedback 等核心能力。
-- XMemo 支持 `X-Memory-OS-Agent-ID` / `X-Memory-OS-Agent-Instance-ID` attribution envelope，适合 Hermes profile / device 级归因。
+**No-Go：当前实现不应作为上游 Hermes 官方 PR 直接提交。**
 
-关键调整是：**MVP 不直接依赖 `memory-os` Python 包和 async `RemoteMemoryManager`，而是在 Hermes 插件内用已有 `httpx` 写轻量同步 REST client。** 这样可以避免把 Memory OS 服务端依赖（FastAPI、Supabase、Redis、Azure SDK 等）拖进 Hermes runtime，也规避 sync/async event loop 包装复杂度。
+**可以作为内部 spike / fork 验证，但发布或上游前必须完成 P0 修复。**
 
-### 0.2 必改点摘要
+P0 完成后才可以进入：
 
-| 原计划点 | 审核结论 | 修正 |
-| --- | --- | --- |
-| `XMemoMemoryProvider.name = "xmemo"` 类属性 | 不符合 ABC 最佳写法 | 实现 `@property def name(self) -> str` |
-| `is_available()` 可验证连通性 | Hermes 明确要求不做网络调用 | 只检查配置和可导入依赖，网络检查放 `initialize()` 或 `status` |
-| 使用 async `RemoteMemoryManager` 包同步 | 可行但不推荐作 MVP | MVP 用 `httpx.Client` 同步 REST；后续再评估共享 SDK |
-| `prefetch()` 直接调用 `build_memory_context_block` | provider 不应返回 fenced block | provider 返回 raw context；Hermes `build_memory_context_block()` 统一包裹 |
-| `initialize()` 调 `get_control_plane_context` | 本地 client 未见该方法 | 使用 `/health` 或低预算 read smoke，且失败不阻断启动 |
-| `hermes memory setup xmemo` 会完整配置 | 当前 direct provider path 只激活，不走 schema | Phase 2 修 `cmd_setup_provider()` 复用 schema，或实现 XMemo `post_setup()` |
-| E2E passphrase 存 `xmemo.json` | 有明文密钥风险 | passphrase 默认只从 env / OS secret 读取，不写 JSON |
-| Ledger / `add_expense` 进入早期承诺 | REST/SDK 暴露不如 MCP 层直接 | Phase 2/3 验证后实现；MVP 不作为阻断项 |
-
-### 0.3 Go / No-Go Gate
-
-开始写代码前先完成以下 Gate：
-
-- [ ] 确认目标 XMemo 部署支持 `/health`、`/v1/recall/context`、`/v1/remember`、`/v1/memories/search`、`/v1/update_state`、`/v1/timeline/events`、`/v1/restart/snapshot`。
-- [ ] 确认 Hermes `httpx[socks]` 现有依赖可满足插件 REST client，无需新增 heavy dependency。
-- [ ] 确认 `XMEMO_KEY` / `MEMORY_OS_API_KEY` 的 header 映射：优先 `X-API-Key`，如服务端要求可兼容 `Authorization: Bearer`.
-- [ ] 明确 direct setup 行为：要么修 `hermes_cli/memory_setup.py::cmd_setup_provider()`，要么在 XMemo provider 内实现 `post_setup()`。
-- [ ] 确认 profile 隔离默认：`agent_id="hermes"`，`agent_instance_id` 每个 Hermes profile + device 稳定生成，`scope` 默认 `hermes/<profile>`。
+- 外部插件包发布。
+- Hermes 兼容性认证。
+- XMemo 官方 “Hermes memory provider” 文档。
+- live E2E。
 
 ---
 
-## 1. 已核对的 Hermes 接口事实
+## 1. 已核对的 Hermes 事实
 
-### 1.1 MemoryProvider ABC
+### 1.1 官方仓库政策
 
-`agent/memory_provider.py` 中的关键约束：
+来自 `AGENTS.md` 的关键约束：
+
+- Per-conversation prompt caching 是核心约束；不要在会话中途改变系统 prompt、工具集或历史上下文。
+- 每个 model tool 都会进入 API call，新增工具面的成本很高。
+- 新 capability 应优先走 CLI/skill/service-gated tool/plugin/MCP，核心 tool 是最后选择。
+- Memory provider 插件实现 `agent/memory_provider.py::MemoryProvider`。
+- Memory provider 生命周期由 `agent/memory_manager.py::MemoryManager` 编排。
+- `is_available()` 必须便宜，不能做网络调用。
+- 新 memory backend 不再进入 `plugins/memory/` 树内；应作为外部插件发布。
+- 插件不应修改核心文件；需要能力时扩展通用插件 surface，不能写 XMemo 专用核心逻辑。
+
+### 1.2 MemoryProvider 合约
+
+`agent/memory_provider.py` 的实际接口包括：
 
 - `name` 是 abstract property。
-- `is_available()` 不应做网络调用。
-- `initialize(session_id, **kwargs)` 会收到：
-  - `hermes_home`
-  - `platform`
-  - `agent_context`
-  - `agent_identity`
-  - `agent_workspace`
-  - gateway/user/chat/thread 相关字段（存在时）
-- `sync_turn()` 必须非阻塞。
-- `prefetch()` 应快速返回，推荐消费上一轮 `queue_prefetch()` 的缓存。
-- `get_tool_schemas()` 返回 OpenAI function schema。
+- `is_available()` 不做网络调用。
+- `initialize(session_id, **kwargs)` 会收到 `hermes_home`、`platform`、`agent_context`、`agent_identity`、gateway/user/chat/thread 等上下文。
+- `system_prompt_block()` 只放静态 provider 说明。
+- `prefetch(query, session_id=...)` 返回 raw context；Hermes 统一调用 `build_memory_context_block()` 包 `<memory-context>`。
+- `queue_prefetch(query, session_id=...)` 用于下一轮 prefetch。
+- `sync_turn(user_content, assistant_content, session_id=..., messages=...)` 应非阻塞。
+- `get_tool_schemas()` 暴露 provider tools。
 - `handle_tool_call()` 必须返回 JSON string。
+- 可选 hooks：`on_turn_start`、`on_session_end`、`on_session_switch`、`on_pre_compress`、`on_memory_write`、`on_delegation`。
 
-### 1.2 插件发现
+### 1.3 Hermes 运行时注入
 
-`plugins/memory/__init__.py` 支持：
+当前 Hermes 的真实链路：
 
-- bundled provider: `plugins/memory/<name>/`
-- user provider: `$HERMES_HOME/plugins/<name>/`
-- 模块里有 `register(ctx)` 时优先通过 `ctx.register_memory_provider(...)` 注册。
-- 无 `register(ctx)` 时会 fallback 找 `MemoryProvider` subclass 并实例化。
+- `agent/agent_init.py` 从 `config.yaml` 的 `memory.provider` 读取 provider 名称。
+- `plugins/memory/__init__.py` 加载 bundled provider 或 `$HERMES_HOME/plugins/<name>/` user provider。
+- `_mp.is_available()` 返回 true 后，`MemoryManager.add_provider()` 注册。
+- `MemoryManager.initialize_all()` 注入 `hermes_home`、`platform`、`agent_context`、`agent_identity`、gateway identity 等。
+- `agent/turn_context.py` 每轮调用 `MemoryManager.prefetch_all()`。
+- `agent/conversation_loop.py` 只在当前 API call 的 user message 上注入 memory context，不改写持久 `messages`。
+- `agent/turn_finalizer.py` 结束 turn 后调用 `_sync_external_memory_for_turn()`，再由 `MemoryManager.sync_all()` 和 `queue_prefetch_all()` 后台处理。
+- 内置 `memory` tool 的 `add` / `replace` 会桥接到 `MemoryManager.on_memory_write()`。
 
-结论：XMemo 插件放在 `hermes-agent/plugins/memory/xmemo/` 是正确选择。
-
-### 1.3 Setup Wizard
-
-`hermes_cli/memory_setup.py` 的实际行为：
-
-- `hermes memory setup` 交互式路径会：
-  - 选择 provider
-  - 安装 `plugin.yaml` 的 `pip_dependencies`
-  - 读取 `get_config_schema()`
-  - secret 写入 `$HERMES_HOME/.env`
-  - non-secret 交给 provider `save_config()`
-  - 写 `memory.provider`
-- `hermes memory setup <provider>` 的 direct path 当前只激活 provider；除非 provider 实现 `post_setup()`，否则不会询问 schema 字段。
-
-结论：如果文档承诺 `hermes memory setup xmemo`，必须补 direct setup 行为。
-
-### 1.4 Prompt Caching 与上下文注入
-
-`run_agent.py` 当前做法：
-
-- provider 的 `system_prompt_block()` 进入系统 prompt，只应包含静态低变化内容。
-- provider 的 `prefetch()` 结果在每轮 API call 前注入当前 user message。
-- 注入时由 Hermes 统一调用 `build_memory_context_block()` 包成 `<memory-context>...</memory-context>`。
-- 原始 `messages` 不被改写，因此不会把 external memory 写进 session history。
-
-结论：XMemo provider 不要自己返回 `<memory-context>`，也不要把动态 recall 放进 `system_prompt_block()`。
+结论：XMemo 不需要改 Hermes 核心就能做到高质量集成；关键是 provider 自身要遵守这些契约。
 
 ---
 
-## 2. 架构决策记录
+## 2. 当前实现审核
 
-### D1. 插件代码归属
+### 2.1 已完成且方向正确
 
-**决策：核心 Python 插件放在 `hermes-agent`。**
+当前 `plugins/memory/xmemo/` 已经实现：
 
-原因：
+- `XMemoMemoryProvider` 继承 `MemoryProvider`。
+- `name` 是 property，返回 `"xmemo"`。
+- `is_available()` 基本只检查配置，不做网络调用。
+- `get_config_schema()` 和 `save_config()` 已接入 setup wizard。
+- `post_setup()` 可以让 `hermes memory setup xmemo` 走 provider 自己的 setup。
+- 使用 `httpx.Client` 轻量同步 REST client，没有引入 `memory-os` server dependency tree。
+- `prefetch()` 返回 raw-ish context，由 Hermes 统一 fencing。
+- `client.py` 覆盖基础 REST：health、recall_context、search、remember、update_state、timeline、reminders、snapshot。
+- 测试文件 `tests/plugins/memory/test_xmemo.py` 覆盖了 provider 工具路由、setup、prefetch、basic circuit breaker、secret 不写入 save_config。
 
-- Hermes 的 provider discovery 原生扫描 `plugins/memory/<name>/`。
-- `MemoryProvider` 是 Python ABC，放到 Node/npm CLI 仓库会增加跨语言安装和版本漂移。
-- 测试可以直接进入 Hermes pytest 体系。
+这些点说明原架构方向成立。
 
-`memory-os-cli` 只做辅助 onboarding，不承载 Hermes runtime 插件。
+### 2.2 P0 问题：官方插件发布形态不符合
 
-### D2. MVP 客户端策略
-
-**决策：MVP 使用轻量同步 REST client，不直接依赖 `memory-os` Python package。**
-
-原因：
-
-- Hermes 已有 `httpx[socks]` 依赖。
-- `memory-os` Python package 当前包含服务端运行依赖，作为 Hermes 插件依赖过重。
-- 同步 REST client 避免 async event loop 嵌套问题。
-- REST surface 足够覆盖 MVP。
-
-后续可以在 XMemo 侧拆出独立轻量 SDK（例如 `xmemo-python`）后再切换。
-
-### D3. Identity 与隔离模型
-
-**决策：用 `agent_instance_id` 做 attribution，用 `scope` 做默认 profile 隔离。**
-
-默认值：
-
-- `agent_id`: `hermes`
-- `agent_instance_id`: 每个 Hermes profile + device 稳定生成，写入 `$HERMES_HOME/xmemo.json`
-- `bucket`: `work`
-- `scope`: `hermes/<profile>`；无 profile 时为 `hermes/default`
-
-理由：
-
-- XMemo 文档把 `agent_instance_id` 定义为 attribution envelope，不应把它当唯一隔离手段。
-- `scope` 更适合项目、profile、workspace 边界。
-- 用户仍可在 `xmemo.json` 覆盖 scope，例如 `memory-os`、`customer-a`、`incident-123`。
-
-### D4. 写入策略
-
-**决策：MVP 不把每个 turn 全量写进长期记忆。**
-
-默认只写：
-
-- explicit `xmemo_remember`
-- built-in memory tool 的 add/replace mirror
-- `xmemo_update_state`
-- 高信号 turn（决策、修复、用户纠正、明确偏好、架构选择、失败根因）
-
-普通对话 turn 可作为 timeline / working state 的候选，但不得无过滤写成 semantic memory。
-
-### D5. E2E 加密
-
-**决策：E2E passphrase 不是 MVP；实现时不得默认写入 `xmemo.json`。**
-
-允许来源：
-
-- `XMEMO_PASSPHRASE`
-- OS secret store（未来）
-- 交互式临时输入（未来）
-
-不允许默认明文写入 `$HERMES_HOME/xmemo.json`。
-
----
-
-## 3. 目标架构
-
-### 3.1 Hermes 侧目录结构
+当前代码放在：
 
 ```text
 plugins/memory/xmemo/
-├── __init__.py       # XMemoMemoryProvider + register(ctx)
-├── client.py         # 同步 REST client，封装 httpx
-├── config.py         # 配置加载、生成 agent_instance_id、保存 xmemo.json
-├── capture.py        # turn/event -> XMemo write candidate 的轻量高信号策略
-├── tools.py          # tool schemas + handler helpers
-├── README.md         # 用户配置、故障排查、scope/profile 说明
-└── plugin.yaml       # provider 元数据；MVP 不声明 heavy pip dependency
 ```
 
-`cli.py` 放到 Phase 2，因为 memory plugin CLI 只在 provider active 时注册，不影响 MVP 启动路径。
+但 Hermes 仓库规则明确：新 memory backend 不应进入树内，应作为外部插件发布。
 
-### 3.2 核心类形态
+更关键的是，当前实现内部多处使用 bundled 路径：
 
 ```python
-class XMemoMemoryProvider(MemoryProvider):
-    @property
-    def name(self) -> str:
-        return "xmemo"
-
-    def is_available(self) -> bool: ...
-    def initialize(self, session_id: str, **kwargs) -> None: ...
-    def system_prompt_block(self) -> str: ...
-    def prefetch(self, query: str, *, session_id: str = "") -> str: ...
-    def queue_prefetch(self, query: str, *, session_id: str = "") -> None: ...
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None: ...
-    def get_tool_schemas(self) -> list[dict[str, Any]]: ...
-    def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str: ...
-    def on_session_end(self, messages: list[dict[str, Any]]) -> None: ...
-    def on_session_switch(self, new_session_id: str, **kwargs) -> None: ...
-    def on_memory_write(self, action: str, target: str, content: str, metadata: dict | None = None) -> None: ...
-    def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None: ...
-    def shutdown(self) -> None: ...
-    def get_config_schema(self) -> list[dict[str, Any]]: ...
-    def save_config(self, values: dict[str, Any], hermes_home: str) -> None: ...
+from plugins.memory.xmemo.config import load_config
+from plugins.memory.xmemo.client import XMemoClient
+from plugins.memory.xmemo.cli import cmd_setup
 ```
 
-### 3.3 Data Flow
+这会导致：
 
-```mermaid
-flowchart LR
-    A["User turn"] --> B["Hermes on_turn_start"]
-    B --> C["XMemo prefetch(): consume cached recall"]
-    C --> D["Hermes wraps <memory-context>"]
-    D --> E["LLM call"]
-    E --> F["Final assistant response"]
-    F --> G["sync_turn(): high-signal write only"]
-    F --> H["queue_prefetch(): async recall for next turn"]
-    G --> I["XMemo REST"]
-    H --> I
-```
+- 在树内运行时可用。
+- 安装到 `$HERMES_HOME/plugins/xmemo/` 时，模块名会是 `_hermes_user_memory.xmemo`，绝对导入会失败。
+- 如果树内和用户外部插件同名并存，可能误导入 bundled 版本。
 
-### 3.4 配置来源
+**修正要求：**
 
-按优先级读取：
-
-1. 环境变量：
-   - `XMEMO_KEY`
-   - `XMEMO_URL`
-   - `XMEMO_AGENT_ID`
-   - `XMEMO_AGENT_INSTANCE_ID`
-   - `XMEMO_SCOPE`
-   - `XMEMO_BUCKET`
-   - `XMEMO_PASSPHRASE`（未来可选）
-2. 兼容环境变量：
-   - `MEMORY_OS_API_KEY`
-   - `MEMORY_OS_URL`
-3. `$HERMES_HOME/xmemo.json`
-4. `config.yaml` 中的 `memory.xmemo`（只放非 secret，可选）
-
-`xmemo.json` 示例：
-
-```json
-{
-  "base_url": "https://xmemo.dev",
-  "agent_id": "hermes",
-  "agent_instance_id": "hermes-default-device-8f42c1b7",
-  "bucket": "work",
-  "scope": "hermes/default",
-  "timeout_seconds": 5.0,
-  "prefetch_max_items": 5,
-  "prefetch_max_tokens": 900
-}
-```
-
-禁止写入：
-
-- `api_key`
-- `passphrase`
-- bearer token
-- OAuth token
-
-### 3.5 Setup Schema
-
-为了保持 `hermes memory setup` 简短，schema 只提示必需项：
+- 把 XMemo provider 抽成独立插件仓库，例如 `xmemo-hermes-plugin`。
+- 插件代码内部全部改为相对导入：
 
 ```python
-[
-    {
-        "key": "api_key",
-        "description": "XMemo API key",
-        "secret": True,
-        "required": True,
-        "env_var": "XMEMO_KEY",
-        "url": "https://xmemo.dev",
-    },
-    {
-        "key": "base_url",
-        "description": "XMemo base URL",
-        "default": "https://xmemo.dev",
-        "env_var": "XMEMO_URL",
-    },
-]
+from .config import load_config
+from .client import XMemoClient
+from .cli import cmd_setup
 ```
 
-`save_config()` 自动补齐：
+- 测试必须覆盖 user-installed plugin path：把插件复制到 temp `$HERMES_HOME/plugins/xmemo/` 后通过 `load_memory_provider("xmemo")` 加载。
+- 如果要支持 pip 分发，先确认 Hermes 当前 memory discovery 是否真的支持 memory-provider entry points；当前已核对代码主要支持 bundled 和 `$HERMES_HOME/plugins/<name>/` 目录。
 
-- `agent_id`
-- `agent_instance_id`
-- `bucket`
-- `scope`
-- timeout / prefetch defaults
+### 2.3 P0 问题：REST endpoint 偏差
 
-高级项通过手动编辑 `xmemo.json` 或 Phase 2 的 `hermes xmemo scope` / `hermes xmemo status` 管理。
-
----
-
-## 4. XMemo REST Client 设计
-
-### 4.1 MVP 方法
-
-`client.py` 暴露同步方法：
+当前 `plugins/memory/xmemo/client.py`：
 
 ```python
-class XMemoClient:
-    def health(self) -> dict: ...
-    def recall_context(self, query: str, **filters) -> dict: ...
-    def search(self, query: str, limit: int = 5, **filters) -> list[dict]: ...
-    def remember(self, content: str, path: str, **fields) -> str: ...
-    def update_state(self, **fields) -> dict: ...
-    def record_event(self, **fields) -> dict: ...
-    def create_restart_snapshot(self, **fields) -> dict: ...
+POST /v1/memories/{memory_id}/used
+POST /v1/forget/{target}
 ```
 
-MVP 先不实现：
-
-- E2E encryption
-- OAuth
-- MCP tool bridge
-- local spool
-- low-level admin/audit APIs
-
-### 4.2 Header Contract
-
-默认 header：
+Memory OS 官方 client/API 显示：
 
 ```text
-X-API-Key: <XMEMO_KEY>
-X-Memory-OS-Agent-ID: hermes
-X-Memory-OS-Agent-Instance-ID: <stable-instance-id>
+POST /v1/memories/{memory_id}/usage
+POST /v1/memories/{memory_id}/forget
 ```
 
-兼容模式：
+**修正要求：**
 
-- 如服务端或部署要求 `Authorization: Bearer <token>`，client 支持配置 `auth_header_mode: bearer`。
-- 默认不在日志中输出 headers。
+- `mark_used()` 改为 `/v1/memories/{memory_id}/usage`。
+- payload 支持 `usage_tracking_id`、`action`、`context`、`metadata`。
+- `forget()` 改为 `/v1/memories/{memory_id}/forget`。
+- 禁止 `target="current"` 这种不稳定语义进入默认工具；必须要求明确 memory id。
+- 用 `httpx.MockTransport` 增加 endpoint path 测试，不能只用 fake client method 覆盖。
 
-### 4.3 Failure Contract
+### 2.4 P0 问题：每轮自动写 timeline 噪声过大
 
-所有 REST 调用必须遵循：
+当前 `sync_turn()` 每轮都会：
 
-- 设置短 timeout：prefetch 默认 3-5 秒，tool call 默认 15-30 秒。
-- circuit breaker：连续失败 5 次后暂停后台 API 调用 120 秒。
-- provider 失败不得阻断 Hermes 对话。
-- tool handler 返回 `tool_error(...)` JSON，而不是抛出到 agent 主循环。
-- `initialize()` 的 health check 可失败开放，只记录 debug/warn。
+```python
+summary = f"Turn {self._turn_count}: user asked about {user_content[:120]}..."
+client.record_event(...)
+```
 
----
+这违反原计划 D4：
 
-## 5. 工具设计
+- MVP 不应把每个 turn 全量或摘要写成长期记忆。
+- 普通对话 turn 不应写入 semantic/timeline memory。
+- 用户内容前 120 字可能包含 secret、路径、错误日志、个人信息或低信号闲聊。
 
-### 5.1 MVP 工具
+**修正要求：**
 
-| Tool | 类型 | 参数 | 说明 |
-| --- | --- | --- | --- |
-| `xmemo_recall_context` | read | `query`, `max_items`, `max_tokens`, `scope`, `bucket`, `memory_type` | 获取 explainable context block；适合当前任务前手动召回 |
-| `xmemo_search` | read | `query`, `limit`, `scope`, `bucket`, `memory_type`, `threshold` | 语义搜索，返回结构化 memory items |
-| `xmemo_remember` | write | `content`, `path`, `memory_type`, `scope`, `bucket`, `importance`, `confidence` | 显式保存 durable fact / decision / procedure |
-| `xmemo_update_state` | write | `current_task`, `next_action`, `blocked_reason`, `state_key`, `ttl_seconds`, `scope`, `bucket` | 保存当前工作状态 |
+- 默认关闭 every-turn timeline write。
+- `sync_turn()` 只做高信号捕获：
+  - 用户明确说“记住 / 保存 / 以后记得”。
+  - 架构决策、修复根因、用户纠正、长期偏好、可复用 runbook。
+  - 明确 handoff / blocked 状态。
+- 或者 Phase 1 完全禁用自动写入，只保留显式 `xmemo_remember`、`xmemo_update_state`、`on_memory_write()` mirror。
+- 若需要事件流，放到配置项 `memory.xmemo.capture_timeline: true`，默认 false。
+- 写入前做长度上限、secret redaction、metadata provenance。
 
-MVP 不暴露 destructive tools。
+### 2.5 P0 问题：prefetch cache 未按 session 隔离
 
-### 5.2 Phase 2 工具
+当前 provider 只有：
 
-| Tool | 说明 |
-| --- | --- |
-| `xmemo_record_event` | 记录 timeline event |
-| `xmemo_get_timeline` | 查询最近事件 |
-| `xmemo_create_reminder` | 创建 TODO/reminder |
-| `xmemo_list_reminders` | 列出 TODO/reminder |
-| `xmemo_complete_reminder` | 完成 TODO/reminder |
-| `xmemo_create_pending_decision` | 记录未决决策 |
-| `xmemo_list_pending_decisions` | 列出未决决策 |
-| `xmemo_resolve_decision` | 解决决策 |
-| `xmemo_create_restart_snapshot` | 创建 restart snapshot |
-| `xmemo_restore_restart_snapshot` | 恢复 restart snapshot |
-| `xmemo_mark_used` | 标记 recall memory 被使用 |
+```python
+self._prefetch_result = ""
+self._prefetch_thread = None
+```
 
-### 5.3 Phase 3 / 可选工具
+`queue_prefetch(query, session_id=...)` 接收 `session_id`，但存储时没有按 session 分桶。
 
-| Tool | 前置条件 |
-| --- | --- |
-| `xmemo_add_expense` | 验证 REST `/v1/remember` + ledger adapter 行为或补轻量 client helper |
-| `xmemo_list_ledger_transactions` | 需要 REST ledger endpoint 或 memory projection fallback |
-| `xmemo_get_monthly_ledger_summary` | 需要 REST ledger endpoint |
-| `xmemo_forget` | 需要明确 destructive confirmation 语义 |
-| `xmemo_reflect` | 只在用户/admin 明确要求时暴露，默认 dry-run |
+Hermes gateway 会服务多个 user/chat/session；这种全局单槽 cache 可能导致：
 
----
+- A 会话的 recall 被 B 会话消费。
+- 用户之间记忆上下文串扰。
+- 多平台 gateway 下出现难以复现的隐私 bug。
 
-## 6. 生命周期映射
+**修正要求：**
 
-### 6.1 initialize()
+- 改成：
 
-任务：
+```python
+self._prefetch_results: dict[str, str]
+self._prefetch_threads: dict[str, threading.Thread]
+```
 
-- 读取 env + `$HERMES_HOME/xmemo.json`。
-- 生成缺失的 stable `agent_instance_id`。
-- 解析 profile：`agent_identity` -> default scope。
-- 创建 `XMemoClient`。
-- 如果 `agent_context != "primary"`，默认禁用自动写入，但保留 read tools（可配置）。
-- 可选后台 health check，失败不阻断启动。
+- key 使用 `session_id or self._session_id or "__default__"`。
+- `prefetch()` 只消费同 session 的结果。
+- `on_session_switch(reset=True)` 清理旧 session cache。
+- 增加 gateway 并发测试：两个 session 排队不同 query，只能消费自己的 recall。
 
-### 6.2 system_prompt_block()
+### 2.6 P0 问题：secret 仍可能从 JSON 读取
 
-只返回静态说明，例如：
+`config.py` 注释说 secret 只从 env 读取，但代码仍有：
+
+```python
+api_key = (
+    os.environ.get("XMEMO_KEY")
+    or os.environ.get("MEMORY_OS_API_KEY")
+    or file_cfg.get("api_key", "")
+)
+```
+
+这意味着历史或手工写入的 `$HERMES_HOME/xmemo.json` 中 `api_key` 仍会被使用。
+
+**修正要求：**
+
+- 删除 `file_cfg.get("api_key", "")` fallback。
+- 如果发现 JSON 中存在 `api_key`，只记录 redacted warning，并在下次 `save_config()` 时移除。
+- 测试覆盖：JSON 里有 `api_key`，但 env 无 key，则 `is_available()` 必须 false。
+
+### 2.7 P0 问题：`is_available()` 有文件写入副作用
+
+`is_available()` 调用 `load_config()`，而 `load_config()` 会在缺少 `agent_instance_id` 时调用 `save_config(config)`。
+
+Hermes 会在 discovery/status 路径调用 `is_available()`；这个路径应该便宜、无网络、无副作用。
+
+**修正要求：**
+
+- 拆分：
+
+```python
+load_config(create_instance: bool = False)
+ensure_agent_instance_id(config, hermes_home)
+```
+
+- `is_available()` 使用 `load_config(create_instance=False)`。
+- `initialize()` 或 setup 才生成并持久化 instance id。
+
+### 2.8 P0 问题：默认工具面过大
+
+当前默认暴露 10 个工具：
 
 ```text
-# XMemo Memory
-External memory provider is active. Use xmemo_recall_context or xmemo_search for relevant prior context, xmemo_remember for durable facts, and xmemo_update_state for active task continuity.
+xmemo_search
+xmemo_remember
+xmemo_update_state
+xmemo_recall_context
+xmemo_record_event
+xmemo_create_reminder
+xmemo_list_reminders
+xmemo_complete_reminder
+xmemo_mark_used
+xmemo_forget
 ```
 
-禁止包含：
+Hermes 明确强调 model tool schema 成本。这个默认面偏大，尤其：
 
-- 动态 recall 内容
-- API key
-- session-specific volatile text
-- 大段配置
+- `xmemo_forget` 是 destructive tool，缺少确认语义。
+- `xmemo_mark_used` 应该更多是 provider 内部自动反馈，不一定需要暴露给模型。
+- reminders/decisions/snapshot 是 workflow 能力，适合二阶段或配置开启。
 
-### 6.3 queue_prefetch() / prefetch()
+**修正要求：**
 
-`queue_prefetch()`：
-
-- 在后台线程调用 `/v1/recall/context`。
-- 使用当前 `session_id`、default `scope`、`bucket`。
-- 控制 `max_items` / `max_tokens`。
-- 只保留最近一次结果，按 `session_id` 分桶。
-
-`prefetch()`：
-
-- 最多短暂 join 上一次线程（例如 2-3 秒）。
-- 返回缓存中的 raw text。
-- 消费后清空缓存，避免重复注入。
-- 不返回 `<memory-context>` fence。
-
-### 6.4 sync_turn()
-
-默认高信号过滤：
-
-- 用户明确要求记住、保存、以后记得。
-- 出现决策、架构选择、根因、修复、用户纠正、长期偏好。
-- assistant 明确总结了可复用流程或 runbook。
-- 失败命令/测试结论被用户或 assistant 确认为重要。
-
-写入方式：
-
-- semantic/procedural: `/v1/remember`
-- active work: `/v1/update_state`
-- task/session event: `/v1/timeline/events`
-
-普通闲聊、短 ACK、低信号 tool output 不写入。
-
-### 6.5 on_memory_write()
-
-Hermes built-in memory tool 写入时：
-
-- `action in {"add", "replace"}`：mirror 到 `/v1/remember`。
-- `action == "remove"`：先 `record_event`，不要盲目 delete XMemo memory，因为没有稳定 remote memory id 映射。
-- metadata 透传前必须移除 provider secrets 和 reserved identity fields。
-
-### 6.6 on_session_end()
-
-Phase 2 起启用：
-
-- flush pending background sync。
-- `record_event(event_type="session_end")`。
-- `create_restart_snapshot(session_id=...)`。
-- 可选 `reflect(dry_run=True)` 放到 CLI 手动触发，不默认每次跑。
-
-### 6.7 on_session_switch()
-
-在 `/resume`、`/branch`、`/reset`、context compression 后：
-
-- 更新 `_session_id`。
-- 清理旧 session 的 prefetch cache。
-- 对 `reset=True` 清空 turn buffer。
-- 记录 session switch event（Phase 2）。
-- 不自动合并两个 session 的记忆 scope，避免串扰。
-
-### 6.8 on_delegation()
-
-Phase 3：
-
-- parent provider 记录子代理完成事件。
-- payload 包含 task、result summary、child_session_id、parent session。
-- 对长 result 做截断/摘要，避免写入大量 transient output。
-
----
-
-## 7. 实施阶段
-
-### Phase 0：接口校准与阻断项清理（0.5-1 天）
-
-目标：把计划中所有可能导致返工的接口假设先落地验证。
-
-- [ ] 用 `rg` / openapi / docs 确认 XMemo REST endpoints 和 request/response shape。
-- [ ] 确认 `httpx.Client` 方案无需新增 Hermes 依赖。
-- [ ] 确认 `X-API-Key` vs `Authorization: Bearer` 的默认策略。
-- [ ] 写一个 `httpx.MockTransport` spike，模拟 `recall_context` / `remember` / `update_state`。
-- [ ] 决定 direct setup 修复方式：
-  - 推荐：修 `cmd_setup_provider()` 复用 generic schema setup。
-  - 备选：XMemo provider 实现 `post_setup()`。
-- [ ] 明确 live E2E 环境变量：
-  - `XMEMO_LIVE_TEST=1`
-  - `XMEMO_KEY`
-  - `XMEMO_URL`
-
-验收：
-
-- [ ] 有一份确认过的 endpoint mapping。
-- [ ] direct setup 行为有明确实现方案。
-- [ ] 没有 heavy Python package dependency 被引入 MVP。
-
-### Phase 1：MVP Provider（1-2 天）
-
-目标：Hermes 能激活 XMemo provider，自动 prefetch，下轮注入，支持基础 tools 和高信号写入。
-
-#### 7.1.1 插件骨架
-
-- [ ] 创建 `plugins/memory/xmemo/`。
-- [ ] `plugin.yaml`：
-  - `name: xmemo`
-  - `version: 0.1.0`
-  - `description`
-  - 不声明 `memory-os` pip dependency。
-- [ ] `__init__.py` 实现 `XMemoMemoryProvider`。
-- [ ] `register(ctx)` 注册 provider。
-
-#### 7.1.2 配置
-
-- [ ] `config.py` 读取 env、兼容 env、`xmemo.json`。
-- [ ] 自动生成 stable `agent_instance_id`。
-- [ ] 默认 `scope=hermes/<profile>`。
-- [ ] `get_config_schema()` 只提示 API key 和 base URL。
-- [ ] `save_config()` 只写 non-secret。
-- [ ] `is_available()` 只检查 `api_key` 和 `base_url`。
-
-#### 7.1.3 REST Client
-
-- [ ] `client.py` 实现同步 `XMemoClient`。
-- [ ] 覆盖 `health`、`recall_context`、`search`、`remember`、`update_state`。
-- [ ] 支持 identity headers。
-- [ ] timeout、error normalization、redacted logging。
-
-#### 7.1.4 Prefetch
-
-- [ ] `queue_prefetch()` 后台线程请求 `recall_context`。
-- [ ] `prefetch()` 消费缓存。
-- [ ] 空结果返回 `""`。
-- [ ] provider 不返回 `<memory-context>`。
-- [ ] 针对 gateway 并发 session，用 `session_id` 分缓存。
-
-#### 7.1.5 写入
-
-- [ ] `sync_turn()` 使用 `capture.py` 过滤高信号。
-- [ ] 显式高信号事实调用 `remember`。
-- [ ] 当前任务状态调用 `update_state`。
-- [ ] 所有写入后台执行，失败只记录 warning/debug。
-
-#### 7.1.6 MVP Tools
-
-- [ ] `xmemo_recall_context`
-- [ ] `xmemo_search`
-- [ ] `xmemo_remember`
-- [ ] `xmemo_update_state`
-- [ ] handler 输出 JSON string。
-- [ ] 参数限制：limit/max_items/max_tokens 有上限，scope/bucket 默认配置值。
-
-#### 7.1.7 Tests
-
-- [ ] `tests/plugins/test_xmemo_plugin.py`：mock client / MockTransport。
-- [ ] 覆盖 config merge、is_available、initialize、prefetch consume、queue background、tool routing、circuit breaker。
-- [ ] 覆盖 provider 返回 raw context，不含 fence。
-- [ ] 覆盖 `agent_instance_id` 稳定生成。
-
-验收：
-
-- [ ] `memory.provider: xmemo` 后 provider 可加载。
-- [ ] 缺 API key 时不激活且不崩。
-- [ ] XMemo 掉线时 Hermes 对话仍继续。
-- [ ] `xmemo_remember` 能保存 mock memory。
-- [ ] `queue_prefetch()` 后下一轮 `prefetch()` 返回 recall text。
-
-### Phase 2：Setup、工作流工具与稳定性（2-3 天）
-
-目标：用户配置顺滑，XMemo 工作流能力覆盖 AGENTS memory workflow。
-
-#### 7.2.1 Setup 修复
-
-- [ ] 修 `hermes memory setup xmemo` direct path：
-  - 方案 A：改 `cmd_setup_provider()` 调用 generic schema setup。
-  - 方案 B：XMemo provider 实现 `post_setup()`。
-- [ ] 测试 interactive setup 和 direct setup 都写入：
-  - `config.yaml: memory.provider=xmemo`
-  - `.env: XMEMO_KEY`
-  - `xmemo.json: base_url/agent_instance_id/scope/bucket`
-
-#### 7.2.2 CLI
-
-- [ ] 新增 `plugins/memory/xmemo/cli.py`。
-- [ ] `hermes xmemo status`：显示 active、base_url、scope、bucket、agent_id、instance hash/short id、health。
-- [ ] `hermes xmemo scope <name>`：切换 default scope。
-- [ ] `hermes xmemo doctor`：检查 config、env、connectivity。
-
-#### 7.2.3 工作流工具
-
-- [ ] `xmemo_record_event`
-- [ ] `xmemo_get_timeline`
-- [ ] `xmemo_create_reminder`
-- [ ] `xmemo_list_reminders`
-- [ ] `xmemo_complete_reminder`
-- [ ] `xmemo_create_pending_decision`
-- [ ] `xmemo_list_pending_decisions`
-- [ ] `xmemo_resolve_decision`
-- [ ] `xmemo_create_restart_snapshot`
-- [ ] `xmemo_restore_restart_snapshot`
-- [ ] `xmemo_mark_used`
-
-#### 7.2.4 稳定性
-
-- [ ] Circuit breaker 覆盖所有后台 API。
-- [ ] Debug logging 默认 redacted。
-- [ ] 所有 background threads 在 `shutdown()` join timeout。
-- [ ] Prefetch token budget 可配置。
-- [ ] 对 `SetupRequiredRemoteError` / 409 setup required 提示用户去完成 XMemo setup。
-
-验收：
-
-- [ ] `hermes memory setup` 和 `hermes memory setup xmemo` 都可用。
-- [ ] `hermes xmemo status` 能发现缺 key、连不上、scope 错配。
-- [ ] AGENTS workflow 里的 state/decision/snapshot 能通过工具完成。
-
-### Phase 3：深度生命周期与 Capture Policy（3-5 天）
-
-目标：把 Hermes 会话生命周期转成高质量 XMemo 事件，同时避免噪声污染。
-
-- [ ] 在 `capture.py` 中映射 Hermes events 到 XMemo canonical events。
-- [ ] 对 `sync_turn()` 引入更强高信号策略：
-  - 可选复用 XMemo `AgentCapturePolicy` 的轻量移植版。
-  - 或等待独立轻量 SDK。
-- [ ] `on_pre_compress(messages)`：在压缩前提取将被丢弃的高信号事实。
-- [ ] `on_session_end()`：创建 restart snapshot。
-- [ ] `on_session_switch()`：记录 branch/resume/reset event。
-- [ ] `on_delegation()`：记录 child task result。
-- [ ] `on_memory_write()`：建立 remote memory id 映射后再支持 remove/forget。
-- [ ] `mark_used`：对注入过的 recall 结果做闭环反馈。
-- [ ] Gateway 并发测试：不同 chat/user/session 不串缓存。
-
-验收：
-
-- [ ] 长会话压缩前的关键信息能进 XMemo。
-- [ ] session switch 不串旧 session cache。
-- [ ] subagent 完成事件可检索。
-- [ ] 召回使用反馈能写入。
-
-### Phase 4：Ledger、跨仓库协作与文档（2-3 天）
-
-目标：补齐 XMemo 产品面，而不是阻塞 Hermes provider MVP。
-
-#### 7.4.1 Ledger
-
-- [ ] 验证 `/v1/remember` + ledger adapter 可稳定创建 ledger transaction。
-- [ ] 如需要，补 XMemo REST client helper：
-  - `add_expense`
-  - `list_ledger_transactions`
-  - `get_monthly_ledger_summary`
-- [ ] 再暴露 Hermes tools：
-  - `xmemo_add_expense`
-  - `xmemo_list_ledger_transactions`
-  - `xmemo_get_monthly_ledger_summary`
-
-#### 7.4.2 memory-os-cli
-
-`memory-os-cli` 只做辅助：
-
-- [ ] `xmemo setup hermes --dry-run`
-- [ ] `xmemo setup hermes`
-- [ ] `xmemo status hermes`
-- [ ] 安装 Hermes behavior profile 到 `~/.hermes/skills/xmemo/SKILL.md`（可选）
-
-#### 7.4.3 memory-os docs
-
-- [ ] 更新 `docs/AGENT_INTEGRATION.md` Hermes 章节。
-- [ ] 更新 `docs/AGENT_COMPATIBILITY_CERTIFICATION_MATRIX.md`。
-- [ ] 如 Hermes event alias 需要，更新 `adapters/hermes/adapter.py`。
-
-#### 7.4.4 Hermes docs
-
-- [ ] 更新 `website/docs/developer-guide/memory-provider-plugin.md` 示例（如 direct setup 行为被修）。
-- [ ] 更新 `website/docs/user-guide/features/memory-providers.md`。
-- [ ] 更新 `README.md` / `AGENTS.md` 中 provider 列表。
-
----
-
-## 8. 测试矩阵
-
-### 8.1 Unit
-
-建议文件：
+默认只暴露 MVP 工具：
 
 ```text
-tests/plugins/test_xmemo_plugin.py
-tests/hermes_cli/test_memory_setup_xmemo.py
-tests/run_agent/test_xmemo_memory_injection.py
+xmemo_recall_context
+xmemo_search
+xmemo_remember
+xmemo_update_state
 ```
 
-覆盖：
-
-- config precedence
-- secret 不写入 JSON
-- stable agent_instance_id
-- provider discovery
-- `is_available()` 无网络
-- `initialize()` fail-open
-- prefetch cache consume
-- circuit breaker
-- tool schema uniqueness
-- tool handler JSON output
-- direct setup path
-
-### 8.2 Integration（MockTransport）
-
-用 `httpx.MockTransport` 覆盖：
-
-- `/health`
-- `/v1/recall/context`
-- `/v1/memories/search`
-- `/v1/remember`
-- `/v1/update_state`
-- `/v1/timeline/events`
-- `/v1/restart/snapshot`
-
-验证：
-
-- headers 包含 agent identity。
-- timeout/error 被转成 non-fatal provider error。
-- `scope/bucket` 参数正确。
-- setup required 409 有友好提示。
-
-### 8.3 Hermes Runtime
-
-重点回归：
-
-- memory context 只注入当前 API call，不污染 `messages`。
-- provider output 中的伪 `<memory-context>` 被 scrub。
-- prompt caching system prefix 保持稳定。
-- interrupted turn 不 sync、不 queue_prefetch。
-- session_id 传给 sync / prefetch。
-
-建议命令：
-
-```bash
-pytest tests/agent/test_memory_provider.py
-pytest tests/run_agent/test_memory_sync_interrupted.py
-pytest tests/agent/test_streaming_context_scrubber.py
-pytest tests/plugins/test_xmemo_plugin.py
-```
-
-### 8.4 Live E2E（可选 gate）
-
-需要显式 opt-in：
-
-```bash
-set XMEMO_LIVE_TEST=1
-set XMEMO_KEY=<scoped-token>
-set XMEMO_URL=https://xmemo.dev
-pytest tests/plugins/test_xmemo_live.py
-```
-
-Live E2E 覆盖：
-
-- status/health
-- remember -> search
-- update_state -> recall_context
-- restart snapshot create
-- profile scope 隔离
-
----
-
-## 9. 风险与缓解
-
-| 风险 | 严重度 | 缓解 |
-| --- | --- | --- |
-| 引入 `memory-os` package 导致依赖膨胀 | 高 | MVP 用轻量 REST client；未来拆轻 SDK |
-| XMemo 服务不可用拖慢 Hermes | 高 | timeout + circuit breaker + fail-open |
-| `hermes memory setup xmemo` 不走 schema | 高 | Phase 2 修 direct setup 或实现 `post_setup()` |
-| profile 记忆串扰 | 高 | 默认 `scope=hermes/<profile>`，instance id 每 profile/device 稳定 |
-| prompt cache 被动态 system prompt 破坏 | 高 | 动态 recall 只经 `prefetch()` 注入 user message |
-| provider 自己返回 fence 导致嵌套/注入风险 | 中 | provider 只返回 raw context；测试覆盖 scrub |
-| turn sync 写入噪声 | 高 | 高信号过滤；不全量持久化普通 turn |
-| secret 泄漏到 config/log | 高 | secret 只写 `.env`；日志 redaction；passphrase 不写 JSON |
-| gateway 多 session 共享缓存 | 中 | prefetch cache 按 `session_id` 分桶 |
-| Ledger 工具过早承诺 | 中 | 放 Phase 4，先验证 REST/adapter |
-
----
-
-## 10. 成功标准
-
-MVP 完成标准：
-
-- [ ] `memory.provider: xmemo` 时 Hermes 能加载 provider。
-- [ ] 缺少 `XMEMO_KEY` 时 provider 不激活且不影响 Hermes 启动。
-- [ ] `is_available()` 不做网络调用。
-- [ ] `queue_prefetch()` 后下一轮 `prefetch()` 注入 XMemo recall。
-- [ ] 注入内容由 Hermes 统一 fenced，不污染 session history。
-- [ ] `xmemo_recall_context`、`xmemo_search`、`xmemo_remember`、`xmemo_update_state` 可用。
-- [ ] XMemo 网络错误不阻塞 LLM response。
-- [ ] profile scope 默认隔离。
-- [ ] 单元测试和 MockTransport 集成测试通过。
-
-完整可用标准：
-
-- [ ] `hermes memory setup` 和 `hermes memory setup xmemo` 都可完整配置。
-- [ ] `hermes xmemo status` 可诊断配置和连通性。
-- [ ] decisions/reminders/restart snapshot tools 可用。
-- [ ] session_end/session_switch/delegation 生命周期事件可写入。
-- [ ] live E2E 可在 opt-in token 下通过。
-- [ ] 文档覆盖安装、配置、scope、故障排查、安全边界。
-
----
-
-## 11. 下一步行动
-
-推荐执行顺序：
-
-1. 做 Phase 0 endpoint + setup direct path 校准。
-2. 实现 Phase 1 MVP provider。
-3. 跑 mock tests，确认 prompt injection / fail-open。
-4. 再补 Phase 2 setup、status、workflow tools。
-5. 最后做 live E2E 和跨仓库文档。
-
-最小首个 PR 建议只包含：
-
-- `plugins/memory/xmemo/`
-- `tests/plugins/test_xmemo_plugin.py`
-- 必要的 `hermes_cli/memory_setup.py` direct setup 修复（如选择 core patch）
-- `website/docs/user-guide/features/memory-providers.md` 的 XMemo 简短说明
-
----
-
-## 12. 用户配置示例
-
-### 12.1 config.yaml
+可选工具通过 config gate：
 
 ```yaml
 memory:
-  provider: xmemo
+  xmemo:
+    enable_workflow_tools: true
+    enable_destructive_tools: false
 ```
 
-### 12.2 .env
+destructive `xmemo_forget` 默认不暴露；若开启，必须要求 exact memory id，不支持 `"current"`。
+
+### 2.9 P1 问题：未实现 `on_memory_write()` mirror
+
+Hermes 已经在内置 `memory` tool 的 `add` / `replace` 后调用：
+
+```python
+MemoryManager.on_memory_write(...)
+```
+
+当前 XMemo provider 没有 override `on_memory_write()`。
+
+结果：
+
+- 用户或模型调用 Hermes 内置 memory tool 时，XMemo 不会同步。
+- XMemo 和 Hermes built-in memory 会分裂。
+
+**修正要求：**
+
+- `on_memory_write(add/replace)` mirror 到 `/v1/remember`。
+- `remove` 先只记录 event，不做 remote delete，除非已有 stable remote id mapping。
+- metadata 中保留 `write_origin`、`execution_context`、`session_id`、`platform`，但过滤 secrets/reserved identity fields。
+- 增加测试：内置 memory write 通过 MemoryManager fan-out 后，XMemo client 收到 remember。
+
+### 2.10 P1 问题：生命周期 hooks 不完整
+
+当前只实现了 `on_session_end()` 创建 snapshot。
+
+缺少：
+
+- `on_session_switch()`：更新 `_session_id`、清理 cache、记录 branch/reset/resume。
+- `on_pre_compress()`：压缩前提取将被丢弃的高信号事实。
+- `on_delegation()`：记录子代理任务结果。
+- `agent_context` gating：非 primary / cron / subagent 默认不自动写入。
+
+**修正要求：**
+
+- Phase 1 加 `on_session_switch()`，解决 session cache 和 session id 正确性。
+- Phase 2 加 `on_pre_compress()` 和 `on_delegation()`。
+- `initialize()` 保存：
+
+```python
+self._agent_context = kwargs.get("agent_context", "primary")
+self._auto_write_enabled = self._agent_context == "primary"
+```
+
+### 2.11 P1 问题：线程边界和 Hermes MemoryManager 重叠
+
+Hermes `MemoryManager.sync_all()` 和 `queue_prefetch_all()` 已经把 provider work 放进单 worker background executor。
+
+当前 XMemo provider 内部又自己创建：
+
+- `xmemo-prefetch`
+- `xmemo-sync`
+- `xmemo-snapshot`
+
+风险：
+
+- `MemoryManager.flush_pending()` 只能等到 provider 方法返回，不能等 provider 内部线程完成。
+- turn N / turn N+1 的写入顺序可能脱离 MemoryManager 串行保证。
+- shutdown 时最多 join 当前两个线程，snapshot thread 没有保存引用。
+
+**修正要求：**
+
+- 首选：让 `sync_turn()` 在 MemoryManager worker 中执行 bounded REST，不再另开线程。
+- `queue_prefetch()` 可同步执行 bounded recall 并写入 session cache，因为它已经在 MemoryManager worker 中。
+- 如保留 provider 内部线程，必须用内部 queue + worker + shutdown drain，并让测试覆盖 flush。
+
+### 2.12 P1 问题：prefetch 在 API call 路径可阻塞 3 秒
+
+当前 `prefetch()` 会：
+
+```python
+self._prefetch_thread.join(timeout=3.0)
+```
+
+这会直接发生在 Hermes 组装当前 API call 前。若网络慢，每轮都可能增加 3 秒延迟。
+
+**修正要求：**
+
+- `prefetch()` 不等待网络；只消费已完成 cache。
+- 如要短等，限制到 100-250ms，并只在首轮或明确配置开启。
+- 失败或未完成直接返回空字符串。
+
+### 2.13 P1 问题：CLI 未完成
+
+当前 `plugins/memory/xmemo/cli.py` 实际是 setup helper，没有实现 Hermes memory plugin CLI discovery 需要的：
+
+```python
+register_cli(subparser)
+xmemo_command(args)
+```
+
+因此计划中的：
+
+```text
+hermes xmemo status
+hermes xmemo scope
+hermes xmemo doctor
+```
+
+尚未完成。
+
+**修正要求：**
+
+- 外部插件实现 `register_cli(subparser)`。
+- active provider 时暴露：
+  - `hermes xmemo status`
+  - `hermes xmemo doctor`
+  - `hermes xmemo scope <scope>`
+- `status` 输出必须 redacted，不显示 token。
+
+### 2.14 P1 问题：文档存在 secret 和 profile 风险
+
+当前 README 手动配置示例：
 
 ```bash
-XMEMO_KEY="xmemo-service-token"
+echo "XMEMO_KEY=your-token" >> ~/.hermes/.env
 ```
 
-### 12.3 xmemo.json
+问题：
 
-```json
-{
-  "base_url": "https://xmemo.dev",
-  "agent_id": "hermes",
-  "agent_instance_id": "hermes-default-device-8f42c1b7",
-  "bucket": "work",
-  "scope": "hermes/default",
-  "timeout_seconds": 5.0,
-  "prefetch_max_items": 5,
-  "prefetch_max_tokens": 900
-}
-```
+- 可能进入 shell history。
+- 硬编码 `~/.hermes`，不 profile-safe。
+- 不符合 Hermes 文档风格，应该推荐 `hermes memory setup xmemo` 或 Hermes profile-aware 路径。
 
-### 12.4 激活命令
+**修正要求：**
 
-交互式：
-
-```bash
-hermes memory setup
-```
-
-direct provider（需 Phase 2 修复 direct setup 或 provider `post_setup()` 后再承诺）：
+- 文档主路径只写：
 
 ```bash
 hermes memory setup xmemo
 ```
 
-手动：
+- 手动路径说明 `$HERMES_HOME/.env`，并提示不要把 token 放入 shell history / git / logs。
+- 不建议用 echo 明文 token。
 
-```bash
-hermes memory status
+---
+
+## 3. 修订后的目标架构
+
+### 3.1 发布形态
+
+推荐目标：
+
+```text
+xmemo-hermes-plugin/
+├── README.md
+├── pyproject.toml
+├── plugin.yaml
+├── xmemo/
+│   ├── __init__.py
+│   ├── client.py
+│   ├── config.py
+│   ├── capture.py
+│   └── cli.py
+└── tests/
+    ├── test_provider.py
+    ├── test_client_contract.py
+    └── test_user_plugin_install.py
 ```
 
----
+安装后落到：
 
-## 13. PR 提交策略与账号身份
+```text
+$HERMES_HOME/plugins/xmemo/
+├── __init__.py
+├── client.py
+├── config.py
+├── capture.py
+├── cli.py
+├── plugin.yaml
+└── README.md
+```
 
-### 13.1 提交账号
+所有内部导入必须是相对导入。
 
-**使用 `yonro` 官方 GitHub 账号提交 PR。**
+### 3.2 默认工具面
 
-参考竞品提交模式：
+默认工具只保留：
 
-| Provider | 主要提交者身份 | 模式 |
+| Tool | 默认 | 说明 |
 | --- | --- | --- |
-| **Honcho** | `Erosika <eri@plasticlabs.ai>`（Honcho 公司邮箱） | **官方团队账号** |
-| **Mem0** | `Livia Ellen <liviaellen@msn.com>` + Teknium | 半官方/混合 |
-| **Hindsight** | `Nicolò Boschi <boschi1997@gmail.com>` | 团队/核心贡献者 |
-| **OpenViking** | 多个人用个人邮箱（Zayn Jarvis、zhiheng.liu 等） | 社区/第三方 |
+| `xmemo_recall_context` | yes | 获取 bounded context pack |
+| `xmemo_search` | yes | 语义搜索 |
+| `xmemo_remember` | yes | 显式保存 durable memory |
+| `xmemo_update_state` | yes | 保存 active task / next action / blocker |
+| `xmemo_record_event` | opt-in | timeline event |
+| `xmemo_create_reminder` | opt-in | reminder |
+| `xmemo_list_reminders` | opt-in | reminder list |
+| `xmemo_complete_reminder` | opt-in | complete reminder |
+| `xmemo_create_pending_decision` | opt-in | pending decision |
+| `xmemo_resolve_decision` | opt-in | resolve decision |
+| `xmemo_create_restart_snapshot` | opt-in/tool or lifecycle | restart snapshot |
+| `xmemo_restore_restart_snapshot` | opt-in | restore snapshot |
+| `xmemo_mark_used` | internal first | recall feedback |
+| `xmemo_forget` | off by default | destructive exact-id only |
 
-XMemo 的产品形态（云托管服务、`xmemo.dev`、MCP endpoint、多平台官方适配器）与 **Honcho** 最接近，因此应采用与 Honcho 相同的官方团队账号提交模式，而非 OpenViking 式的个人分散贡献。
+### 3.3 配置模型
 
-### 13.2 Fork 与分支策略
+Secrets：
 
-1. 用 `yonro` 账号 fork `hermes-agent` 上游仓库
-2. 在 fork 中创建 feature branch：`feat/xmemo-memory-provider`
-3. 本地开发时 git config：
-   ```bash
-   git config user.name "yonro"
-   git config user.email "yonro 的邮箱"
-   ```
-4. 向上游提 PR，标题参考：
-   ```text
-   feat(xmemo): add XMemo cloud memory provider plugin
-   ```
-5. PR 描述需包含：XMemo 简介、功能清单、配置说明、测试计划
+```text
+XMEMO_KEY
+MEMORY_OS_API_KEY  # compatibility fallback
+```
 
-### 13.3 memory-os-cli 侧的配合
+Non-secret provider config：
 
-- 不在 npm 包中放 Python 运行时插件代码
-- 可在 `memory-os-cli` 中增加 `xmemo setup hermes` 和 `xmemo status hermes` 辅助命令
-- 辅助命令只负责生成配置模板、安装 behavior profile，不替代 Hermes 插件
+```json
+{
+  "base_url": "https://xmemo.dev",
+  "agent_id": "hermes",
+  "agent_instance_id": "random-persisted-uuid",
+  "bucket": "work",
+  "scope": "hermes/default",
+  "timeout_seconds": 5.0,
+  "prefetch_max_items": 5,
+  "prefetch_max_tokens": 900,
+  "enable_workflow_tools": false,
+  "enable_destructive_tools": false,
+  "capture_timeline": false
+}
+```
+
+要求：
+
+- `api_key` 永远不从 JSON 读取。
+- `agent_instance_id` 用随机 UUID 首次生成并持久化，不从 hostname/username 派生。
+- `scope` 默认 `hermes/<profile>`。
+- 支持 `$HERMES_HOME`，不硬编码 `~/.hermes`。
+
+### 3.4 Capture 策略
+
+默认写入来源：
+
+- 显式 `xmemo_remember`。
+- 显式 `xmemo_update_state`。
+- Hermes built-in `memory` tool add/replace mirror。
+- 高信号 turn，且通过 capture policy。
+
+默认不写：
+
+- 普通闲聊。
+- 短 ACK。
+- 每轮摘要。
+- 原始 tool output。
+- 未经过滤的日志、路径、token、错误全文。
 
 ---
 
-## 14. 审核记录
+## 4. 修订后的实施路线
 
-本计划审核时核对过：
+### Phase P0：发布前阻断项修复
 
+- [ ] 把 provider 从 in-tree 形态抽为外部插件形态。
+- [ ] 所有 `plugins.memory.xmemo` 绝对导入改为相对导入。
+- [ ] 增加 `$HERMES_HOME/plugins/xmemo` 加载测试。
+- [ ] 修正 `mark_used()` endpoint：`/v1/memories/{memory_id}/usage`。
+- [ ] 修正 `forget()` endpoint：`/v1/memories/{memory_id}/forget`。
+- [ ] `xmemo_forget` 默认不暴露；启用时只接受 exact memory id。
+- [ ] 移除 JSON `api_key` fallback。
+- [ ] `is_available()` 不写 `xmemo.json`。
+- [ ] prefetch cache 改为 per-session。
+- [ ] 默认关闭 every-turn timeline write。
+- [ ] README 移除 `echo XMEMO_KEY...` 明文 token 示例。
+- [ ] 测试环境补 `.venv`/`venv`，用 `scripts/run_tests.sh` 跑相关测试。
+
+P0 验收：
+
+- [ ] 外部插件目录加载成功。
+- [ ] 无 bundled 绝对导入。
+- [ ] MockTransport 验证所有 REST path。
+- [ ] 两个 session 的 prefetch 不串。
+- [ ] 无 env key 时 provider 不可用，JSON key 不生效。
+- [ ] 每轮普通对话不会自动写 timeline。
+- [ ] `bash scripts/run_tests.sh tests/plugins/memory/test_xmemo.py tests/hermes_cli/test_memory_setup_provider_arg.py` 通过。
+
+### Phase P1：Hermes lifecycle 对齐
+
+- [ ] 实现 `on_memory_write()` mirror。
+- [ ] 实现 `on_session_switch()`。
+- [ ] 实现 `agent_context` gating。
+- [ ] 改造线程边界，让 MemoryManager 的 executor 成为主要异步边界。
+- [ ] `prefetch()` 不在 API call 路径长时间 join。
+- [ ] tool 参数转换内部捕获 ValueError/TypeError，返回 JSON `tool_error`。
+- [ ] `client.py` debug log 对 response body 做 redaction/truncation。
+- [ ] `system_prompt_block()` 降低“每次先搜索”的倾向，避免过度 tool call。
+
+P1 验收：
+
+- [ ] built-in memory add/replace 能 mirror 到 XMemo。
+- [ ] `/resume`、`/branch`、`/reset` 后 session id 和 cache 正确。
+- [ ] subagent/cron 不自动写长期记忆。
+- [ ] provider shutdown 能 drain 或安全放弃全部后台任务。
+
+### Phase P2：CLI 与 workflow 工具
+
+- [ ] 实现 `register_cli(subparser)`。
+- [ ] 实现 `hermes xmemo status`。
+- [ ] 实现 `hermes xmemo doctor`。
+- [ ] 实现 `hermes xmemo scope <scope>`。
+- [ ] workflow tools 受 `enable_workflow_tools` gate 控制。
+- [ ] 加 pending decision tools：
+  - `xmemo_create_pending_decision`
+  - `xmemo_list_pending_decisions`
+  - `xmemo_resolve_decision`
+- [ ] 加 restart restore tool：
+  - `xmemo_restore_restart_snapshot`
+- [ ] `mark_used` 优先作为自动反馈闭环，不默认要求模型手动调用。
+
+### Phase P3：高信号 capture 与压缩/委派
+
+- [ ] 新增 `capture.py`，实现 deterministic high-signal policy。
+- [ ] `sync_turn()` 使用 capture policy，而不是 every-turn event。
+- [ ] `on_pre_compress()` 提取压缩前重要事实。
+- [ ] `on_delegation()` 记录子代理任务和结果摘要。
+- [ ] `on_session_end()` 创建 restart snapshot，但要尊重配置和 rate limit。
+- [ ] 引入 XMemo `usage_tracking_id` 闭环：search/recall 返回 id，使用后自动 `/usage`。
+
+### Phase P4：Ledger 与跨仓库工具
+
+- [ ] 验证 XMemo ledger 的 REST 投影：
+  - `GET /v1/me/ledger/transactions`
+  - `GET /v1/me/ledger/monthly-summary`
+- [ ] `xmemo_add_expense` 不直接假设专用 REST endpoint；优先用 `/v1/remember` + ledger metadata，或等待官方 ledger write REST helper。
+- [ ] 如果暴露财务工具，必须默认 opt-in，并加入 schema 描述限制。
+- [ ] 更新 `memory-os` 的 Hermes adapter/docs。
+- [ ] 更新 XMemo CLI 的 `setup hermes`，但 CLI 只辅助配置，不替代 Hermes provider。
+
+---
+
+## 5. 测试计划
+
+必须使用 Hermes wrapper：
+
+```bash
+bash scripts/run_tests.sh tests/plugins/memory/test_xmemo.py
+bash scripts/run_tests.sh tests/hermes_cli/test_memory_setup_provider_arg.py
+```
+
+当前本机验证结果：
+
+```text
+error: no virtualenv found in /mnt/h/repos/hermes-agent/.venv or /mnt/h/repos/hermes-agent/venv
+```
+
+因此本次审核不能声称测试通过。
+
+### 5.1 必补测试
+
+- 外部插件加载：
+  - temp `$HERMES_HOME/plugins/xmemo`
+  - `load_memory_provider("xmemo")`
+  - 相对导入不失败
+- REST contract：
+  - `httpx.MockTransport`
+  - assert path/method/payload/header
+  - 特别覆盖 `/usage` 和 `/forget`
+- Session isolation：
+  - session A queue recall A
+  - session B queue recall B
+  - A/B prefetch 各自消费
+- Secret behavior：
+  - JSON 中存在 `api_key` 不生效
+  - `save_config()` 清除 JSON secret
+- No side-effect availability：
+  - `is_available()` 不创建 `xmemo.json`
+- Capture policy：
+  - trivial prompt 不写
+  - explicit remember 写
+  - decision/high-signal 写
+- Built-in memory bridge：
+  - `MemoryManager.on_memory_write("add", ...)` 调到 XMemo remember
+- Tool gate：
+  - workflow/destructive off 时 schema 不出现
+  - on 时 schema 出现
+
+---
+
+## 6. 与 XMemo REST 合约的目标映射
+
+| XMemo 能力 | REST | Hermes 默认策略 |
+| --- | --- | --- |
+| recall context | `POST /v1/recall/context` | 默认启用 |
+| search | `GET /v1/memories/search` | 默认启用 |
+| remember | `POST /v1/remember` | 默认启用 |
+| update state | `POST /v1/update_state` | 默认启用 |
+| timeline event | `POST /v1/timeline/events` | opt-in / high-signal |
+| timeline query | `GET /v1/timeline` | opt-in |
+| reminders | `POST/GET /v1/reminders` | opt-in workflow |
+| complete reminder | `POST /v1/reminders/{id}/complete` | opt-in workflow |
+| pending decisions | `POST/GET /v1/decisions` | opt-in workflow |
+| resolve decision | `POST /v1/decisions/{id}/resolve` | opt-in workflow |
+| restart snapshot | `POST /v1/restart/snapshot` | lifecycle / opt-in |
+| restart restore | `POST /v1/restart/restore` | opt-in |
+| mark used | `POST /v1/memories/{id}/usage` | internal feedback first |
+| forget | `POST /v1/memories/{id}/forget` | destructive opt-in |
+| ledger read | `GET /v1/me/ledger/*` | Phase P4 |
+| ledger write | `/v1/remember` + ledger metadata or future helper | Phase P4 |
+
+---
+
+## 7. 官方匹配标准
+
+可以宣称 “XMemo 完美匹配 Hermes” 前，必须全部满足：
+
+- [ ] 外部插件发布形态通过，不需要 PR 新增 `plugins/memory/xmemo/`。
+- [ ] 安装到 `$HERMES_HOME/plugins/xmemo/` 后能工作。
+- [ ] 不改 Hermes 核心文件，除非是通用 plugin surface 修复。
+- [ ] `is_available()` 无网络、无写文件副作用。
+- [ ] system prompt 稳定，不注入动态 recall。
+- [ ] prefetch 只影响当前 API call，不污染 `messages`。
+- [ ] prefetch cache 按 session 隔离。
+- [ ] 默认工具面精简。
+- [ ] destructive 工具默认关闭。
+- [ ] 自动写入遵守高信号 capture，不 every-turn 记录。
+- [ ] secrets 不进 JSON、日志、README shell history 示例。
+- [ ] profile 默认隔离。
+- [ ] REST endpoints 与 Memory OS 官方 client/API 一致。
+- [ ] Hermes wrapper 测试通过。
+- [ ] Live E2E 在显式 `XMEMO_LIVE_TEST=1` 下通过。
+
+---
+
+## 8. 推荐下一步
+
+最小修复 PR / patch 顺序：
+
+1. 修 `client.py` endpoint：`usage` / `forget`。
+2. 修 `config.py`：secret fallback、`is_available()` 副作用、random persisted instance id。
+3. 修 `__init__.py`：relative imports、per-session prefetch cache、关闭 every-turn timeline write。
+4. 缩默认工具面并 gate workflow/destructive tools。
+5. 实现 `on_memory_write()` 和 `on_session_switch()`。
+6. 抽成 `$HERMES_HOME/plugins/xmemo` 外部插件形态并补加载测试。
+7. 补 `.venv` 后用 `scripts/run_tests.sh` 跑相关测试。
+
+完成以上后，XMemo 才从“可运行 spike”进入“符合 Hermes 官方插件精神的 provider”。
+
+---
+
+## 9. 审核参考文件
+
+Hermes：
+
+- `AGENTS.md`
 - `agent/memory_provider.py`
 - `agent/memory_manager.py`
+- `agent/agent_init.py`
+- `agent/turn_context.py`
+- `agent/conversation_loop.py`
+- `agent/turn_finalizer.py`
+- `agent/agent_runtime_helpers.py`
+- `agent/tool_executor.py`
 - `plugins/memory/__init__.py`
-- `hermes_cli/memory_setup.py`
-- `run_agent.py`
-- `plugins/memory/mem0/__init__.py`
-- `plugins/memory/honcho/__init__.py`
-- `website/docs/developer-guide/memory-provider-plugin.md`
-- `memory-os/src/memory_manager/client.py`
-- `memory-os/src/memory_manager/integration/capture_policy.py`
-- `memory-os/src/memory_manager/integration/events.py`
-- `memory-os/docs/AGENT_INTEGRATION.md`
-- `memory-os/docs/API_SPEC.md`
+- `plugins/memory/xmemo/__init__.py`
+- `plugins/memory/xmemo/client.py`
+- `plugins/memory/xmemo/config.py`
+- `plugins/memory/xmemo/cli.py`
+- `plugins/memory/xmemo/plugin.yaml`
+- `plugins/memory/xmemo/README.md`
+- `tests/plugins/memory/test_xmemo.py`
 
-结论：原计划的大方向成立；本版把实现风险前置消化，并把 MVP 缩到 Hermes 真实接口和 XMemo 稳定 REST surface 能可靠支撑的范围。
+Memory OS / XMemo：
+
+- `docs/API_SPEC.md`
+- `docs/AGENT_INTEGRATION.md`
+- `src/memory_manager/client.py`
+- `src/memory_manager/models/requests.py`
+- `src/memory_manager/routes/action_items.py`
+- `src/memory_manager/routes/memory_write.py`
+- `src/memory_manager/routes/recall.py`
+- `src/memory_manager/routes/me.py`
+

@@ -35,6 +35,7 @@ class XMemoClient:
         agent_id: str = "hermes",
         agent_instance_id: str = "",
         timeout: float = 5.0,
+        transport: Optional[Any] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -48,11 +49,14 @@ class XMemoClient:
         if agent_instance_id:
             self.headers["X-Memory-OS-Agent-Instance-ID"] = agent_instance_id
 
-        self._client = httpx.Client(
-            base_url=self.base_url,
-            headers=self.headers,
-            timeout=httpx.Timeout(timeout),
-        )
+        client_kwargs: Dict[str, Any] = {
+            "base_url": self.base_url,
+            "headers": self.headers,
+            "timeout": httpx.Timeout(timeout),
+        }
+        if transport is not None:
+            client_kwargs["transport"] = transport
+        self._client = httpx.Client(**client_kwargs)
 
     def _request(
         self,
@@ -316,31 +320,35 @@ class XMemoClient:
         memory_id: str,
         *,
         context: str = "",
+        action: str = "used",
+        usage_tracking_id: str = "",
         bucket: str = "work",
         scope: str = "hermes/default",
     ) -> Dict[str, Any]:
         """Record that a recalled memory was used in the answer."""
-        payload: Dict[str, Any] = {"bucket": bucket, "scope": scope}
+        payload: Dict[str, Any] = {"bucket": bucket, "scope": scope, "action": action}
         if context:
             payload["context"] = context
+        if usage_tracking_id:
+            payload["usage_tracking_id"] = usage_tracking_id
         return self._request(
-            "POST", f"/v1/memories/{memory_id}/used", json_body=payload
+            "POST", f"/v1/memories/{memory_id}/usage", json_body=payload
         )
 
     def forget(
         self,
-        target: str,
+        memory_id: str,
         *,
         bucket: str = "work",
         scope: str = "hermes/default",
         reason: str = "",
     ) -> Dict[str, Any]:
-        """Delete a memory by id ('current' or exact id)."""
+        """Delete a memory by exact id."""
         payload: Dict[str, Any] = {"bucket": bucket, "scope": scope}
         if reason:
             payload["reason"] = reason
         return self._request(
-            "POST", f"/v1/forget/{target}", json_body=payload
+            "POST", f"/v1/memories/{memory_id}/forget", json_body=payload
         )
 
     def close(self) -> None:

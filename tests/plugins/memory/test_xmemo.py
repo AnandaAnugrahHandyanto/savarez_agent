@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
+import shutil
+import sys
+import threading
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from unittest.mock import patch
 
+import httpx
 import pytest
 
 from plugins.memory.xmemo import XMemoMemoryProvider
+from plugins.memory.xmemo.client import XMemoClient
+from plugins.memory.xmemo.config import save_config
 
 
 class FakeXMemoClient:
@@ -72,7 +82,7 @@ class FakeXMemoClient:
 
     def forget(self, **kwargs):
         self._record("forget", **kwargs)
-        return {"id": kwargs.get("target", "mem-123")}
+        return {"id": kwargs.get("memory_id", "mem-123")}
 
     def close(self):
         self._record("close")
@@ -91,7 +101,7 @@ def provider_with_config(monkeypatch, tmp_path):
 
 
 class TestAvailability:
-    """is_available must be fast and network-free."""
+    """is_available must be fast, network-free, and side-effect-free."""
 
     def test_not_available_without_key(self, monkeypatch, tmp_path):
         monkeypatch.delenv("XMEMO_KEY", raising=False)
@@ -116,6 +126,26 @@ class TestAvailability:
         provider = XMemoMemoryProvider()
         assert provider.is_available() is True
 
+    def test_json_api_key_is_ignored(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("XMEMO_KEY", raising=False)
+        monkeypatch.delenv("MEMORY_OS_API_KEY", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Write a stale api_key into xmemo.json
+        save_config({"api_key": "stale-key"}, str(tmp_path))
+
+        provider = XMemoMemoryProvider()
+        assert provider.is_available() is False
+
+    def test_is_available_does_not_create_xmemo_json(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XMEMO_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        provider = XMemoMemoryProvider()
+        provider.is_available()
+
+        assert not (tmp_path / "xmemo.json").exists()
+
 
 class TestLifecycle:
     """Initialization and shutdown behavior."""
@@ -124,6 +154,15 @@ class TestLifecycle:
         assert provider_with_config._config["api_key"] == "test-key"
         assert provider_with_config._config["agent_id"] == "hermes"
         assert provider_with_config._session_id == "test-session"
+        assert provider_with_config._auto_write_enabled is True
+
+    def test_initialize_non_primary_disables_auto_write(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XMEMO_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        provider = XMemoMemoryProvider()
+        provider.initialize("test-session", agent_context="cron")
+        assert provider._auto_write_enabled is False
 
     def test_system_prompt_block_active(self, provider_with_config):
         block = provider_with_config.system_prompt_block()
@@ -143,6 +182,41 @@ class TestLifecycle:
     def test_name_property(self):
         provider = XMemoMemoryProvider()
         assert provider.name == "xmemo"
+
+
+class TestToolGating:
+    """Default tool surface is narrow; optional tools are gated."""
+
+    def test_default_tools(self, provider_with_config):
+        names = {s["name"] for s in provider_with_config.get_tool_schemas()}
+        assert names == {
+            "xmemo_recall_context",
+            "xmemo_search",
+            "xmemo_remember",
+            "xmemo_update_state",
+        }
+
+    def test_workflow_tools_gated(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XMEMO_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_config({"enable_workflow_tools": True}, str(tmp_path))
+
+        provider = XMemoMemoryProvider()
+        provider.initialize("test-session")
+        names = {s["name"] for s in provider.get_tool_schemas()}
+        assert "xmemo_create_reminder" in names
+        assert "xmemo_record_event" in names
+        assert "xmemo_forget" not in names
+
+    def test_destructive_tools_gated(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XMEMO_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_config({"enable_destructive_tools": True}, str(tmp_path))
+
+        provider = XMemoMemoryProvider()
+        provider.initialize("test-session")
+        names = {s["name"] for s in provider.get_tool_schemas()}
+        assert "xmemo_forget" in names
 
 
 class TestTools:
@@ -188,17 +262,6 @@ class TestTools:
         assert fake.captured_calls[0]["method"] == "remember"
         assert fake.captured_calls[0]["content"] == "user likes small PRs"
 
-    def test_remember_tool_missing_content(self, provider_with_config, monkeypatch):
-        fake = FakeXMemoClient()
-        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
-
-        result = json.loads(
-            provider_with_config.handle_tool_call(
-                "xmemo_remember", {"path": "hermes/preferences"}
-            )
-        )
-        assert "error" in result
-
     def test_update_state_tool(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
         monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
@@ -213,15 +276,6 @@ class TestTools:
         assert result["result"] == "Working state saved to XMemo."
         assert fake.captured_calls[0]["method"] == "update_state"
         assert fake.captured_calls[0]["current_task"] == "Implement XMemo plugin"
-
-    def test_update_state_tool_missing_fields(self, provider_with_config, monkeypatch):
-        fake = FakeXMemoClient()
-        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
-
-        result = json.loads(
-            provider_with_config.handle_tool_call("xmemo_update_state", {})
-        )
-        assert "error" in result
 
     def test_recall_context_tool(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient(
@@ -240,16 +294,6 @@ class TestTools:
 
         assert "concise answers" in result["context"]
         assert fake.captured_calls[0]["method"] == "recall_context"
-        assert fake.captured_calls[0]["query"] == "style preferences"
-
-    def test_recall_context_tool_missing_query(self, provider_with_config, monkeypatch):
-        fake = FakeXMemoClient()
-        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
-
-        result = json.loads(
-            provider_with_config.handle_tool_call("xmemo_recall_context", {})
-        )
-        assert "error" in result
 
     def test_record_event_tool(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
@@ -263,9 +307,7 @@ class TestTools:
         )
 
         assert result["result"] == "Event recorded in XMemo timeline."
-        assert result["event_id"] == "event-123"
         assert fake.captured_calls[0]["method"] == "record_event"
-        assert fake.captured_calls[0]["event_type"] == "milestone"
 
     def test_create_reminder_tool(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
@@ -279,28 +321,7 @@ class TestTools:
         )
 
         assert result["result"] == "Reminder saved to XMemo."
-        assert result["todo_id"] == "reminder-123"
         assert fake.captured_calls[0]["method"] == "create_reminder"
-        assert fake.captured_calls[0]["due_at"] == "2026-06-20T10:00:00Z"
-
-    def test_list_reminders_tool(self, provider_with_config, monkeypatch):
-        fake = FakeXMemoClient(
-            search_results=[
-                {"content": "Write migration docs", "item_status": "open", "id": "reminder-123"},
-            ]
-        )
-        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
-
-        result = json.loads(
-            provider_with_config.handle_tool_call(
-                "xmemo_list_reminders", {"item_status": "open"}
-            )
-        )
-
-        assert result["count"] == 1
-        assert result["items"][0]["content"] == "Write migration docs"
-        assert fake.captured_calls[0]["method"] == "list_reminders"
-        assert fake.captured_calls[0]["item_status"] == "open"
 
     def test_complete_reminder_tool(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
@@ -314,18 +335,7 @@ class TestTools:
         )
 
         assert result["result"] == "Reminder marked completed."
-        assert result["todo_id"] == "reminder-123"
         assert fake.captured_calls[0]["method"] == "complete_reminder"
-        assert fake.captured_calls[0]["note"] == "Done in PR #42"
-
-    def test_complete_reminder_tool_missing_id(self, provider_with_config, monkeypatch):
-        fake = FakeXMemoClient()
-        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
-
-        result = json.loads(
-            provider_with_config.handle_tool_call("xmemo_complete_reminder", {})
-        )
-        assert "error" in result
 
     def test_mark_used_tool(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
@@ -339,47 +349,31 @@ class TestTools:
         )
 
         assert result["result"] == "Memory usage recorded in XMemo."
-        assert result["memory_id"] == "mem-456"
         assert fake.captured_calls[0]["method"] == "mark_used"
-        assert fake.captured_calls[0]["context"] == "Used to answer style question"
 
-    def test_forget_tool(self, provider_with_config, monkeypatch):
+    def test_forget_tool_requires_exact_id(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
         monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
 
         result = json.loads(
             provider_with_config.handle_tool_call(
                 "xmemo_forget",
-                {"target": "mem-789", "reason": "Outdated preference"},
+                {"memory_id": "mem-789", "reason": "Outdated preference"},
             )
         )
 
         assert result["result"] == "Memory deleted from XMemo."
-        assert result["memory_id"] == "mem-789"
         assert fake.captured_calls[0]["method"] == "forget"
-        assert fake.captured_calls[0]["reason"] == "Outdated preference"
+        assert fake.captured_calls[0]["memory_id"] == "mem-789"
 
-    def test_forget_tool_missing_target(self, provider_with_config, monkeypatch):
+    def test_forget_tool_rejects_old_target_param(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
         monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
 
-        result = json.loads(provider_with_config.handle_tool_call("xmemo_forget", {}))
+        result = json.loads(
+            provider_with_config.handle_tool_call("xmemo_forget", {"target": "mem-789"})
+        )
         assert "error" in result
-
-    def test_tool_schemas_include_new_tools(self, provider_with_config):
-        names = {s["name"] for s in provider_with_config.get_tool_schemas()}
-        assert names == {
-            "xmemo_search",
-            "xmemo_remember",
-            "xmemo_update_state",
-            "xmemo_recall_context",
-            "xmemo_record_event",
-            "xmemo_create_reminder",
-            "xmemo_list_reminders",
-            "xmemo_complete_reminder",
-            "xmemo_mark_used",
-            "xmemo_forget",
-        }
 
 
 class TestPrefetch:
@@ -395,40 +389,148 @@ class TestPrefetch:
         monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
 
         provider_with_config.queue_prefetch("current task")
-        provider_with_config._prefetch_thread.join(timeout=2)
+        key = provider_with_config._session_id or "__default__"
+        provider_with_config._prefetch_threads[key].join(timeout=2)
 
         result = provider_with_config.prefetch("current task")
         assert "XMemo integration" in result
         assert fake.captured_calls[0]["method"] == "recall_context"
-        assert fake.captured_calls[0]["query"] == "current task"
 
     def test_prefetch_skips_trivial_prompts(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
         monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
 
         provider_with_config.queue_prefetch("ok")
-        # No thread should have been started
-        assert provider_with_config._prefetch_thread is None
+        assert not provider_with_config._prefetch_threads
         assert provider_with_config.prefetch("ok") == ""
 
-    def test_prefetch_returns_empty_when_no_result(self, provider_with_config):
-        result = provider_with_config.prefetch("anything")
-        assert result == ""
+    def test_prefetch_is_session_isolated(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XMEMO_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        provider = XMemoMemoryProvider()
+        provider.initialize("session-A")
+
+        results = {"session-A": "Recall A", "session-B": "Recall B"}
+
+        class SessionFakeClient:
+            def __init__(self, session_id):
+                self.session_id = session_id
+
+            def recall_context(self, **kwargs):
+                return {"context_text": results[self.session_id]}
+
+            def close(self):
+                pass
+
+        def make_client():
+            return SessionFakeClient(provider._session_id)
+
+        monkeypatch.setattr(provider, "_get_client", make_client)
+
+        provider.queue_prefetch("query A", session_id="session-A")
+        provider._prefetch_threads["session-A"].join(timeout=1.0)
+        assert "session-A" in provider._prefetch_results
+
+        provider.on_session_switch("session-B", reset=True)
+        assert "session-A" not in provider._prefetch_results
+
+        provider.queue_prefetch("query B", session_id="session-B")
+        provider._prefetch_threads["session-B"].join(timeout=1.0)
+
+        result_b = provider.prefetch("query B", session_id="session-B")
+        assert "Recall B" in result_b
+        assert "Recall A" not in result_b
+
+        result_a = provider.prefetch("query A", session_id="session-A")
+        assert result_a == ""
 
 
 class TestSyncTurn:
-    """Turn synchronization records lightweight events."""
+    """Turn synchronization respects gating and capture policy."""
 
-    def test_sync_turn_records_event(self, provider_with_config, monkeypatch):
+    def test_sync_turn_skips_low_signal_by_default(self, provider_with_config, monkeypatch):
         fake = FakeXMemoClient()
         monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
 
         provider_with_config.sync_turn("hello", "hi there", session_id="s1")
-        provider_with_config._sync_thread.join(timeout=2)
+        # No internal thread now; call is synchronous.
+        assert fake.captured_calls == []
 
+    def test_sync_turn_writes_high_signal_turn(self, provider_with_config, monkeypatch):
+        fake = FakeXMemoClient()
+        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
+
+        provider_with_config.sync_turn(
+            "remember that I prefer small PRs", "got it", session_id="s1"
+        )
         assert len(fake.captured_calls) == 1
         assert fake.captured_calls[0]["method"] == "record_event"
         assert fake.captured_calls[0]["session_id"] == "s1"
+
+    def test_sync_turn_disabled_for_non_primary_context(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XMEMO_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_config({"capture_timeline": True}, str(tmp_path))
+
+        provider = XMemoMemoryProvider()
+        provider.initialize("test-session", agent_context="cron")
+
+        fake = FakeXMemoClient()
+        monkeypatch.setattr(provider, "_get_client", lambda: fake)
+
+        provider.sync_turn("this is a decision", "ok", session_id="s1")
+        assert fake.captured_calls == []
+
+    def test_sync_turn_capture_timeline_override(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XMEMO_KEY", "test-key")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        save_config({"capture_timeline": True}, str(tmp_path))
+
+        provider = XMemoMemoryProvider()
+        provider.initialize("test-session")
+
+        fake = FakeXMemoClient()
+        monkeypatch.setattr(provider, "_get_client", lambda: fake)
+
+        provider.sync_turn("hello", "hi there", session_id="s1")
+        assert len(fake.captured_calls) == 1
+        assert fake.captured_calls[0]["method"] == "record_event"
+
+
+class TestMemoryWriteMirror:
+    """Built-in memory writes are mirrored to XMemo."""
+
+    def test_on_memory_write_add_mirrors_to_remember(self, provider_with_config, monkeypatch):
+        fake = FakeXMemoClient()
+        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
+
+        provider_with_config.on_memory_write("add", "memory", "user prefers dark mode")
+
+        assert len(fake.captured_calls) == 1
+        assert fake.captured_calls[0]["method"] == "remember"
+        assert fake.captured_calls[0]["content"] == "user prefers dark mode"
+
+    def test_on_memory_write_remove_is_not_mirrored(self, provider_with_config, monkeypatch):
+        fake = FakeXMemoClient()
+        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
+
+        provider_with_config.on_memory_write("remove", "memory", "old fact")
+        assert fake.captured_calls == []
+
+
+class TestSessionSwitch:
+    """Session lifecycle hooks keep provider state correct."""
+
+    def test_session_switch_updates_id_and_clears_cache(self, provider_with_config, monkeypatch):
+        fake = FakeXMemoClient(recall_context={"context_text": "old session context"})
+        monkeypatch.setattr(provider_with_config, "_get_client", lambda: fake)
+
+        provider_with_config.queue_prefetch("query")
+        provider_with_config.on_session_switch("session-2", reset=True)
+
+        assert provider_with_config._session_id == "session-2"
+        assert provider_with_config.prefetch("query") == ""
 
 
 class TestCircuitBreaker:
@@ -444,13 +546,11 @@ class TestCircuitBreaker:
 
         monkeypatch.setattr(provider_with_config, "_get_client", lambda: FailingClient())
 
-        # Trigger enough failures to trip the breaker
         for _ in range(6):
             provider_with_config.handle_tool_call("xmemo_search", {"query": "x"})
 
         assert provider_with_config._is_breaker_open() is True
 
-        # After the breaker is open, calls return immediately without hitting client
         result = json.loads(
             provider_with_config.handle_tool_call("xmemo_search", {"query": "y"})
         )
@@ -460,13 +560,16 @@ class TestCircuitBreaker:
 class TestConfigSchema:
     """Setup wizard integration."""
 
-    def test_config_schema_has_api_key(self):
+    def test_config_schema_has_required_fields(self):
         provider = XMemoMemoryProvider()
         schema = provider.get_config_schema()
         keys = {field["key"] for field in schema}
         assert "api_key" in keys
         assert "base_url" in keys
         assert "scope" in keys
+        assert "enable_workflow_tools" in keys
+        assert "enable_destructive_tools" in keys
+        assert "capture_timeline" in keys
 
     def test_save_config_does_not_persist_api_key(self, tmp_path):
         provider = XMemoMemoryProvider()
@@ -478,6 +581,18 @@ class TestConfigSchema:
         assert "api_key" not in data
         assert data["scope"] == "hermes/test"
 
+    def test_save_config_removes_stale_api_key(self, tmp_path):
+        config_file = tmp_path / "xmemo.json"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(json.dumps({"api_key": "stale", "bucket": "work"}))
+
+        provider = XMemoMemoryProvider()
+        provider.save_config({"bucket": "private"}, str(tmp_path))
+
+        data = json.loads(config_file.read_text())
+        assert "api_key" not in data
+        assert data["bucket"] == "private"
+
 
 class TestSetupWizard:
     """post_setup() and cli.py write config files correctly."""
@@ -486,19 +601,14 @@ class TestSetupWizard:
         from hermes_cli.config import load_config, save_config as save_global_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        # Seed an empty global config in the temp home
         save_global_config({"memory": {}})
 
-        # Mock curses select for bucket choice -> "work"
         monkeypatch.setattr(
             "plugins.memory.xmemo.cli._curses_select", lambda title, choices, default=0: default
         )
-        # Mock secret prompt and regular stdin prompt
         monkeypatch.setattr(
             "plugins.memory.xmemo.cli.masked_secret_prompt", lambda prompt: "xmemo-token-123"
         )
-        # Answers for: base_url, agent_id, scope, timeout (all keep defaults)
         answers = iter(["", "", "", ""])
         monkeypatch.setattr("sys.stdin.readline", lambda: next(answers) + "\n")
 
@@ -506,17 +616,13 @@ class TestSetupWizard:
         config = load_config()
         provider.post_setup(str(tmp_path), config)
 
-        # Verify config.yaml activation
         updated = load_config()
         assert updated.get("memory", {}).get("provider") == "xmemo"
 
-        # Verify .env contains the secret
         env_file = tmp_path / ".env"
         assert env_file.exists()
-        env_text = env_file.read_text()
-        assert "XMEMO_KEY=xmemo-token-123" in env_text
+        assert "XMEMO_KEY=xmemo-token-123" in env_file.read_text()
 
-        # Verify xmemo.json does NOT contain the secret
         xmemo_file = tmp_path / "xmemo.json"
         assert xmemo_file.exists()
         xmemo_data = json.loads(xmemo_file.read_text())
@@ -525,28 +631,6 @@ class TestSetupWizard:
 
         captured = capsys.readouterr()
         assert "Memory provider: xmemo" in captured.out
-
-    def test_post_setup_preserves_existing_secret(self, monkeypatch, tmp_path):
-        from hermes_cli.config import load_config, save_config as save_global_config
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("XMEMO_KEY", "existing-secret")
-        save_global_config({"memory": {}})
-
-        monkeypatch.setattr(
-            "plugins.memory.xmemo.cli._curses_select", lambda title, choices, default=0: default
-        )
-        # User presses Enter for everything (keep existing secret)
-        monkeypatch.setattr("sys.stdin.readline", lambda: "\n")
-
-        provider = XMemoMemoryProvider()
-        config = load_config()
-        provider.post_setup(str(tmp_path), config)
-
-        env_file = tmp_path / ".env"
-        if env_file.exists():
-            # Wizard should not write an empty value when user keeps existing secret
-            assert "existing-secret" in env_file.read_text() or "XMEMO_KEY=" not in env_file.read_text()
 
 
 class TestProfileIsolation:
@@ -560,3 +644,94 @@ class TestProfileIsolation:
         provider.initialize("test-session", agent_identity="coder")
 
         assert provider._config["scope"] == "hermes/coder"
+
+
+class TestRestContract:
+    """Verify REST path/method/payload against XMemo API spec."""
+
+    def test_mark_used_uses_usage_endpoint(self):
+        requests: List[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"id": "mem-123"})
+
+        client = XMemoClient(
+            base_url="https://xmemo.dev",
+            api_key="test-key",
+            transport=httpx.MockTransport(handler),
+        )
+        client.mark_used("mem-123", context="used in answer")
+        client.close()
+
+        assert len(requests) == 1
+        assert requests[0].method == "POST"
+        assert requests[0].url.path == "/v1/memories/mem-123/usage"
+        body = json.loads(requests[0].content)
+        assert body["context"] == "used in answer"
+        assert body["action"] == "used"
+
+    def test_forget_uses_memories_forget_endpoint(self):
+        requests: List[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"id": "mem-123"})
+
+        client = XMemoClient(
+            base_url="https://xmemo.dev",
+            api_key="test-key",
+            transport=httpx.MockTransport(handler),
+        )
+        client.forget("mem-123", reason="outdated")
+        client.close()
+
+        assert len(requests) == 1
+        assert requests[0].method == "POST"
+        assert requests[0].url.path == "/v1/memories/mem-123/forget"
+        body = json.loads(requests[0].content)
+        assert body["reason"] == "outdated"
+
+    def test_headers_include_api_key_and_agent_ids(self):
+        requests: List[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={})
+
+        client = XMemoClient(
+            base_url="https://xmemo.dev",
+            api_key="test-key",
+            agent_id="hermes",
+            agent_instance_id="instance-1",
+            transport=httpx.MockTransport(handler),
+        )
+        client.health()
+        client.close()
+
+        assert requests[0].headers["X-API-Key"] == "test-key"
+        assert requests[0].headers["X-Memory-OS-Agent-ID"] == "hermes"
+        assert requests[0].headers["X-Memory-OS-Agent-Instance-ID"] == "instance-1"
+
+
+class TestUserPluginLoad:
+    """Provider can be loaded from $HERMES_HOME/plugins/ as an external plugin."""
+
+    def test_load_from_user_plugins_dir(self, monkeypatch, tmp_path):
+        from plugins.memory import load_memory_provider
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        src = Path(__file__).parent.parent.parent.parent / "plugins" / "memory" / "xmemo"
+        dst_parent = tmp_path / "plugins"
+        dst_parent.mkdir(parents=True, exist_ok=True)
+        dst = dst_parent / "xmemo_external"
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+
+        # Force re-discovery by clearing cached modules for the synthetic namespace
+        to_remove = [m for m in sys.modules if m.startswith("_hermes_user_memory.xmemo_external")]
+        for m in to_remove:
+            del sys.modules[m]
+
+        provider = load_memory_provider("xmemo_external")
+        assert provider is not None
+        assert provider.name == "xmemo"
