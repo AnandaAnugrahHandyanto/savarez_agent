@@ -592,3 +592,35 @@ def test_restore_cron_skill_links_standalone(backup_env):
     assert report["restored"][0]["to"]["skills"] == ["narrow-a", "narrow-b"]
     assert len(report["skipped_missing"]) == 1
     assert report["skipped_missing"][0]["job_id"] == "job-gone"
+
+
+def test_rollback_to_oldest_snapshot_at_keep_limit(backup_env, monkeypatch):
+    """Regression test for #47612: rollback to the oldest snapshot must
+    succeed even when the backups directory is at the keep limit.
+
+    Before the fix, the safety snapshot taken by rollback() triggered
+    _prune_old(), which deleted the very snapshot being restored.
+    """
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    keep = 3
+    monkeypatch.setattr(cb, "get_keep", lambda: keep)
+
+    # Create `keep` snapshots with distinct skills to fill to capacity.
+    ids = [f"2026-06-0{i+1}T00-00-00Z" for i in range(keep)]
+    for i, fid in enumerate(ids):
+        _write_skill(skills, f"skill-{i}")
+        monkeypatch.setattr(cb, "_utc_id", lambda now=None, _f=fid: _f)
+        cb.snapshot_skills(reason=f"snapshot-{i}")
+
+    # Verify we're at capacity
+    remaining = sorted(p.name for p in (skills / ".curator_backups").iterdir()
+                       if not p.name.startswith("."))
+    assert len(remaining) == keep, f"expected {keep} snapshots, got {remaining}"
+
+    # The oldest snapshot is the first one — rollback to it.
+    oldest_id = ids[0]
+    ok, msg, target = cb.rollback(backup_id=oldest_id)
+    assert ok, f"rollback to oldest snapshot failed: {msg}"
+    assert target is not None
+    assert target.name == oldest_id

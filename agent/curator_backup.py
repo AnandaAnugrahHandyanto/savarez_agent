@@ -208,13 +208,17 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path,
     )
 
 
-def snapshot_skills(reason: str = "manual") -> Optional[Path]:
+def snapshot_skills(reason: str = "manual", *, skip_prune: bool = False) -> Optional[Path]:
     """Create a tar.gz snapshot of ``~/.hermes/skills/`` and prune old ones.
 
     Returns the snapshot directory path, or ``None`` if the snapshot was
     skipped (backup disabled, skills dir missing, or an IO error occurred —
     in which case we log at debug and return None so the curator never
     aborts a pass because of a backup failure).
+
+    When *skip_prune* is True the post-snapshot prune step is skipped.
+    This is used by ``rollback()`` so the safety snapshot it takes before
+    restoring does not delete the very snapshot being restored.
     """
     if not is_enabled():
         logger.debug("Curator backup disabled by config; skipping snapshot")
@@ -276,7 +280,8 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
             pass
         return None
 
-    _prune_old(keep=get_keep())
+    if not skip_prune:
+        _prune_old(keep=get_keep())
     logger.info("Curator snapshot created: %s (%s)", snap_id, reason)
     return dest
 
@@ -564,7 +569,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # out before touching anything — otherwise a failed extract could leave
     # the user with no skills.
     try:
-        snapshot_skills(reason=f"pre-rollback to {target.name}")
+        snapshot_skills(reason=f"pre-rollback to {target.name}", skip_prune=True)
     except Exception as e:
         return (False, f"pre-rollback safety snapshot failed: {e}", None)
 
