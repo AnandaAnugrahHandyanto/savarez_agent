@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Merge window: messages within this many seconds are merged into one task
 MERGE_WINDOW_SECONDS = 300  # 5 minutes
 # Phrase that triggers manual merge completion
-MANUAL_MERGE_PHRASES = ("完了", "就这样", "结束", "好了", "完成", "提交", "合并", "强制合并")
+MANUAL_MERGE_PHRASES = ("完了", "就这样", "结束", "好了", "完成", "提交", "合并", "强制合并", "取消")
 
 
 class MessageType(Enum):
@@ -47,6 +47,22 @@ class VisitSession:
     task_type: Optional[str] = None
     created_at: float = field(default_factory=time.time)
 
+    # Progressive field追问 state (post-merge multi-round questioning)
+    merged_fields: Optional[Dict[str, Any]] = None   # fields being progressively completed
+    pending_questions: List[str] = field(default_factory=list)  # remaining fields to ask about
+    pending_field: Optional[str] = None               # current field being asked (None = waiting for feedback answer or normal)
+    merged_record_id: Optional[str] = None            # record_id from save_record for later update
+    retry_count: int = 0                              # number of consecutive extraction failures for current field
+    last_activity: float = field(default_factory=time.time)  # timestamp of last activity
+
+    def touch_activity(self) -> None:
+        """Update last_activity timestamp to current time."""
+        self.last_activity = time.time()
+
+    def is_stale(self) -> bool:
+        """Return True if no activity for 30 minutes (1800 seconds)."""
+        return time.time() - self.last_activity > 1800
+
     def add_message(
         self,
         msg_type: MessageType,
@@ -62,6 +78,7 @@ class VisitSession:
         )
         self.message_timeout = msg.timestamp + MERGE_WINDOW_SECONDS
         self.pending_messages.append(msg)
+        self.touch_activity()
         logger.debug(
             "Session %s: added %s message, pending count=%d",
             self.user_id, msg_type.value, len(self.pending_messages),
@@ -99,6 +116,13 @@ class VisitSession:
         self.pending_messages.clear()
         self.message_timeout = 0.0
         self.task_type = None
+        # Reset progressive questioning state
+        self.merged_fields = None
+        self.pending_questions.clear()
+        self.pending_field = None
+        self.merged_record_id = None
+        self.retry_count = 0
+        self.last_activity = time.time()
 
 
 class SessionManager:
@@ -113,7 +137,9 @@ class SessionManager:
             if user_id not in self._sessions:
                 self._sessions[user_id] = VisitSession(user_id=user_id)
                 logger.info("Created new session for user %s", user_id)
-            return self._sessions[user_id]
+            session = self._sessions[user_id]
+            session.touch_activity()
+            return session
 
     def get_session(self, user_id: str) -> Optional[VisitSession]:
         return self._sessions.get(user_id)

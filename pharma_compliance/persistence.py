@@ -227,7 +227,7 @@ def save_record(task: Dict[str, Any], photo_paths: List[str]) -> str:
         photo_paths: Absolute paths to photo files to archive.
 
     Returns:
-        Path to the records.jsonl file.
+        The record_id string (e.g. '20250617_153000_123_百姓大药房').
     """
     ensure_dirs()
 
@@ -280,7 +280,76 @@ def save_record(task: Dict[str, Any], photo_paths: List[str]) -> str:
         "Persisted record %s (%d photos, %d chars merged text)",
         record_id, len(saved_photos), len(task.get("merged_text", "")),
     )
-    return str(records_file)
+    return record_id
+
+
+def update_record(record_id: str, updated_fields: Dict[str, Any]) -> bool:
+    """Update an existing record's fields in records.jsonl.
+
+    Reads the entire JSONL file, finds the matching record_id,
+    updates its fields, and rewrites the file atomically.
+
+    Args:
+        record_id: The record_id to update.
+        updated_fields: New field values to merge into the record.
+
+    Returns:
+        True if the record was found and updated, False otherwise.
+    """
+    records_file = RECORDS_DIR / "records.jsonl"
+    if not records_file.exists():
+        logger.warning("update_record: records file not found")
+        return False
+
+    records: List[Dict[str, Any]] = []
+    found = False
+    with open(records_file, "r", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    records.append({"__raw__": line})
+                    continue
+                if record.get("record_id") == record_id:
+                    # Merge updated_fields into existing fields
+                    existing_fields = record.get("fields", {})
+                    existing_fields.update(updated_fields)
+                    record["fields"] = existing_fields
+                    record["updated_at"] = datetime.now().isoformat()
+                    # Rebuild summary
+                    from pharma_compliance.extractor import fields_to_summary
+                    record["summary"] = fields_to_summary(existing_fields)
+                    found = True
+                records.append(record)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    if not found:
+        logger.warning("update_record: record_id %s not found", record_id)
+        return False
+
+    # Atomic write: write to temp, then rename
+    tmp_path = records_file.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            for record in records:
+                if "__raw__" in record:
+                    f.write(record["__raw__"] + "\n")
+                else:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            f.flush()
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    os.replace(tmp_path, records_file)
+
+    logger.info("Updated record %s with %d fields", record_id, len(updated_fields))
+    return True
 
 
 def list_records(limit: int = 20) -> List[Dict[str, Any]]:

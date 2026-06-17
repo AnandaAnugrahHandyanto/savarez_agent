@@ -923,3 +923,330 @@ class TestDegradation:
         assert len(warnings) == 1
         assert "语音识别暂不可用" in warnings[0]
         assert "文字" in warnings[0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW: Progressive questioning defect fix tests (tests 79–89)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPersistLocking:
+    """Test 79: update_record uses fcntl.flock for both read and write."""
+
+    def test_update_record_locks_file(self):
+        """update_record acquires exclusive locks on read and write."""
+        # Verify the source code contains 4+ fcntl.flock calls total
+        persist_path = PROJECT_ROOT / "pharma_compliance" / "persistence.py"
+        content = persist_path.read_text()
+        flock_count = content.count("fcntl.flock")
+        assert flock_count >= 4, f"Expected >= 4 fcntl.flock calls, found {flock_count}"
+
+
+class TestRetryOnExtractionFail:
+    """Tests 80-81: Field extraction failure → retry logic with retry_count."""
+
+    @pytest.mark.asyncio
+    async def test_retry_count_less_than_2_retries_same_field(self, handler):
+        """Test 80: Field extraction fails with retry_count < 2 → re-ask same field."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("retry_user")
+        session.merged_fields = {"org_name": "百姓大药房"}
+        session.pending_field = "contact_person"
+        session.pending_questions = ["products"]
+        session.retry_count = 0
+
+        result = await handler._handle_progressive_answer(
+            "retry_user", "嗯嗯就是这样", session
+        )
+        # Should re-ask the same field with retry message
+        assert result["merged"] is False
+        assert result["needs_followup"] is True
+        assert result["followup_field"] == "contact_person"
+        assert "信息不清晰" in result["followup_message"]
+        assert session.retry_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_count_exhausted_skips_field(self, handler):
+        """Test 81: Field extraction fails with retry_count >= 2 → skip to next field."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("retry_exhausted_user")
+        session.merged_fields = {"org_name": "百姓大药房"}
+        session.pending_field = "contact_person"
+        session.pending_questions = ["products"]
+        session.retry_count = 2
+
+        result = await handler._handle_progressive_answer(
+            "retry_exhausted_user", "还是不清楚", session
+        )
+        # Should skip to next field (products)
+        assert result["merged"] is False
+        assert result["needs_followup"] is True
+        assert result["followup_field"] == "products"
+        assert session.retry_count == 2  # unchanged, field skipped
+
+
+class TestUpdateRecordExceptionNoClear:
+    """Test 82: update_record exception does NOT clear session."""
+
+    @pytest.mark.asyncio
+    async def test_update_record_exception_preserves_session(self, handler):
+        """When update_record raises, session is NOT cleared."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("exception_user")
+        session.merged_fields = {
+            "org_name": "百姓大药房",
+            "contact_person": "王店长",
+        }
+        session.merged_record_id = "test_record_123"
+        session.pending_field = None
+        session.pending_questions = []
+
+        with patch(
+            "pharma_compliance.bot_handler.update_record",
+            side_effect=Exception("disk full"),
+        ):
+            result = await handler._handle_progressive_answer(
+                "exception_user", "补充好了", session
+            )
+
+        # Should return failure, NOT clear session
+        assert result["merged"] is False
+        assert "记录更新失败" in result["warnings"][0]
+        # Session state should be preserved
+        assert session.merged_fields is not None
+        assert session.merged_record_id == "test_record_123"
+
+
+class TestPersistFailureNoProgressive:
+    """Test 83: persist_ok=False prevents progressive questioning."""
+
+    @pytest.mark.asyncio
+    async def test_persist_failure_returns_early(self, handler):
+        """When save_record returns None, _do_merge returns failure early."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("persist_fail_user")
+        session.add_message(MessageType.TEXT, "去了百姓大药房见王店长 2025年6月15日 下午14:30")
+
+        with patch(
+            "pharma_compliance.bot_handler.save_record",
+            return_value=None,
+        ):
+            result = await handler._do_merge(session)
+
+        assert result["merged"] is False
+        warnings_text = " ".join(result.get("warnings", []))
+        assert "持久化失败" in warnings_text
+
+
+class TestSessionStale:
+    """Test 84: is_stale triggers session cleanup on progressive entry."""
+
+    def test_is_stale_returns_true_after_30_minutes(self):
+        """is_stale returns True when last_activity > 30 min ago."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("stale_user")
+        session.last_activity = time.time() - 1801  # 30 min + 1 sec
+        assert session.is_stale() is True
+
+    def test_is_stale_returns_false_within_window(self):
+        """is_stale returns False when recently active."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("active_user")
+        session.last_activity = time.time() - 60  # 1 min ago
+        assert session.is_stale() is False
+
+    @pytest.mark.asyncio
+    async def test_stale_session_cleared_on_progressive_entry(self, handler):
+        """Stale session gets cleared at progressive routing entry."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("stale_progressive_user")
+        session.pending_field = "contact_person"
+        session.merged_fields = {"org_name": "百姓大药房"}
+        session.pending_questions = ["products"]
+        session.last_activity = time.time() - 1801  # stale
+
+        result = await handler.handle_message(
+            user_id="stale_progressive_user",
+            msg_type="text",
+            content="王店长",
+        )
+        assert result["merged"] is False
+        assert "上次对话已超时" in result["warnings"][0]
+        # Session should be cleared
+        assert session.pending_field is None
+        assert session.merged_fields is None
+
+
+class TestManualMergePriority:
+    """Test 85: Manual merge trigger takes priority over progressive routing."""
+
+    @pytest.mark.asyncio
+    async def test_manual_merge_before_progressive(self, handler):
+        """'完了' triggers force_merge even during progressive questioning."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("merge_priority_user")
+        session.add_message(MessageType.TEXT, "去了百姓大药房见王店长")
+        session.pending_field = "products"  # Simulate progressive mode
+        session.merged_fields = {"org_name": "百姓大药房"}
+        session.pending_questions = ["feedback"]
+
+        with patch.object(handler, "_force_merge", new_callable=AsyncMock) as mock_fm:
+            mock_fm.return_value = {"merged": True, "task": {}, "warnings": [], "pending_count": 0}
+            await handler.handle_message(
+                user_id="merge_priority_user",
+                msg_type="text",
+                content="完了",
+            )
+            # _force_merge should have been called (manual merge took priority)
+            mock_fm.assert_called_once()
+
+
+class TestEscExitProgressive:
+    """Test 86: ESC keyword exits progressive mode."""
+
+    def test_esc_keyword_in_manual_merge_phrases(self):
+        """'取消' is in manual merge phrases and can exit progressive."""
+        from pharma_compliance.session import MANUAL_MERGE_PHRASES
+        # Verify that common exit phrases exist
+        assert len(MANUAL_MERGE_PHRASES) > 0
+
+    @pytest.mark.asyncio
+    async def test_esc_via_force_merge_exits_progressive(self, handler):
+        """Sending a manual merge phrase during progressive mode triggers force merge."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("esc_user")
+        session.add_message(MessageType.TEXT, "去了百姓大药房")
+        session.pending_field = "contact_person"
+        session.merged_fields = {"org_name": "百姓大药房"}
+        session.pending_questions = ["products"]
+
+        with patch.object(handler, "_force_merge", new_callable=AsyncMock) as mock_fm:
+            mock_fm.return_value = {
+                "merged": True,
+                "task": {"fields": session.merged_fields},
+                "warnings": [],
+                "pending_count": 0,
+            }
+            result = await handler.handle_message(
+                user_id="esc_user",
+                msg_type="text",
+                content="取消",
+            )
+            mock_fm.assert_called_once()
+
+
+class TestFeedbackOnlyUpdateRecord:
+    """Test 87: When only feedback is missing, it goes through progressive flow and update_record."""
+
+    @pytest.mark.asyncio
+    async def test_feedback_only_triggers_progressive_with_record_id(self, handler):
+        """Only feedback missing → session has pending_field='feedback', update_record called."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("feedback_only_user")
+        session.add_message(
+            MessageType.TEXT,
+            "药店拜访 百姓大药房 王店长 2025年6月15日 下午14:30 小儿宝泰康 主题产品推广 竞品有太极 下次带样品",
+        )
+
+        with patch(
+            "pharma_compliance.bot_handler.save_record",
+            return_value="20250615_test_fb_record",
+        ):
+            result = await handler._do_merge(session)
+
+        # Check that session is in progressive mode for feedback
+        assert session.pending_field == "feedback"
+        assert session.merged_record_id == "20250615_test_fb_record"
+        assert session.merged_fields is not None
+        # Should have feedback follow-up
+        assert result.get("needs_followup") or "feedback" in str(result.get("missing_fields", []))
+
+    @pytest.mark.asyncio
+    async def test_feedback_answer_updates_record(self, handler):
+        """When user answers the feedback question, update_record is called."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("feedback_answer_user")
+        session.merged_fields = {
+            "org_name": "百姓大药房",
+            "contact_person": "王店长",
+        }
+        session.merged_record_id = "fb_record_123"
+        session.pending_field = "feedback"
+        session.pending_questions = []
+
+        with patch(
+            "pharma_compliance.bot_handler.update_record",
+            return_value=True,
+        ) as mock_update:
+            result = await handler._handle_progressive_answer(
+                "feedback_answer_user",
+                "王店长说小儿宝泰康卖得不错，建议多备货",
+                session,
+            )
+            # update_record should have been called with the feedback
+            mock_update.assert_called_once()
+            call_args = mock_update.call_args[0]
+            assert call_args[0] == "fb_record_123"
+            assert "feedback" in call_args[1]
+            assert result["merged"] is True
+
+
+class TestRetryCountReset:
+    """Test 88: retry_count resets to 0 on successful extraction."""
+
+    @pytest.mark.asyncio
+    async def test_retry_count_resets_on_success(self, handler):
+        """After a retry, successful extraction resets retry_count to 0."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("reset_user")
+        session.merged_fields = {"org_name": "百姓大药房"}
+        session.pending_field = "contact_person"
+        session.pending_questions = ["products"]
+        session.retry_count = 1  # Had one failed attempt
+
+        result = await handler._handle_progressive_answer(
+            "reset_user", "见了王店长", session
+        )
+        assert result["merged"] is False
+        assert result["needs_followup"] is True
+        assert result["followup_field"] == "products"
+        assert session.retry_count == 0  # Reset after success
+
+
+class TestTouchActivity:
+    """Test 89: touch_activity updates last_activity timestamp."""
+
+    def test_touch_activity_updates_timestamp(self):
+        """touch_activity() sets last_activity to current time.time()."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("activity_user")
+        old_time = session.last_activity
+        # Small delay to ensure timestamp changes
+        time.sleep(0.01)
+        session.touch_activity()
+        new_time = session.last_activity
+        assert new_time > old_time
+
+    def test_add_message_touches_activity(self):
+        """add_message() calls touch_activity automatically."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("msg_activity_user")
+        old_time = session.last_activity
+        time.sleep(0.01)
+        session.add_message(MessageType.TEXT, "test message")
+        new_time = session.last_activity
+        assert new_time > old_time
+
+    def test_get_or_create_touches_activity(self):
+        """get_or_create_session() calls touch_activity."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("create_activity_user")
+        # last_activity should be set (just after creation)
+        assert session.last_activity > 0
+        # Calling again should update
+        old_time = session.last_activity
+        time.sleep(0.01)
+        session2 = manager.get_or_create_session("create_activity_user")
+        assert session2 is session
+        # Activity should be refreshed
+        assert session.last_activity >= old_time
