@@ -1380,6 +1380,8 @@ export interface Translations {
       readAloud: string
       editMessage: string
       scrollToBottom: string
+      answerStart: string
+      answerEnd: string
       stop: string
       restorePrevious: string
       restoreCheckpoint: string
