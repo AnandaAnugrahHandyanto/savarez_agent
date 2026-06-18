@@ -22,6 +22,7 @@ import {
   $messages,
   $sessions,
   $yoloActive,
+  sessionMatchesStoredId,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -215,10 +216,6 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
   }
 
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
-}
-
-function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
-  return session.id === storedSessionId || session._lineage_root_id === storedSessionId
 }
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
@@ -989,6 +986,13 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
+
+        // Refresh from server so the sidebar doesn't keep claiming
+        // the removed row exists until the next full refresh cycle.
+        const sessionProfile = normalizeProfileKey(removed?.profile)
+        const refreshResult = await listAllProfileSessions(200, 1, 'exclude', 'recent', sessionProfile === 'default' ? 'all' : sessionProfile)
+        setSessions(refreshResult.sessions)
+        setSessionsTotal(refreshResult.total ?? refreshResult.sessions.length)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
