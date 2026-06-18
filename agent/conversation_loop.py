@@ -35,6 +35,8 @@ from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
+    _normalize_fragmented_escapes,
+    _normalize_fragmented_escapes_in_obj,
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
@@ -832,6 +834,9 @@ def run_conversation(
                 if isinstance(tc, dict) and "function" in tc:
                     try:
                         args_obj = json.loads(tc["function"]["arguments"])
+                        args_obj = _normalize_fragmented_escapes_in_obj(
+                            args_obj, tc["function"].get("name", "?"),
+                        )
                         tc = {**tc, "function": {
                             **tc["function"],
                             "arguments": json.dumps(

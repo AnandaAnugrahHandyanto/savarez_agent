@@ -31,6 +31,8 @@ from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
+    _normalize_fragmented_escapes,
+    _normalize_fragmented_escapes_in_obj,
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
@@ -2011,7 +2013,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 tool_name = tc["function"]["name"] or "?"
                 if arguments and arguments.strip():
                     try:
-                        json.loads(arguments)
+                        parsed_args = json.loads(arguments)
+                        normalized = _normalize_fragmented_escapes_in_obj(
+                            parsed_args, tool_name,
+                        )
+                        if normalized != parsed_args:
+                            arguments = json.dumps(normalized, separators=(",", ":"))
                     except json.JSONDecodeError:
                         # Attempt repair before flagging as truncated.
                         # Models like GLM-5.1 via Ollama produce trailing
