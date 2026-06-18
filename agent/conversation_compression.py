@@ -597,11 +597,12 @@ def compress_context(
     # Warn on repeated compressions (quality degrades with each pass)
     _cc = agent.context_compressor.compression_count
     if _cc >= 2:
-        agent._vprint(
+        msg = (
             f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
-            f"accuracy may degrade. Consider /new to start fresh.",
-            force=True,
+            f"accuracy may degrade. Consider /new to start fresh."
         )
+        agent._compression_warning = msg
+        agent._emit_status(msg)
 
     # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
     # the completed old session before its details are lost.
