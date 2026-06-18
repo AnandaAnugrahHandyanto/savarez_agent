@@ -945,6 +945,30 @@ export function usePromptActions({
             return
           }
 
+          if (dispatch.type === 'send') {
+            if (dispatch.notice?.trim()) {
+              renderSlashOutput(dispatch.notice)
+            }
+
+            const sendMsg = dispatch.message?.trim()
+
+            if (!sendMsg) {
+              renderSlashOutput(`/${name}: empty message`)
+
+              return
+            }
+
+            if (busyRef.current) {
+              renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+
+              return
+            }
+
+            await submitPromptText(sendMsg)
+
+            return
+          }
+
           if (dispatch.type === 'alias') {
             await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false)
 

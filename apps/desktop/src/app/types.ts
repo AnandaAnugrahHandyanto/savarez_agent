@@ -106,6 +106,7 @@ export interface SkillCommandDispatchResponse {
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
+  notice?: string
 }
 
 export type CommandDispatchResponse =

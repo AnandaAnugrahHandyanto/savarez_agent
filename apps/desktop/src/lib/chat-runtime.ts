@@ -237,8 +237,15 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
     case 'skill':
       return typeof row.name === 'string' ? { type: 'skill', name: row.name, message: str(row.message) } : null
 
-    case 'send':
-      return typeof row.message === 'string' ? { type: 'send', message: row.message } : null
+    case 'send': {
+      if (typeof row.message !== 'string') return null
+      const sendResult: { type: 'send'; message: string; notice?: string } = {
+        type: 'send',
+        message: row.message
+      }
+      if (typeof row.notice === 'string') sendResult.notice = row.notice
+      return sendResult
+    }
 
     default:
       return null
