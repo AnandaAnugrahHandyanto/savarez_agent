@@ -57,6 +57,7 @@ def test_whoop_client_retries_once_after_401(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     def fake_request(method, url, headers=None, **kw):
+        assert headers is not None
         calls.append(headers["Authorization"])
         if len(calls) == 1:
             return _FakeResponse(401, {"error": "expired"})
