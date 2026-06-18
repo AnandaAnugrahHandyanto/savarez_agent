@@ -682,6 +682,47 @@ class TestAllowedUsersGate:
         assert adapter._is_user_allowed("alice", "") is True
         assert adapter._is_user_allowed("dave", "") is False
 
+    def test_config_and_env_allowlists_are_merged(self, monkeypatch):
+        """Documented contract: when both extra.allowed_users and
+        DINGTALK_ALLOWED_USERS are set, the union is enforced — config must
+        not silently drop the env entries."""
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"allowed_users": ["alice"]},
+            env={"DINGTALK_ALLOWED_USERS": "bob"},
+        )
+        assert adapter._allowed_users == {"alice", "bob"}
+        assert adapter._is_user_allowed("alice", "") is True
+        assert adapter._is_user_allowed("bob", "") is True
+        assert adapter._is_user_allowed("mallory", "") is False
+
+    def test_merged_allowlist_dedupes_case_insensitively(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"allowed_users": ["Alice", "carol"]},
+            env={"DINGTALK_ALLOWED_USERS": "alice,BOB"},
+        )
+        assert adapter._allowed_users == {"alice", "bob", "carol"}
+
+    def test_env_wildcard_disables_check_alongside_config_list(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"allowed_users": ["alice"]},
+            env={"DINGTALK_ALLOWED_USERS": "*"},
+        )
+        assert adapter._is_user_allowed("anyone", "any-staff") is True
+
+    def test_empty_config_list_does_not_mask_env_allowlist(self, monkeypatch):
+        """An explicit empty extra.allowed_users used to discard the env
+        allowlist entirely, silently allowing everyone."""
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"allowed_users": []},
+            env={"DINGTALK_ALLOWED_USERS": "alice"},
+        )
+        assert adapter._is_user_allowed("alice", "") is True
+        assert adapter._is_user_allowed("dave", "") is False
+
 
 class TestMentionPatterns:
 
