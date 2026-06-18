@@ -9122,7 +9122,6 @@ def _(rid, params: dict) -> dict:
             canonical_order=True,
             pricing=True,
             capabilities=True,
-            max_models=50,
         )
         return _ok(rid, payload)
     except Exception as e:
