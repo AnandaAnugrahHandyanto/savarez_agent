@@ -6533,7 +6533,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             cwd=cwd,
             capture_output=True,
             check=True,
-            timeout=30,
+            timeout=60,
         )
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
