@@ -1305,19 +1305,35 @@ function Install-Repository {
         # Try SSH first, then HTTPS, with -c flag for atomic write fix
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
+        # Relax EAP=Stop around the clone: git writes normal progress ("Cloning
+        # into...", "Receiving objects: NN%") to stderr, which PowerShell 5.1
+        # wraps as a terminating NativeCommandError under EAP=Stop. The empty
+        # catch below would then swallow a *successful* clone and force the ZIP
+        # fallback -- which inits a commit-less repo and later breaks the desktop
+        # build (`git rev-parse HEAD` fails). $LASTEXITCODE is the real signal.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         try {
             git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
-        } catch { }
+        } catch { } finally {
+            $ErrorActionPreference = $prevEAP
+        }
         $env:GIT_SSH_COMMAND = $null
 
         if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
+            # Same EAP=Stop relaxation as the SSH attempt above -- git's stderr
+            # progress must not be mistaken for a clone failure.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             try {
                 git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
-            } catch { }
+            } catch { } finally {
+                $ErrorActionPreference = $prevEAP
+            }
         }
 
         # Fallback: download ZIP archive (bypasses git file I/O issues entirely)
@@ -1443,8 +1459,20 @@ function Install-Venv {
         Remove-Item -Recurse -Force "venv"
     }
     
-    # uv creates the venv and pins the Python version in one step
+    # uv creates the venv and pins the Python version in one step.
+    # Relax EAP=Stop: uv writes "Using CPython X.Y.Z" to stderr, which PS 5.1
+    # turns into a terminating NativeCommandError under EAP=Stop and aborts the
+    # whole installer right after a successful clone. $LASTEXITCODE is the real
+    # success signal.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & $UvCmd venv venv --python $PythonVersion
+    $venvExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($venvExitCode -ne 0) {
+        Pop-Location
+        throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
+    }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
@@ -1514,8 +1542,16 @@ function Install-Dependencies {
         # in the wrong directory and imports fail with ModuleNotFoundError.
         # (Mirrors the same flag in scripts/install.sh::install_deps.)
         $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+        # Relax EAP=Stop: uv sync writes "Resolved/Audited NN packages" and
+        # resolve progress to stderr; under EAP=Stop PS 5.1 wraps the first such
+        # line as a terminating NativeCommandError and aborts before the
+        # $LASTEXITCODE check below can run. $LASTEXITCODE is the real signal.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         & $UvCmd sync --extra all --locked
-        if ($LASTEXITCODE -eq 0) {
+        $syncExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($syncExitCode -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
             $script:InstalledTier = "hash-verified (uv.lock)"
             # Skip the rest of the tiered cascade -- we already have a
@@ -1589,14 +1625,22 @@ except Exception:
     if (-not $skipPipFallback) {
         foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
+        # Relax EAP=Stop: uv pip install writes resolve/progress info to stderr,
+        # which PS 5.1 wraps as a terminating NativeCommandError under EAP=Stop --
+        # aborting the cascade before the $LASTEXITCODE check (and the next-tier
+        # fallback) can run. $LASTEXITCODE is the real per-tier success signal.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         & $UvCmd pip install -e $tier.Spec
-        if ($LASTEXITCODE -eq 0) {
+        $tierExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($tierExitCode -eq 0) {
             Write-Success "Main package installed ($($tier.Name))"
             $script:InstalledTier = $tier.Name
             $installed = $true
             break
         }
-        Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
+        Write-Warn "Tier '$($tier.Name)' failed (exit $tierExitCode). Trying next tier..."
         }
     }
     if (-not $installed) {
