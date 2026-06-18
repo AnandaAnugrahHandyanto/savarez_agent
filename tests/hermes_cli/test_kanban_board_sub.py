@@ -275,3 +275,72 @@ class TestNotifierFormatting:
         assert msg.startswith("⏸")
         assert "blocked" in msg
         assert "🔍" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Argparse: global --board vs notify-subscribe --board conflict
+# ---------------------------------------------------------------------------
+
+class TestBoardArgparseConflict:
+    """Verify that the global --board and notify-subscribe --board don't clash.
+
+    The notify-subscribe --board flag uses dest='board_sub_slug' so it
+    doesn't overwrite the global args.board attribute. Without this,
+    per-task subscriptions on a non-default board would lose the board
+    override.
+    """
+
+    def test_global_board_preserved_without_board_sub(self):
+        """Per-task sub on a non-default board: global --board survives."""
+        import argparse
+        from hermes_cli.kanban import build_parser
+
+        parser = argparse.ArgumentParser()
+        sub_p = parser.add_subparsers(dest="command")
+        build_parser(sub_p)
+
+        parser.parse_args([
+            "kanban", "--board", "beta",
+            "notify-subscribe", "t_abc",
+            "--platform", "telegram", "--chat-id", "123",
+        ])
+        args = parser.parse_args([
+            "kanban", "--board", "beta",
+            "notify-subscribe", "t_abc",
+            "--platform", "telegram", "--chat-id", "123",
+        ])
+        assert args.board == "beta"
+        assert getattr(args, "board_sub_slug", None) is None
+
+    def test_board_sub_slug_set_for_board_level_sub(self):
+        """Board-level sub: board_sub_slug gets the target board slug."""
+        import argparse
+        from hermes_cli.kanban import build_parser
+
+        parser = argparse.ArgumentParser()
+        sub_p = parser.add_subparsers(dest="command")
+        build_parser(sub_p)
+
+        args = parser.parse_args([
+            "kanban", "notify-subscribe",
+            "--board", "default",
+            "--platform", "telegram", "--chat-id", "123",
+        ])
+        assert getattr(args, "board_sub_slug", None) == "default"
+
+    def test_global_board_and_board_sub_both_set(self):
+        """When both global --board and sub --board are given, both are available."""
+        import argparse
+        from hermes_cli.kanban import build_parser
+
+        parser = argparse.ArgumentParser()
+        sub_p = parser.add_subparsers(dest="command")
+        build_parser(sub_p)
+
+        args = parser.parse_args([
+            "kanban", "--board", "beta",
+            "notify-subscribe", "--board", "alpha",
+            "--platform", "telegram", "--chat-id", "123",
+        ])
+        assert args.board == "beta"
+        assert args.board_sub_slug == "alpha"

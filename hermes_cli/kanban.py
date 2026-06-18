@@ -687,7 +687,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_nsub.add_argument("task_id", nargs="?", default=None,
                          help="Task to subscribe to (omit when using --board)")
-    p_nsub.add_argument("--board", default=None,
+    p_nsub.add_argument("--board", default=None, dest="board_sub_slug",
                          help="Subscribe to all events on this board (board-level sub)")
     p_nsub.add_argument("--platform", required=True)
     p_nsub.add_argument("--chat-id", required=True)
@@ -891,7 +891,15 @@ def kanban_command(args: argparse.Namespace) -> int:
     # (rather than threading `board=` through 50+ kb.connect() sites)
     # keeps the patch small and inherits the exact same resolution the
     # dispatcher uses for workers — consistency is a feature here.
+    #
+    # For notify-subscribe's board-level sub (--board <slug> on the
+    # subcommand, stored as args.board_sub_slug), the board scope must
+    # also match so the subscription is written to the correct board DB.
     board_override = getattr(args, "board", None)
+    if not board_override:
+        board_sub_slug = getattr(args, "board_sub_slug", None)
+        if board_sub_slug:
+            board_override = board_sub_slug
     board_scope = contextlib.nullcontext()
     if board_override:
         try:
@@ -2570,7 +2578,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
-    board_slug = getattr(args, "board", None)
+    board_slug = getattr(args, "board_sub_slug", None)
     if board_slug:
         # Board-level subscription — no task_id needed
         with kb.connect_closing() as conn:
