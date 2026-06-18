@@ -51,6 +51,10 @@ def _make_adapter() -> FeishuAdapter:
     config = PlatformConfig(enabled=True)
     adapter = FeishuAdapter(config)
     adapter._client = MagicMock()
+    # Keep callback authorization tests deterministic regardless of the
+    # developer machine's FEISHU_GROUP_POLICY environment.
+    adapter._group_policy = "allowlist"
+    adapter._default_group_policy = "allowlist"
     return adapter
 
 
@@ -58,6 +62,7 @@ def _make_card_action_data(
     action_value: dict,
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
+    user_id: str = "",
     token: str = "tok_abc",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
@@ -65,7 +70,7 @@ def _make_card_action_data(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
-            operator=SimpleNamespace(open_id=open_id),
+            operator=SimpleNamespace(open_id=open_id, user_id=user_id),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
@@ -301,6 +306,112 @@ class TestFeishuUpdatePrompt:
 
         assert result.success is False
         assert "timed out" in (result.error or "")
+
+
+# ===========================================================================
+# send_slash_confirm — generic slash confirmation card
+# ===========================================================================
+
+class TestFeishuSlashConfirm:
+    """Test generic slash-confirm Feishu cards."""
+
+    @pytest.mark.asyncio
+    async def test_sends_interactive_card_and_stores_state(self):
+        adapter = _make_adapter()
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_sc_001"),
+        )
+
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_slash_confirm(
+                chat_id="oc_12345",
+                title="⚠️ Confirm /new",
+                message="Proceed with **/new**?",
+                session_key="sess-sc-1",
+                confirm_id="confirm-1",
+                metadata={"thread_id": "th_1", "slash_confirm_requester_user_id": "ou_owner"},
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_sc_001"
+        kwargs = mock_send.call_args[1]
+        assert kwargs["chat_id"] == "oc_12345"
+        assert kwargs["msg_type"] == "interactive"
+        assert kwargs["metadata"] == {"thread_id": "th_1", "slash_confirm_requester_user_id": "ou_owner"}
+
+        card = json.loads(kwargs["payload"])
+        assert card["header"]["title"]["content"] == "⚠️ Confirm /new"
+        assert "Proceed with **/new**?" in card["elements"][0]["content"]
+        actions = card["elements"][1]["actions"]
+        assert [a["value"]["hermes_slash_confirm_action"] for a in actions] == ["once", "always", "cancel"]
+        assert [a["value"]["slash_confirm_id"] for a in actions] == ["confirm-1"] * 3
+        assert all("session_key" not in a["value"] for a in actions)
+
+        state = adapter._slash_confirm_state["confirm-1"]
+        assert state["session_key"] == "sess-sc-1"
+        assert state["message_id"] == "msg_sc_001"
+        assert state["chat_id"] == "oc_12345"
+        assert state["metadata"]["slash_confirm_requester_user_id"] == "ou_owner"
+
+    @pytest.mark.asyncio
+    async def test_send_failure_cleans_state_for_gateway_text_fallback(self):
+        adapter = _make_adapter()
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            side_effect=TimeoutError("timed out"),
+        ):
+            result = await adapter.send_slash_confirm(
+                chat_id="oc_12345",
+                title="Confirm",
+                message="Proceed?",
+                session_key="sess-sc-2",
+                confirm_id="confirm-2",
+            )
+
+        assert result.success is False
+        assert "timed out" in (result.error or "")
+        assert "confirm-2" not in adapter._slash_confirm_state
+
+    @pytest.mark.asyncio
+    async def test_resolve_calls_core_and_sends_followup(self):
+        from tools import slash_confirm
+
+        adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_owner"}
+        adapter._slash_confirm_state["confirm-3"] = {
+            "session_key": "sess-sc-3",
+            "message_id": "msg_sc_003",
+            "chat_id": "oc_12345",
+            "metadata": {"thread_id": "th_3", "slash_confirm_requester_user_id": "ou_owner"},
+            "created_at": 9999999999,
+        }
+
+        async def _handler(choice):
+            return f"resolved:{choice}"
+
+        slash_confirm.register("sess-sc-3", "confirm-3", "new", _handler)
+        try:
+            with patch.object(adapter, "send", new_callable=AsyncMock) as mock_send:
+                await adapter._resolve_slash_confirm(
+                    "confirm-3",
+                    "once",
+                    "Owner",
+                    open_id="ou_owner",
+                    chat_id="oc_12345",
+                )
+        finally:
+            slash_confirm.clear("sess-sc-3")
+
+        assert "confirm-3" not in adapter._slash_confirm_state
+        mock_send.assert_awaited_once_with(
+            chat_id="oc_12345",
+            content="resolved:once",
+            metadata={"thread_id": "th_3", "slash_confirm_requester_user_id": "ou_owner"},
+        )
 
 
 # ===========================================================================
@@ -801,6 +912,104 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is None
         assert 8 in adapter._update_prompt_state
+        mock_submit.assert_not_called()
+
+    def test_returns_card_for_slash_confirm_once(self, _patch_callback_card_types):
+        from tools import slash_confirm
+
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._slash_confirm_state["sc-1"] = {
+            "session_key": "sess-sc-1",
+            "message_id": "msg_sc_001",
+            "chat_id": "oc_12345",
+            "metadata": {"slash_confirm_requester_user_id": "ou_bob"},
+            "created_at": 9999999999,
+        }
+        slash_confirm.register("sess-sc-1", "sc-1", "new", AsyncMock(return_value="done"))
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "once", "slash_confirm_id": "sc-1"},
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        try:
+            with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as mock_submit:
+                response = adapter._on_card_action_trigger(data)
+        finally:
+            slash_confirm.clear("sess-sc-1")
+
+        assert response is not None
+        assert response.card is not None
+        mock_submit.assert_called_once()
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "Approved once" in card["header"]["title"]["content"]
+        assert "Bob" in card["elements"][0]["content"]
+
+    def test_rejects_slash_confirm_click_from_non_requester(self, _patch_callback_card_types):
+        from tools import slash_confirm
+
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_owner", "ou_intruder"}
+        adapter._slash_confirm_state["sc-2"] = {
+            "session_key": "sess-sc-2",
+            "message_id": "msg_sc_002",
+            "chat_id": "oc_12345",
+            "metadata": {"slash_confirm_requester_user_id": "ou_owner"},
+            "created_at": 9999999999,
+        }
+        slash_confirm.register("sess-sc-2", "sc-2", "new", AsyncMock(return_value="done"))
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "always", "slash_confirm_id": "sc-2"},
+            open_id="ou_intruder",
+        )
+
+        try:
+            with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+                response = adapter._on_card_action_trigger(data)
+        finally:
+            slash_confirm.clear("sess-sc-2")
+
+        assert response is not None
+        assert response.card is None
+        assert "sc-2" in adapter._slash_confirm_state
+        mock_submit.assert_not_called()
+
+    def test_slash_confirm_superseded_card_returns_expired_state(self, _patch_callback_card_types):
+        from tools import slash_confirm
+
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._slash_confirm_state["old"] = {
+            "session_key": "sess-sc-3",
+            "message_id": "msg_old",
+            "chat_id": "oc_12345",
+            "metadata": {"slash_confirm_requester_user_id": "ou_owner"},
+            "created_at": 9999999999,
+        }
+        slash_confirm.register("sess-sc-3", "new", "new", AsyncMock(return_value="new"))
+        data = _make_card_action_data(
+            {"hermes_slash_confirm_action": "once", "slash_confirm_id": "old"},
+            open_id="ou_owner",
+        )
+
+        try:
+            with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+                response = adapter._on_card_action_trigger(data)
+        finally:
+            slash_confirm.clear("sess-sc-3")
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.data["header"]["template"] == "grey"
+        assert "expired" in response.card.data["header"]["title"]["content"].lower()
+        assert "old" not in adapter._slash_confirm_state
         mock_submit.assert_not_called()
 
 

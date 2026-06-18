@@ -7140,24 +7140,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
                 return EphemeralReply(t("gateway.stop.stopped"))
 
-            # /reset and /new must bypass the running-agent guard so they
-            # actually dispatch as commands instead of being queued as user
-            # text (which would be fed back to the agent with the same
-            # broken history — #2170).  Interrupt the agent first, then
-            # clear the adapter's pending queue so the stale "/reset" text
-            # doesn't get re-processed as a user message after the
-            # interrupt completes.
+            # /reset and /new must bypass the generic running-agent guard so
+            # they actually dispatch as commands instead of being queued as
+            # user text (which would be fed back to the agent with the same
+            # broken history — #2170).  They are still destructive session
+            # boundary operations, so route through the same slash-confirm
+            # gate used on the cold path; only interrupt/reset after the user
+            # approves the card/text prompt.
             if _cmd_def_inner and _cmd_def_inner.name == "new":
-                # Clear any pending messages so the old text doesn't replay
-                await self._interrupt_and_clear_session(
-                    _quick_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_RESET,
-                    invalidation_reason="new_command",
+                async def _do_interrupt_and_reset():
+                    # Clear any pending messages so the old text doesn't replay.
+                    await self._interrupt_and_clear_session(
+                        _quick_key,
+                        source,
+                        interrupt_reason=_INTERRUPT_REASON_RESET,
+                        invalidation_reason="new_command",
+                    )
+                    # Clean up the running agent entry so the reset handler
+                    # doesn't think an agent is still active.
+                    return await self._handle_reset_command(event)
+
+                return await self._maybe_confirm_destructive_slash(
+                    event=event,
+                    command="new",
+                    title="/new",
+                    detail=(
+                        "This interrupts the currently running task, starts a "
+                        "fresh session, and discards the current conversation "
+                        "history."
+                    ),
+                    execute=_do_interrupt_and_reset,
                 )
-                # Clean up the running agent entry so the reset handler
-                # doesn't think an agent is still active.
-                return await self._handle_reset_command(event)
 
             # /queue <prompt> — queue without interrupting.
             # Semantics: each /queue invocation produces its own full agent
@@ -11479,6 +11492,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         adapter = self.adapters.get(source.platform)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        metadata = dict(metadata or {})
+        if getattr(source, "user_id", None):
+            metadata["slash_confirm_requester_user_id"] = str(source.user_id)
+        if getattr(source, "user_id_alt", None):
+            metadata["slash_confirm_requester_user_id_alt"] = str(source.user_id_alt)
 
         used_buttons = False
         if adapter is not None:

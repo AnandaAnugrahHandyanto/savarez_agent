@@ -64,6 +64,7 @@ def _make_runner():
     runner.session_store.rewrite_transcript = MagicMock()
 
     runner._running_agents = {}
+    runner._running_agents_ts = {}
     runner._pending_messages = {}
     import itertools as _it
     runner._slash_confirm_counter = _it.count(1)
@@ -150,6 +151,33 @@ async def test_gate_on_pending_confirm_registered(monkeypatch):
     assert pending is not None
     assert pending["command"] == "new"
     _slash_confirm_mod.clear(session_key)
+
+
+@pytest.mark.asyncio
+async def test_button_path_passes_requester_metadata_without_text_fallback():
+    """Button-capable adapters get requester metadata for callback auth and
+    suppress the text fallback when card delivery succeeds."""
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    runner.adapters[Platform.TELEGRAM].send_slash_confirm = AsyncMock(
+        return_value=SimpleNamespace(success=True)
+    )
+
+    execute = AsyncMock(return_value="reset done")
+    result = await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    assert result is None
+    execute.assert_not_awaited()
+    kwargs = runner.adapters[Platform.TELEGRAM].send_slash_confirm.call_args.kwargs
+    assert kwargs["metadata"]["slash_confirm_requester_user_id"] == "u1"
 
 
 @pytest.mark.asyncio
@@ -259,3 +287,54 @@ async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
     assert resolved is not None
     assert "✨ fresh" in resolved
     assert "config.yaml" in resolved
+
+
+@pytest.mark.asyncio
+async def test_active_new_requests_confirm_before_interrupting_or_resetting():
+    """When /new arrives while an agent is running, it must still use the
+    destructive slash-confirm gate.  The running agent is interrupted only
+    after the user approves the card/text prompt, not when the command first
+    arrives.
+    """
+    from tools import slash_confirm as _slash_confirm_mod
+
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    event = MessageEvent(text="/new", source=source, message_id="m-active-new")
+
+    runner._session_key_for_source = lambda source: session_key
+    runner._is_user_authorized = lambda source: True
+    runner._check_slash_access = lambda source, canonical_cmd: None
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    runner.adapters[Platform.TELEGRAM].send_slash_confirm = AsyncMock(
+        return_value=SimpleNamespace(success=True)
+    )
+    runner._running_agents = {session_key: object()}
+    runner._running_agents_ts = {}
+    runner._interrupt_and_clear_session = AsyncMock()
+    runner._handle_reset_command = AsyncMock(return_value="✨ reset after approval")
+    _slash_confirm_mod.clear(session_key)
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    runner._interrupt_and_clear_session.assert_not_awaited()
+    runner._handle_reset_command.assert_not_awaited()
+    pending = _slash_confirm_mod.get_pending(session_key)
+    assert pending is not None
+    assert pending["command"] == "new"
+
+    resolved = await _slash_confirm_mod.resolve(
+        session_key, pending["confirm_id"], "once",
+    )
+
+    runner._interrupt_and_clear_session.assert_awaited_once_with(
+        session_key,
+        source,
+        interrupt_reason="Session reset requested",
+        invalidation_reason="new_command",
+    )
+    runner._handle_reset_command.assert_awaited_once_with(event)
+    assert resolved == "✨ reset after approval"
+    _slash_confirm_mod.clear(session_key)
