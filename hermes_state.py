@@ -1508,10 +1508,14 @@ class SessionDB:
         Unlike ``update_token_counts`` which uses ``COALESCE(model, ?)``
         (only filling in NULL), this unconditionally sets the model column
         so that the dashboard reflects the user's latest /model choice.
+
+        Also nulls ``system_prompt`` so the cached snapshot (which embeds a
+        stale ``Model:`` / ``Provider:`` header) is rebuilt from the active
+        runtime state on the next turn. See #48173.
         """
         def _do(conn):
             conn.execute(
-                "UPDATE sessions SET model = ? WHERE id = ?",
+                "UPDATE sessions SET model = ?, system_prompt = NULL WHERE id = ?",
                 (model, session_id),
             )
         self._execute_write(_do)

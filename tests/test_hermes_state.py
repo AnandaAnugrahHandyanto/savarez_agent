@@ -173,7 +173,8 @@ class TestSessionLifecycle:
         assert session["model"] == "anthropic/claude-opus-4.6"
 
     def test_update_session_model_overwrites_existing(self, db):
-        """A mid-session /model switch must overwrite the stored model.
+        """A mid-session /model switch must overwrite the stored model
+        and clear the cached system_prompt (#48173).
 
         update_token_counts uses COALESCE(model, ?) (first-writer-wins), so
         the dashboard kept showing the original model after a switch (#34850).
@@ -186,9 +187,16 @@ class TestSessionLifecycle:
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5-pro"
 
-        # Explicit switch overwrites it.
+        # Explicit switch overwrites it and clears system_prompt.
+        # First set a system_prompt to verify it gets nulled.
+        db.update_system_prompt("s1", "Model: xiaomi/mimo-v2.5-pro\nProvider: openai-codex")
+        assert db.get_session("s1")["system_prompt"] is not None
+
         db.update_session_model("s1", "xiaomi/mimo-v2.5")
-        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+        sess = db.get_session("s1")
+        assert sess["model"] == "xiaomi/mimo-v2.5"
+        assert sess["system_prompt"] is None, \
+            "system_prompt must be nulled so the next turn rebuilds it with the updated Model:/Provider: headers"
 
         # And a subsequent token update does NOT revert it (COALESCE no-ops
         # because the column is now non-NULL).
