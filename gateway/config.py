@@ -548,6 +548,12 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # Optional cold-start notification. The existing /restart completion path
+    # is marker-gated to avoid noisy ordinary boots; this opt-in flag covers
+    # operators who also want a home-channel "gateway is online" signal after
+    # process starts caused by Docker/systemd/reboots rather than /restart.
+    gateway_startup_notification: bool = False
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -651,6 +657,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "gateway_startup_notification": self.gateway_startup_notification,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
@@ -710,6 +717,10 @@ class GatewayConfig:
             data.get("unauthorized_dm_behavior"),
             "pair",
         )
+        gateway_startup_notification = _coerce_bool(
+            data.get("gateway_startup_notification"),
+            False,
+        )
 
         try:
             session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
@@ -734,6 +745,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
+            gateway_startup_notification=gateway_startup_notification,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
@@ -829,6 +841,11 @@ def load_gateway_config() -> GatewayConfig:
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
+
+            if "gateway_startup_notification" in yaml_cfg:
+                gw_data["gateway_startup_notification"] = yaml_cfg[
+                    "gateway_startup_notification"
+                ]
 
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):
@@ -1355,6 +1372,10 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
+
+    startup_notify = os.getenv("GATEWAY_STARTUP_NOTIFICATION")
+    if startup_notify is not None:
+        config.gateway_startup_notification = _coerce_bool(startup_notify, False)
 
     def _enable_from_env(platform: Platform) -> PlatformConfig:
         if platform not in config.platforms:
