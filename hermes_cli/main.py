@@ -9006,6 +9006,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+        _desktop_build_failed = False
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
@@ -9017,7 +9018,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if build_result.returncode != 0:
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
-                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                _desktop_build_failed = True
+                print("  ⚠ Desktop build failed; run `hermes desktop` to retry")
 
         print()
         print("✓ Code updated!")
@@ -9283,7 +9285,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
         print()
-        print("✓ Update complete!")
+        if _desktop_build_failed:
+            print("⚠ Code updated, but desktop app rebuild failed!")
+            print("  Run `hermes desktop` to rebuild the desktop app.")
+        else:
+            print("✓ Update complete!")
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -9346,7 +9352,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if gateway_mode:
             _exit_code_path = get_hermes_home() / ".update_exit_code"
             try:
-                _exit_code_path.write_text("0")
+                _exit_code_path.write_text("1" if _desktop_build_failed else "0")
             except OSError:
                 pass
 
@@ -10022,6 +10028,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
+
+        if _desktop_build_failed:
+            sys.exit(1)
 
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":

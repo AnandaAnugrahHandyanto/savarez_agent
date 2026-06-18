@@ -825,3 +825,109 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+# ---------------------------------------------------------------------------
+# Desktop build failure propagation in hermes update
+# ---------------------------------------------------------------------------
+
+class TestUpdateDesktopBuildFailure:
+    """Tests that desktop build failures propagate to the update exit code."""
+
+    @staticmethod
+    def _make_update_side_effect(*, desktop_exit_code=0):
+        """Build a subprocess.run side_effect for the full update flow.
+
+        Simulates git, pip, npm, and desktop build commands.
+        Desktop build returns *desktop_exit_code*.
+        """
+        import subprocess as _sp
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            # git commands — always succeed
+            if "git" in cmd[0] if isinstance(cmd[0], str) else "git" in str(cmd[0]):
+                if "rev-parse" in joined and "--abbrev-ref" in joined:
+                    return _sp.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+                if "rev-parse" in joined and "--verify" in joined:
+                    return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+                if "rev-list" in joined:
+                    return _sp.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+                return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+            # desktop --build-only
+            if "desktop" in joined and "--build-only" in joined:
+                return _sp.CompletedProcess(cmd, desktop_exit_code, stdout="", stderr="")
+            # Everything else (pip, npm, etc.) — succeed
+            return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    def test_desktop_build_failure_prints_warning(self, mock_args, capsys):
+        """When desktop build fails, update prints a clear failure message."""
+        from hermes_cli import main as hm
+
+        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("shutil.which", side_effect=lambda x: "/usr/bin/npm" if x == "npm" else None), \
+             patch("subprocess.run", side_effect=self._make_update_side_effect(desktop_exit_code=1)), \
+             patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok), \
+             patch.object(hm, "_desktop_packaged_executable", return_value="/fake/Hermes.exe"), \
+             patch.object(hm, "_desktop_dist_exists", return_value=True), \
+             pytest.raises(SystemExit) as exc_info:
+            hm._cmd_update_impl(mock_args, gateway_mode=False)
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "desktop app rebuild failed" in out.lower() or "Desktop build failed" in out
+
+    def test_desktop_build_success_prints_complete(self, mock_args, capsys):
+        """When desktop build succeeds, update prints the normal success message."""
+        from hermes_cli import main as hm
+
+        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("shutil.which", side_effect=lambda x: "/usr/bin/npm" if x == "npm" else None), \
+             patch("subprocess.run", side_effect=self._make_update_side_effect(desktop_exit_code=0)), \
+             patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok), \
+             patch.object(hm, "_desktop_packaged_executable", return_value="/fake/Hermes.exe"), \
+             patch.object(hm, "_desktop_dist_exists", return_value=True):
+            hm._cmd_update_impl(mock_args, gateway_mode=False)
+
+        out = capsys.readouterr().out
+        assert "✓ Update complete!" in out
+
+    def test_desktop_build_failure_gateway_writes_exit_code_1(self, mock_args, tmp_path):
+        """In gateway mode, desktop build failure writes '1' to .update_exit_code."""
+        from hermes_cli import main as hm
+
+        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("shutil.which", side_effect=lambda x: "/usr/bin/npm" if x == "npm" else None), \
+             patch("subprocess.run", side_effect=self._make_update_side_effect(desktop_exit_code=1)), \
+             patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok), \
+             patch.object(hm, "_desktop_packaged_executable", return_value="/fake/Hermes.exe"), \
+             patch.object(hm, "_desktop_dist_exists", return_value=True), \
+             patch("hermes_cli.main.get_hermes_home", return_value=tmp_path), \
+             pytest.raises(SystemExit):
+            hm._cmd_update_impl(mock_args, gateway_mode=True)
+
+        exit_code_file = tmp_path / ".update_exit_code"
+        assert exit_code_file.exists()
+        assert exit_code_file.read_text() == "1"
+
+    def test_no_desktop_app_skips_build_and_exits_cleanly(self, mock_args, capsys):
+        """When no desktop app is installed, build is skipped and update succeeds."""
+        from hermes_cli import main as hm
+
+        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("shutil.which", side_effect=lambda x: None), \
+             patch("subprocess.run", side_effect=self._make_update_side_effect()), \
+             patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok), \
+             patch.object(hm, "_desktop_packaged_executable", return_value=None), \
+             patch.object(hm, "_desktop_dist_exists", return_value=False):
+            hm._cmd_update_impl(mock_args, gateway_mode=False)
+
+        out = capsys.readouterr().out
+        assert "✓ Update complete!" in out
+        assert "Desktop build" not in out
