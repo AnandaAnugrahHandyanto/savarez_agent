@@ -257,6 +257,9 @@ class _SlashWorker:
             cwd=os.getcwd(),
             env=os.environ.copy(),
         )
+        from tui_gateway.slash_worker_lifecycle import attach_slash_worker_kill_job
+
+        self._win_kill_job = attach_slash_worker_kill_job(self.proc)
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
 
@@ -639,6 +642,10 @@ def _start_idle_reaper() -> None:
 
 atexit.register(_shutdown_sessions)
 _start_idle_reaper()
+
+from tui_gateway.slash_worker_lifecycle import maybe_reap_orphan_slash_workers_on_startup
+
+maybe_reap_orphan_slash_workers_on_startup()
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
