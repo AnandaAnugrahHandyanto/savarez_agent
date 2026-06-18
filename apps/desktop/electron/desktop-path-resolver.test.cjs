@@ -23,3 +23,29 @@ test('desktop resolver PATH includes Homebrew before resolving GUI-launched bina
 
   assert.equal(found, '/opt/homebrew/bin/hermes')
 })
+
+
+test('desktop resolver honors Windows PATHEXT and delimiter semantics', () => {
+  const found = findExecutableOnPath('hermes', {
+    searchPath: 'C:\\Tools;C:\\Windows',
+    currentEnv: { PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+    platform: 'win32',
+    pathModule: path.win32,
+    fileExists: candidate => candidate === 'C:\\Tools\\hermes.EXE'
+  })
+
+  assert.equal(found, 'C:\\Tools\\hermes.EXE')
+})
+
+test('desktop resolver rejects direct Windows binary paths under WSL', () => {
+  const found = findExecutableOnPath('C:\\Windows\\System32\\git.exe', {
+    currentEnv: {},
+    platform: 'win32',
+    pathModule: path.win32,
+    fileExists: () => true,
+    isWindowsBinaryPathInWsl: (_candidate, { isWsl }) => isWsl,
+    isWsl: true
+  })
+
+  assert.equal(found, null)
+})
