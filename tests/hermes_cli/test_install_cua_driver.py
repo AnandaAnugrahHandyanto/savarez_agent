@@ -67,6 +67,45 @@ class TestInstallCuaDriverUpgrade:
             assert tools_config.install_cua_driver(upgrade=True) is True
             runner.assert_called_once()
 
+    def test_upgrade_on_macos_non_writable_applications_skips_refresh(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/local/bin/" + n
+                                                 if n in {"cua-driver", "curl"} else None), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=False), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch") as asset_check, \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch.object(tools_config, "_print_info") as info:
+            assert tools_config.install_cua_driver(upgrade=True) is True
+            asset_check.assert_not_called()
+            runner.assert_not_called()
+            assert any(
+                "/Applications is not writable" in call.args[0]
+                for call in info.call_args_list
+            )
+
+    def test_fresh_install_on_macos_non_writable_applications_skips_install(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=False), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch") as asset_check, \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch.object(tools_config, "_print_info") as info:
+            assert tools_config.install_cua_driver(upgrade=False) is False
+            asset_check.assert_not_called()
+            runner.assert_not_called()
+            assert any(
+                "/Applications is not writable" in call.args[0]
+                for call in info.call_args_list
+            )
+
     def test_non_upgrade_on_macos_with_binary_skips_install(self):
         from hermes_cli import tools_config
 
