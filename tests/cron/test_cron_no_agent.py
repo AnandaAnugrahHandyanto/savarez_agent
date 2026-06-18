@@ -257,8 +257,8 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
     success, doc, final_response, error = run_job(job)
     assert success is False
     assert error is not None
-    assert "oops" in final_response or "exited with code 3" in final_response
-    assert "Cron watchdog" in final_response  # alert header
+    assert "예약 스크립트가 정상 종료되지 않았습니다" in final_response
+    assert "예약 작업 실패" in final_response  # alert header
 
 
 def test_run_job_no_agent_never_invokes_aiagent(hermes_env):

@@ -114,7 +114,7 @@ class TestRunJobScript:
 
         success, output = _run_job_script("nonexistent_script.py")
         assert success is False
-        assert "not found" in output.lower()
+        assert "예약 스크립트를 찾지 못했습니다" in output
 
     def test_script_nonzero_exit(self, cron_env):
         from cron.scheduler import _run_job_script
@@ -129,8 +129,8 @@ class TestRunJobScript:
 
         success, output = _run_job_script(str(script))
         assert success is False
-        assert "exited with code 1" in output
-        assert "error info" in output
+        assert "예약 스크립트가 정상 종료되지 않았습니다" in output
+        assert "세부 오류는 로컬 실행 로그에 보관했습니다" in output
 
     def test_script_empty_output(self, cron_env):
         from cron.scheduler import _run_job_script
@@ -154,7 +154,7 @@ class TestRunJobScript:
 
         success, output = _run_job_script(str(script))
         assert success is False
-        assert "timed out" in output.lower()
+        assert "안에 끝나지 않았습니다" in output
 
     def test_script_json_output(self, cron_env):
         """Scripts can output structured JSON for the LLM to parse."""
@@ -200,7 +200,7 @@ class TestBuildJobPromptWithScript:
         }
         prompt = _build_job_prompt(job)
         assert "## Script Error" in prompt
-        assert "not found" in prompt.lower()
+        assert "예약 스크립트를 찾지 못했습니다" in prompt
         assert "Report status." in prompt
 
     def test_no_script_unchanged(self, cron_env):

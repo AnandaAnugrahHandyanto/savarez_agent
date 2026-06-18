@@ -15,6 +15,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -937,9 +938,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         )
 
     if not path.exists():
-        return False, f"Script not found: {path}"
+        return False, "예약 스크립트를 찾지 못했습니다"
     if not path.is_file():
-        return False, f"Script path is not a file: {path}"
+        return False, "예약 스크립트 경로가 파일이 아닙니다"
 
     script_timeout = _get_script_timeout()
 
@@ -989,19 +990,19 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             pass
 
         if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
-            if stderr:
-                parts.append(f"stderr:\n{stderr}")
-            if stdout:
-                parts.append(f"stdout:\n{stdout}")
+            parts = ["예약 스크립트가 정상 종료되지 않았습니다"]
+            if stdout and re.search(r"[가-힣]", stdout):
+                parts.append(stdout[-2000:])
+            elif stderr or stdout:
+                parts.append("세부 오류는 로컬 실행 로그에 보관했습니다")
             return False, "\n".join(parts)
 
         return True, stdout
 
     except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {script_timeout}s: {path}"
+        return False, f"예약 스크립트가 {script_timeout}초 안에 끝나지 않았습니다"
     except Exception as exc:
-        return False, f"Script execution failed: {exc}"
+        return False, "예약 스크립트 실행 중 예상치 못한 오류가 났습니다"
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -1366,16 +1367,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # error so the user knows the watchdog itself broke — silent
             # failure for an alerting job is the worst-case outcome.
             alert = (
-                f"⚠ Cron watchdog '{job_name}' script failed\n\n"
-                f"{output}\n\n"
-                f"Time: {now_iso}"
+                f"🔴 오늘 결정 — 예약 작업 실패: {job_name}\n"
+                "자동 점검/수집이 정상 완료되지 않았습니다. 다음 보고가 누락될 수 있습니다.\n"
+                "→ 해당 예약 작업을 수동 점검해 주세요.\n\n"
+                f"요약 단서:\n{output}"
             )
             doc = (
-                f"# Cron Job: {job_name}\n\n"
-                f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {now_iso}\n"
-                f"**Mode:** no_agent (script)\n"
-                f"**Status:** script failed\n\n"
+                f"# 예약 작업: {job_name}\n\n"
+                f"**실행 시각:** {now_iso}\n"
+                f"**상태:** 스크립트 실패\n\n"
                 f"{output}\n"
             )
             return False, doc, alert, output
@@ -1387,30 +1387,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 "Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id
             )
             silent_doc = (
-                f"# Cron Job: {job_name}\n\n"
-                f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {now_iso}\n"
-                f"**Mode:** no_agent (script)\n"
-                f"**Status:** silent (wakeAgent=false)\n"
+                f"# 예약 작업: {job_name}\n\n"
+                f"**실행 시각:** {now_iso}\n"
+                f"**상태:** 조용히 종료(wakeAgent=false)\n"
             )
             return True, silent_doc, SILENT_MARKER, None
 
         if not output.strip():
             logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
             silent_doc = (
-                f"# Cron Job: {job_name}\n\n"
-                f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {now_iso}\n"
-                f"**Mode:** no_agent (script)\n"
-                f"**Status:** silent (empty output)\n"
+                f"# 예약 작업: {job_name}\n\n"
+                f"**실행 시각:** {now_iso}\n"
+                f"**상태:** 조용히 종료(보고할 내용 없음)\n"
             )
             return True, silent_doc, SILENT_MARKER, None
 
         doc = (
-            f"# Cron Job: {job_name}\n\n"
-            f"**Job ID:** {job_id}\n"
-            f"**Run Time:** {now_iso}\n"
-            f"**Mode:** no_agent (script)\n\n"
+            f"# 예약 작업: {job_name}\n\n"
+            f"**실행 시각:** {now_iso}\n\n"
             f"---\n\n"
             f"{output}\n"
         )
@@ -1448,10 +1442,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_name, job_id,
             )
             silent_doc = (
-                f"# Cron Job: {job_name}\n\n"
-                f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                "Script gate returned `wakeAgent=false` — agent skipped.\n"
+                f"# 예약 작업: {job_name}\n\n"
+                f"**실행 시각:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "보고할 내용이 없어 실행을 건너뜀.\n"
             )
             return True, silent_doc, SILENT_MARKER, None
 
@@ -1873,17 +1866,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         
-        output = f"""# Cron Job: {job_name}
+        output = f"""# 예약 작업: {job_name}
 
-**Job ID:** {job_id}
-**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
-**Schedule:** {job.get('schedule_display', 'N/A')}
+**실행 시각:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**일정:** {job.get('schedule_display', 'N/A')}
 
-## Prompt
-
-{prompt}
-
-## Response
+## 응답
 
 {logged_response}
 """
@@ -1895,17 +1883,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
-        output = f"""# Cron Job: {job_name} (FAILED)
+        output = f"""# 예약 작업: {job_name} (실패)
 
-**Job ID:** {job_id}
-**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
-**Schedule:** {job.get('schedule_display', 'N/A')}
+**실행 시각:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**일정:** {job.get('schedule_display', 'N/A')}
 
-## Prompt
-
-{prompt}
-
-## Error
+## 오류
 
 ```
 {error_msg}
