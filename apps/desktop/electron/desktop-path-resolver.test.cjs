@@ -49,3 +49,22 @@ test('desktop resolver rejects direct Windows binary paths under WSL', () => {
 
   assert.equal(found, null)
 })
+
+
+test('desktop resolver PATH matches backend PATH policy for bootstrap discovery', () => {
+  const resolverPath = buildDesktopResolverPath({
+    hermesHome: '/Users/alice/.hermes',
+    venvRoot: '/Users/alice/.hermes/hermes-agent/venv',
+    currentEnv: { PATH: '/usr/bin:/bin' },
+    platform: 'darwin',
+    pathModule: path.posix
+  })
+
+  assert.deepEqual(resolverPath.split(':').slice(0, 4), [
+    '/Users/alice/.hermes/node/bin',
+    '/Users/alice/.hermes/hermes-agent/venv/bin',
+    '/usr/bin',
+    '/bin'
+  ])
+  assert.ok(resolverPath.split(':').includes('/opt/homebrew/bin'))
+})

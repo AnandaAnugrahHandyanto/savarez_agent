@@ -276,8 +276,10 @@ const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
 const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
 // GUI-launched macOS apps often inherit a minimal PATH that omits Homebrew.
-// Resolve desktop prerequisites against the same augmented PATH we pass to the
-// backend so Hermes, Python, and Git can be found before the backend exists.
+// Resolve desktop bootstrap prerequisites against the same augmented PATH we
+// pass to the backend so Hermes, Python, Git, and shell probes are discovered
+// from one explicit trust boundary: the Hermes-managed backend environment.
+// Keep callers that should remain system-PATH-only off findOnPath().
 const DESKTOP_RESOLVER_PATH = buildDesktopResolverPath({
   hermesHome: HERMES_HOME,
   venvRoot: VENV_ROOT,
@@ -1104,6 +1106,9 @@ function unpackedPathFor(filePath) {
 }
 
 function findOnPath(command) {
+  // Backend-aligned lookup by design: every current caller is part of desktop
+  // bootstrap/update/backend discovery and should see the same PATH the backend
+  // subprocess will receive. Add a separate helper for future system-only probes.
   return findExecutableOnPath(command, {
     searchPath: DESKTOP_RESOLVER_PATH,
     currentEnv: process.env,
