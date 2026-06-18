@@ -834,8 +834,14 @@ def mcp_command(args):
     action = getattr(args, "mcp_action", None)
 
     if action == "serve":
-        from mcp_serve import run_mcp_server
-        run_mcp_server(verbose=getattr(args, "verbose", False))
+        import importlib
+        mcp_serve = importlib.import_module("mcp_serve")
+        if getattr(args, "profile_router", False):
+            mcp_serve.run_profile_router_mcp_server(
+                verbose=getattr(args, "verbose", False)
+            )
+        else:
+            mcp_serve.run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 
     # Catalog subcommands live in mcp_picker / mcp_catalog. Import lazily so
@@ -880,7 +886,8 @@ def mcp_command(args):
         _info("hermes mcp                                    Open the catalog picker (default)")
         _info("hermes mcp catalog                            List Nous-approved MCPs")
         _info("hermes mcp install <name>                     Install a catalog MCP")
-        _info("hermes mcp serve                              Run as MCP server")
+        _info("hermes mcp serve                              Run conversation bridge MCP server")
+        _info("hermes mcp serve --profile-router             Run no-model profile router MCP server")
         _info("hermes mcp add <name> --url <endpoint>        Add a custom MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
         _info("hermes mcp add <name> --preset <preset>       Add from a known preset")

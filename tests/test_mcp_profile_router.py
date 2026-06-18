@@ -1,4 +1,6 @@
+import argparse
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,6 +16,33 @@ from mcp_profile_router import (
     profile_health,
     profiles_list,
 )
+
+
+class _FakeTool:
+    def __init__(self, fn):
+        self.name = fn.__name__
+        self.description = fn.__doc__ or ""
+        self.fn = fn
+
+
+class _FakeToolManager:
+    def __init__(self):
+        self._tools = {}
+
+    def add_tool(self, fn):
+        self._tools[fn.__name__] = _FakeTool(fn)
+
+
+class _FakeFastMCP:
+    def __init__(self, *args, **kwargs):
+        self._tool_manager = _FakeToolManager()
+
+    def tool(self):
+        def decorator(fn):
+            self._tool_manager.add_tool(fn)
+            return fn
+
+        return decorator
 
 
 @pytest.fixture
@@ -98,3 +127,48 @@ def test_profile_get_and_health_are_local_only_no_model_wrappers(hermes_home):
     assert missing["ok"] is False
     assert missing["error"]["code"] == "profile_not_found"
     assert missing["llm_calls"] == 0
+
+
+def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
+    hermes_home,
+    monkeypatch,
+):
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+
+    server = mcp_serve.create_profile_router_mcp_server()
+    tools = server._tool_manager._tools
+
+    assert set(tools) == {"profiles_list", "profile_get", "profile_health"}
+    assert "messages_send" not in tools
+    assert "conversations_list" not in tools
+
+    listed = json.loads(tools["profiles_list"].fn())
+    assert listed["ok"] is True
+    assert listed["cost_class"] == COST_CLASS_NO_MODEL
+    assert listed["llm_calls"] == 0
+
+
+def test_mcp_serve_profile_router_parser_flag_sets_explicit_surface():
+    from hermes_cli.subcommands.mcp import build_mcp_parser
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_mcp_parser(sub, cmd_mcp=lambda args: None)
+
+    args = parser.parse_args(["mcp", "serve", "--profile-router"])
+    assert args.mcp_action == "serve"
+    assert args.profile_router is True
+
+
+def test_mcp_command_routes_profile_router_serve(monkeypatch):
+    mock_run = MagicMock()
+    monkeypatch.setattr("mcp_serve.run_profile_router_mcp_server", mock_run)
+
+    from hermes_cli.mcp_config import mcp_command
+
+    args = argparse.Namespace(mcp_action="serve", verbose=True, profile_router=True)
+    mcp_command(args)
+    mock_run.assert_called_once_with(verbose=True)

@@ -859,6 +859,57 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     return mcp
 
 
+def create_profile_router_mcp_server():
+    """Create the no-model Hermes profile-router MCP server.
+
+    This is intentionally separate from ``create_mcp_server()`` because the
+    legacy conversation bridge includes messaging and approval tools. The
+    ChatGPT-facing profile router starts from an allowlist of read-only profile
+    inventory tools, each with explicit no-model cost metadata in the returned
+    envelope.
+    """
+    if not _MCP_SERVER_AVAILABLE or FastMCP is None:
+        raise ImportError(
+            "MCP server requires the 'mcp' package. "
+            f"Install with: {sys.executable} -m pip install 'mcp'"
+        )
+
+    from mcp_profile_router import (
+        assert_default_tools_are_no_model,
+        profile_get as _profile_get,
+        profile_health as _profile_health,
+        profiles_list as _profiles_list,
+    )
+
+    assert_default_tools_are_no_model()
+    mcp = FastMCP(
+        "hermes-profile-router",
+        instructions=(
+            "Hermes Agent no-model profile router. This surface exposes only "
+            "read-only profile inventory tools: profiles_list, profile_get, "
+            "and profile_health. It does not expose conversation messaging, "
+            "filesystem, terminal, cron, or agent-loop execution tools."
+        ),
+    )
+
+    @mcp.tool()
+    def profiles_list(active_only: bool = True) -> str:
+        """List enabled Hermes profiles as fully qualified refs with no LLM calls."""
+        return _profiles_list(active_only=active_only)
+
+    @mcp.tool()
+    def profile_get(profile_ref: str) -> str:
+        """Get non-secret metadata for one fully qualified Hermes profile ref."""
+        return _profile_get(profile_ref)
+
+    @mcp.tool()
+    def profile_health(profile_ref: str) -> str:
+        """Report read-only profile health without invoking any model or tool."""
+        return _profile_health(profile_ref)
+
+    return mcp
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -895,3 +946,31 @@ def run_mcp_server(verbose: bool = False) -> None:
         asyncio.run(_run())
     except KeyboardInterrupt:
         bridge.stop()
+
+
+def run_profile_router_mcp_server(verbose: bool = False) -> None:
+    """Start the no-model Hermes profile-router MCP server on stdio."""
+    if not _MCP_SERVER_AVAILABLE:
+        print(
+            "Error: MCP server requires the 'mcp' package.\n"
+            f"Install with: {sys.executable} -m pip install 'mcp'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
+    else:
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    server = create_profile_router_mcp_server()
+
+    import asyncio
+
+    async def _run():
+        await server.run_stdio_async()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        return
