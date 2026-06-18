@@ -327,6 +327,45 @@ async def test_plugin_registered_command_is_gated(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_quick_command_is_gated_for_non_admin():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+        }
+    )
+    runner.config.quick_commands = {
+        "limits": {"type": "exec", "command": "echo quick-command-bypass"}
+    }
+
+    result = await runner._handle_message(
+        _make_event("/limits", _make_source(user_id="999"))
+    )
+
+    assert "quick-command-bypass" not in result
+    assert "/limits is admin-only here" in result
+
+
+@pytest.mark.asyncio
+async def test_listed_quick_command_runs_for_non_admin():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["limits"],
+        }
+    )
+    runner.config.quick_commands = {
+        "limits": {"type": "exec", "command": "echo quick-command-allowed"}
+    }
+
+    result = await runner._handle_message(
+        _make_event("/limits", _make_source(user_id="999"))
+    )
+
+    assert result == "quick-command-allowed"
+
+
+@pytest.mark.asyncio
 async def test_running_agent_fastpath_blocks_non_admin_command():
     """When an agent is running, /restart from a non-admin must be denied."""
     runner = _make_runner(
