@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 import subprocess
 from unittest.mock import MagicMock
@@ -37,9 +38,18 @@ from mcp_profile_router import (
     workspace_close,
     workspace_context_status,
     workspace_diff,
+    workspace_file_list,
+    workspace_file_read,
     workspace_get,
     workspace_instructions_get,
     workspace_open,
+)
+from mcp_profile_router_auth import (
+    DEFAULT_PROFILE_ROUTER_SCOPES,
+    ProfileRouterAuditLogger,
+    ProfileRouterBearerTokenVerifier,
+    ProfileRouterTokenStore,
+    extract_result_audit_fields,
 )
 
 
@@ -60,6 +70,8 @@ class _FakeToolManager:
 
 class _FakeFastMCP:
     def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
         self._tool_manager = _FakeToolManager()
 
     def tool(self):
@@ -139,10 +151,11 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "workspace_context_status",
         "workspace_get",
         "workspace_close",
-        "file_read",
-        "file_search",
+        "workspace_file_list",
+        "workspace_file_read",
+        "workspace_diff",
     }
-    disabled_power_tools = {"file_patch", "file_write", "workspace_diff", "terminal_run"}
+    disabled_power_tools = {"file_read", "file_search", "file_patch", "file_write", "terminal_run"}
     assert set(metadata) == public_tools | disabled_power_tools
 
     for name in public_tools:
@@ -151,7 +164,7 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is True
         assert tool["mutates_state"] is False
-        assert tool["requires_context"] is False
+        assert tool["requires_context"] is (name in {"workspace_file_list", "workspace_file_read", "workspace_diff"})
 
     for name in disabled_power_tools:
         tool = metadata[name]
@@ -547,6 +560,11 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     workspace_root.mkdir(parents=True)
     notes = workspace_root / "notes.md"
     notes.write_text("alpha\nbeta\nalpha again\n", encoding="utf-8")
+    (workspace_root / "config.md").write_text("api_key=abc123\nvisible=yes\n", encoding="utf-8")
+    (workspace_root / "tokens.txt").write_text("token=abc123\n", encoding="utf-8")
+    git_dir = workspace_root / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text("[remote]\nurl=https://token@example.invalid/repo.git\n", encoding="utf-8")
     (workspace_root / ".env.local").write_text("SECRET=1\n", encoding="utf-8")
     (workspace_root / "binary.bin").write_bytes(b"alpha\x00secret")
 
@@ -576,24 +594,51 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
         "next_tool": "workspace_instructions_get",
     }
 
-    read_result = json.loads(file_read(workspace["workspace_id"], "notes.md", offset=2, limit=1))
+    read_without_context = json.loads(workspace_file_read(workspace["workspace_id"], "notes.md"))
+    assert read_without_context["ok"] is False
+    assert read_without_context["error"]["code"] == "context_not_loaded"
+
+    token = json.loads(workspace_instructions_get(workspace["workspace_id"]))["context"]["context_token"]
+    list_result = json.loads(
+        workspace_file_list(workspace["workspace_id"], file_glob="*.md", context_token=token)
+    )
+    assert list_result["ok"] is True
+    assert any(entry["path"] == "notes.md" for entry in list_result["file_list"]["entries"])
+
+    read_result = json.loads(
+        workspace_file_read(workspace["workspace_id"], "notes.md", offset=2, limit=1, context_token=token)
+    )
     assert read_result["ok"] is True
     assert read_result["llm_calls"] == 0
     assert read_result["file"]["content"] == "beta\n"
     assert read_result["file"]["truncated"] is True
 
-    secret = json.loads(file_read(workspace["workspace_id"], ".env.local"))
+    secret = json.loads(workspace_file_read(workspace["workspace_id"], ".env.local", context_token=token))
     assert secret["ok"] is False
     assert secret["error"]["code"] == "secret_path_denied"
     assert secret["llm_calls"] == 0
 
-    binary = json.loads(file_read(workspace["workspace_id"], "binary.bin"))
+    binary = json.loads(workspace_file_read(workspace["workspace_id"], "binary.bin", context_token=token))
     assert binary["ok"] is False
     assert binary["error"]["code"] == "binary_file_not_supported"
     assert binary["llm_calls"] == 0
 
+    redacted = json.loads(workspace_file_read(workspace["workspace_id"], "config.md", context_token=token))
+    assert redacted["ok"] is True
+    assert "api_key=[REDACTED]" in redacted["file"]["content"]
+    assert "abc123" not in redacted["file"]["content"]
+    assert "visible=yes" in redacted["file"]["content"]
+
+    secret_name = json.loads(workspace_file_read(workspace["workspace_id"], "tokens.txt", context_token=token))
+    assert secret_name["ok"] is False
+    assert secret_name["error"]["code"] == "secret_path_denied"
+
+    git_metadata = json.loads(workspace_file_read(workspace["workspace_id"], ".git/config", context_token=token))
+    assert git_metadata["ok"] is False
+    assert git_metadata["error"]["code"] == "secret_path_denied"
+
     search_result = json.loads(
-        file_search(workspace["workspace_id"], "alpha", file_glob="*.md")
+        file_search(workspace["workspace_id"], "alpha", file_glob="*.md", context_token=token)
     )
     assert search_result["ok"] is True
     assert search_result["llm_calls"] == 0
@@ -606,13 +651,14 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
             "alpha",
             file_glob="*.md",
             output_mode="files_only",
+            context_token=token,
         )
     )
     assert files_only["ok"] is True
     assert files_only["search"]["files"] == ["notes.md"]
     assert files_only["llm_calls"] == 0
 
-    missing_workspace = json.loads(file_read("ws_missing", "notes.md"))
+    missing_workspace = json.loads(workspace_file_read("ws_missing", "notes.md", context_token=token))
     assert missing_workspace["ok"] is False
     assert missing_workspace["error"]["code"] == "workspace_not_found"
     assert missing_workspace["llm_calls"] == 0
@@ -1263,7 +1309,7 @@ def test_terminal_private_runner_executes_allowlisted_commands_but_not_public(
     monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
     server = mcp_serve.create_profile_router_mcp_server()
     assert "terminal_run" not in server._tool_manager._tools
-    assert "workspace_diff" not in server._tool_manager._tools
+    assert "workspace_diff" in server._tool_manager._tools
     dumped = json.dumps(direct)
     assert "pwd" not in dumped
     assert str(workspace_root) not in dumped
@@ -1561,7 +1607,7 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
         "root_exposed": False,
         "uses_shell": False,
         "git_read_only": True,
-        "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+        "public_mcp_exposure": "enabled_read_only_v1",
     }
     assert "-alpha" in diff["diff"]["unified"]
     assert "+beta" in diff["diff"]["unified"]
@@ -1695,8 +1741,9 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         "workspace_context_status",
         "workspace_get",
         "workspace_close",
-        "file_read",
-        "file_search",
+        "workspace_file_list",
+        "workspace_file_read",
+        "workspace_diff",
     }
     metadata_public_tools = {
         name
@@ -1709,7 +1756,9 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
     assert "messages_send" not in tools
     assert "conversations_list" not in tools
     assert "terminal_run" not in tools
-    assert "workspace_diff" not in tools
+    assert "workspace_diff" in tools
+    assert "file_read" not in tools
+    assert "file_search" not in tools
     assert "file_patch" not in tools
     assert "file_write" not in tools
 
@@ -1729,6 +1778,13 @@ def test_mcp_serve_profile_router_parser_flag_sets_explicit_surface():
     args = parser.parse_args(["mcp", "serve", "--profile-router"])
     assert args.mcp_action == "serve"
     assert args.profile_router is True
+    assert args.transport == "stdio"
+    assert args.host == "127.0.0.1"
+    assert args.port == 8765
+
+    http_args = parser.parse_args(["mcp", "serve", "--profile-router", "--http"])
+    assert http_args.profile_router is True
+    assert http_args.http is True
 
 
 def test_mcp_command_routes_profile_router_serve(monkeypatch):
@@ -1739,4 +1795,146 @@ def test_mcp_command_routes_profile_router_serve(monkeypatch):
 
     args = argparse.Namespace(mcp_action="serve", verbose=True, profile_router=True)
     mcp_command(args)
-    mock_run.assert_called_once_with(verbose=True)
+    mock_run.assert_called_once_with(
+        verbose=True,
+        transport="stdio",
+        host="127.0.0.1",
+        port=8765,
+        streamable_http_path="/mcp",
+    )
+
+    mock_run.reset_mock()
+    args = argparse.Namespace(
+        mcp_action="serve",
+        verbose=False,
+        profile_router=True,
+        http=True,
+        transport="stdio",
+        host="127.0.0.1",
+        port=9999,
+        streamable_http_path="/router",
+    )
+    mcp_command(args)
+    mock_run.assert_called_once_with(
+        verbose=False,
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=9999,
+        streamable_http_path="/router",
+    )
+
+
+def test_profile_router_token_store_hashes_verifies_revokes_and_rotates(tmp_path):
+    store = ProfileRouterTokenStore(tmp_path / "tokens.json")
+    created = store.create_token(name="chatgpt")
+    raw_token = created["token"]
+    record = created["record"]
+
+    assert raw_token.startswith("hpr_prt_")
+    assert record["token_id"].startswith("prt_")
+    assert record["scopes"] == list(DEFAULT_PROFILE_ROUTER_SCOPES)
+    assert raw_token not in (tmp_path / "tokens.json").read_text(encoding="utf-8")
+    assert "token_hash_prefix" in record
+
+    verified = store.verify_token(raw_token, required_scopes=["context:read"])
+    assert verified is not None
+    assert verified.token_id == record["token_id"]
+    assert verified.scopes == DEFAULT_PROFILE_ROUTER_SCOPES
+    assert store.verify_token(raw_token, required_scopes=["context:read", "diff:read"]) is not None
+
+    listed = store.list_tokens()
+    assert listed[0]["last_used_at"] is not None
+    assert raw_token not in json.dumps(listed)
+
+    revoked = store.revoke_token(record["token_id"])
+    assert revoked["revoked_at"] is not None
+    assert store.verify_token(raw_token) is None
+
+    rotated = store.rotate_token(record["token_id"])
+    assert rotated["token"] != raw_token
+    assert rotated["record"]["token_id"] != record["token_id"]
+    assert store.verify_token(rotated["token"]) is not None
+
+
+def test_profile_router_bearer_verifier_and_audit_log_are_secret_safe(tmp_path):
+    store = ProfileRouterTokenStore(tmp_path / "tokens.json")
+    created = store.create_token(scopes=["context:read"], name="ctx-only")
+    verifier = ProfileRouterBearerTokenVerifier(store)
+
+    access_token = asyncio.run(verifier.verify_token(created["token"]))
+    assert access_token is not None
+    assert access_token.client_id == created["record"]["token_id"]
+    assert access_token.scopes == ["context:read"]
+    assert access_token.token == created["record"]["token_hash_prefix"]
+    assert created["token"] not in json.dumps(access_token.model_dump())
+
+    result = json.dumps(
+        {
+            "ok": True,
+            "llm_calls": 0,
+            "file": {"content": "SECRET=should-not-log", "truncated": True},
+        }
+    )
+    audit_fields = extract_result_audit_fields(result)
+    assert audit_fields == {
+        "ok": True,
+        "error": None,
+        "llm_calls": 0,
+        "bytes": len(result.encode("utf-8")),
+        "truncated": True,
+    }
+
+    logger = ProfileRouterAuditLogger(tmp_path / "audit.jsonl")
+    logger.append(
+        {
+            "token_id": access_token.client_id,
+            "token_hash_prefix": access_token.token,
+            "profile": "local:main-bot",
+            "workspace_id": "ws_test",
+            "tool": "workspace_file_read",
+            "scope": "workspace:read",
+            **audit_fields,
+        }
+    )
+    audit_line = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert created["token"] not in audit_line
+    assert "Authorization" not in audit_line
+    assert "should-not-log" not in audit_line
+    entry = json.loads(audit_line)
+    assert entry["token_id"] == access_token.client_id
+    assert entry["tool"] == "workspace_file_read"
+    assert entry["llm_calls"] == 0
+    assert entry["bytes"] == len(result.encode("utf-8"))
+
+
+def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_tools(
+    monkeypatch,
+    tmp_path,
+):
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+
+    server = mcp_serve.create_profile_router_mcp_server(
+        http_auth=True,
+        host="127.0.0.1",
+        port=8765,
+        token_store_path=str(tmp_path / "tokens.json"),
+        audit_log_path=str(tmp_path / "audit.jsonl"),
+    )
+    tools = set(server._tool_manager._tools)
+    assert tools == {
+        name
+        for name, tool in get_router_tool_metadata().items()
+        if tool["enabled_by_default"]
+    }
+    server_kwargs = getattr(server, "kwargs")
+    assert server_kwargs["host"] == "127.0.0.1"
+    assert server_kwargs["port"] == 8765
+    assert server_kwargs["streamable_http_path"] == "/mcp"
+    assert server_kwargs["token_verifier"].store.path == tmp_path / "tokens.json"
+    assert server_kwargs["auth"].required_scopes == []
+    assert "terminal_run" not in tools
+    assert "file_patch" not in tools
+    assert "file_write" not in tools

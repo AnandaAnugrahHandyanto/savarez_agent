@@ -9,6 +9,7 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -827,6 +828,43 @@ def cmd_mcp_configure(args):
     _info("Start a new session for changes to take effect.")
 
 
+# ─── Profile-router bearer token UX ──────────────────────────────────────────
+
+def cmd_profile_router_token(args):
+    """Manage hash-stored bearer tokens for the profile-router HTTP server."""
+
+    import importlib
+
+    auth_mod = importlib.import_module("mcp_profile_router_auth")
+    try:
+        store = auth_mod.ProfileRouterTokenStore()
+        action = getattr(args, "token_action", None) or "list"
+        if action == "create":
+            created = store.create_token(
+                scopes=getattr(args, "scopes", None) or auth_mod.DEFAULT_PROFILE_ROUTER_SCOPES,
+                name=getattr(args, "name", "") or "",
+                expires_at=getattr(args, "expires_at", None),
+            )
+            print(json.dumps({"ok": True, **created}, indent=2, sort_keys=True))
+            _warning("Copy the token now; Hermes stores only its hash and cannot show it again.")
+            return
+        if action in {"list", "ls"}:
+            print(json.dumps({"ok": True, "tokens": store.list_tokens()}, indent=2, sort_keys=True))
+            return
+        if action == "revoke":
+            revoked = store.revoke_token(getattr(args, "token_id", ""))
+            print(json.dumps({"ok": True, "revoked": revoked}, indent=2, sort_keys=True))
+            return
+        if action == "rotate":
+            rotated = store.rotate_token(getattr(args, "token_id", ""))
+            print(json.dumps({"ok": True, **rotated}, indent=2, sort_keys=True))
+            _warning("Copy the replacement token now; Hermes stores only its hash and cannot show it again.")
+            return
+        _error("Usage: hermes mcp profile-router-token create|list|revoke|rotate")
+    except auth_mod.ProfileRouterAuthError as exc:
+        _error(f"{exc.code}: {exc.message}")
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
@@ -837,8 +875,13 @@ def mcp_command(args):
         import importlib
         mcp_serve = importlib.import_module("mcp_serve")
         if getattr(args, "profile_router", False):
+            transport = "streamable-http" if getattr(args, "http", False) else getattr(args, "transport", "stdio")
             mcp_serve.run_profile_router_mcp_server(
-                verbose=getattr(args, "verbose", False)
+                verbose=getattr(args, "verbose", False),
+                transport=transport,
+                host=getattr(args, "host", "127.0.0.1"),
+                port=getattr(args, "port", 8765),
+                streamable_http_path=getattr(args, "streamable_http_path", "/mcp"),
             )
         else:
             mcp_serve.run_mcp_server(verbose=getattr(args, "verbose", False))
@@ -863,6 +906,8 @@ def mcp_command(args):
         return
 
     handlers = {
+        "profile-router-token": cmd_profile_router_token,
+        "profile-router-tokens": cmd_profile_router_token,
         "add": cmd_mcp_add,
         "remove": cmd_mcp_remove,
         "rm": cmd_mcp_remove,
@@ -887,7 +932,9 @@ def mcp_command(args):
         _info("hermes mcp catalog                            List Nous-approved MCPs")
         _info("hermes mcp install <name>                     Install a catalog MCP")
         _info("hermes mcp serve                              Run conversation bridge MCP server")
-        _info("hermes mcp serve --profile-router             Run no-model profile router MCP server")
+        _info("hermes mcp serve --profile-router             Run no-model profile router MCP server over stdio")
+        _info("hermes mcp serve --profile-router --http      Run localhost HTTP profile router with bearer auth")
+        _info("hermes mcp profile-router-token create       Generate a bearer token for HTTP profile router")
         _info("hermes mcp add <name> --url <endpoint>        Add a custom MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
         _info("hermes mcp add <name> --preset <preset>       Add from a known preset")

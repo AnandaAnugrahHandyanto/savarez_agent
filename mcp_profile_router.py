@@ -51,15 +51,41 @@ DEFAULT_PROTECTED_BRANCHES = ("main", "master", "develop", "production")
 DEFAULT_ALLOWED_COST_CLASSES = (COST_CLASS_NO_MODEL,)
 SECRET_PATH_NAMES = frozenset(
     {
+        ".aws",
+        ".azure",
+        ".config/gcloud",
+        ".env",
+        ".git",
+        ".git-credentials",
+        ".gnupg",
+        ".hermes",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
         ".ssh",
         "auth.json",
+        "credentials",
+        "credentials.json",
+        "funciones.txt",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "id_rsa",
         "mcp_tokens",
         "mcp_tokens.json",
+        "secrets.json",
     }
 )
 SECRET_PATH_PREFIXES = (".env.",)
+SENSITIVE_PATH_RE = re.compile(
+    r"(?i)(^|[._-])"
+    r"(api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|"
+    r"credential|credentials|passwd|password|private[_-]?key|secret|secrets|token|tokens)"
+    r"($|[._-])"
+)
 MAX_FILE_READ_LINES = 200
 MAX_FILE_READ_CHARS = 60_000
+MAX_FILE_LIST_RESULTS = 200
 MAX_FILE_SEARCH_RESULTS = 50
 MAX_FILE_SEARCH_BYTES = 1_000_000
 MAX_SEARCH_LINE_CHARS = 500
@@ -453,11 +479,19 @@ def _normalize_absolute_host_path(path: str, field: str) -> str:
 
 def _is_secret_path(path: str) -> bool:
     normalized = posixpath.normpath(path)
-    parts = [part.lower() for part in normalized.split("/") if part]
-    for part in parts:
-        if part == ".env" or part in SECRET_PATH_NAMES:
+    normalized_lower = normalized.lower()
+    if normalized_lower in SECRET_PATH_NAMES:
+        return True
+    parts = [part.lower() for part in normalized_lower.split("/") if part]
+    for index, part in enumerate(parts):
+        joined_tail = "/".join(parts[index:])
+        if part in SECRET_PATH_NAMES or joined_tail in SECRET_PATH_NAMES:
             return True
         if any(part.startswith(prefix) for prefix in SECRET_PATH_PREFIXES):
+            return True
+        if part.endswith((".key", ".pem", ".p12", ".pfx")):
+            return True
+        if SENSITIVE_PATH_RE.search(part):
             return True
     return False
 
@@ -747,17 +781,35 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
     ),
-    "file_read": RouterToolMetadata(
-        name="file_read",
-        description="Read a paginated text file through an opened read-only workspace.",
+    "workspace_file_list": RouterToolMetadata(
+        name="workspace_file_list",
+        description="List bounded, sanitized files after workspace context hydration.",
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
+        requires_context=True,
+    ),
+    "workspace_file_read": RouterToolMetadata(
+        name="workspace_file_read",
+        description="Read a bounded sanitized file slice after workspace context hydration.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        requires_context=True,
+    ),
+    "file_read": RouterToolMetadata(
+        name="file_read",
+        description="Legacy direct file-read alias; public v1 uses workspace_file_read.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        requires_context=True,
     ),
     "file_search": RouterToolMetadata(
         name="file_search",
-        description="Search text files through an opened read-only workspace.",
+        description="Legacy direct file-search helper; not registered on the public v1 HTTP surface.",
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
+        enabled_by_default=False,
+        requires_context=True,
     ),
     "file_patch": RouterToolMetadata(
         name="file_patch",
@@ -786,12 +838,12 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
     "workspace_diff": RouterToolMetadata(
         name="workspace_diff",
         description=(
-            "Direct Git diff/audit tool; disabled from default public MCP exposure "
-            "until HTTP/auth/config UX review and always requires fresh workspace context."
+            "Public v1 read-only Git diff/audit tool; requires fresh workspace "
+            "context and returns bounded sanitized output with llm_calls=0."
         ),
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
-        enabled_by_default=False,
+        enabled_by_default=True,
         mutates_state=False,
         requires_context=True,
     ),
@@ -1123,17 +1175,35 @@ def _hash_file(path: Path) -> tuple[str, bool]:
     return digest.hexdigest(), truncated
 
 
-def _redact_context_excerpt(text: str) -> str:
-    """Best-effort secret redaction for bounded instruction excerpts."""
+def _redact_sensitive_text_fields(text: str) -> str:
+    """Best-effort redaction for secret-looking fields in bounded outputs."""
 
+    if not isinstance(text, str) or not text:
+        return text
     redacted = re.sub(
-        r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*=\s*[^\s]+",
-        r"\1=[REDACTED]",
+        r"(?im)(\b[A-Z0-9_.-]*(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|"
+        r"REFRESH[_-]?TOKEN|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|"
+        r"CREDENTIALS?)[A-Z0-9_.-]*\b\s*[:=]\s*)"
+        r"([^\s,;#]+|\"[^\"\n]*\"|'[^'\n]*')",
+        r"\1[REDACTED]",
         text,
+    )
+    redacted = re.sub(
+        r"(?im)(\"(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|"
+        r"token|secret|password|passwd|private[_-]?key|credentials?)\"\s*:\s*)"
+        r"(\"[^\"\n]*\"|[^,}\n]+)",
+        r"\1\"[REDACTED]\"",
+        redacted,
     )
     redacted = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", redacted)
     redacted = re.sub(r"\b(?:sk|pk|xox[baprs])-[-A-Za-z0-9_]{12,}\b", "[REDACTED_TOKEN]", redacted)
     return redacted
+
+
+def _redact_context_excerpt(text: str) -> str:
+    """Best-effort secret redaction for bounded instruction excerpts."""
+
+    return _redact_sensitive_text_fields(text)
 
 
 def _read_context_file(path: Path, public_path: str) -> dict:
@@ -1280,12 +1350,6 @@ def _workspace_funciones_metadata(workspace: WorkspaceMetadata) -> dict:
     }
     candidate = Path(workspace.root) / FUNCIONES_TXT_FILENAME
     if not candidate.exists():
-        return metadata
-    try:
-        resolve_workspace_path(workspace, FUNCIONES_TXT_FILENAME)
-    except ProfileRouterError as exc:
-        metadata["exists"] = True
-        metadata["status"] = exc.code
         return metadata
     metadata["exists"] = True
     metadata["status"] = "excluded_from_context_bundle"
@@ -1508,13 +1572,118 @@ def read_workspace_file(
     except OSError as exc:
         raise ProfileRouterError("file_not_readable", f"File is not readable: {path}") from exc
 
+    content = _redact_sensitive_text_fields("".join(selected_lines))
     return {
         "workspace_id": workspace.workspace_id,
         "path": posixpath.normpath(path.strip() or "."),
         "offset": line_offset,
         "limit": line_limit,
-        "content": "".join(selected_lines),
+        "content": content,
         "lines_returned": len(selected_lines),
+        "truncated": truncated,
+    }
+
+
+def _list_workspace_file_entry(workspace: WorkspaceMetadata, path: Path) -> dict:
+    rel_path = _workspace_relative_path(workspace, path)
+    try:
+        stat = path.stat()
+    except OSError:
+        stat = None
+    return {
+        "path": rel_path,
+        "type": "directory" if path.is_dir() else "file",
+        "size_bytes": stat.st_size if stat is not None and path.is_file() else None,
+    }
+
+
+def list_workspace_files(
+    workspace_id: str,
+    *,
+    path: str | None = None,
+    file_glob: str | None = None,
+    limit: int | None = MAX_FILE_LIST_RESULTS,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """List bounded, sanitized workspace files after context hydration."""
+
+    assert_default_tools_are_no_model()
+    max_results = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_FILE_LIST_RESULTS,
+        minimum=1,
+        maximum=MAX_FILE_LIST_RESULTS,
+    )
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    list_path = path if path is not None else "."
+    root = Path(resolve_workspace_path(workspace, list_path))
+    normalized_glob = file_glob.strip() if isinstance(file_glob, str) and file_glob.strip() else None
+    entries: list[dict] = []
+    skipped: list[dict] = []
+    truncated = False
+
+    if root.is_file():
+        rel_path = _workspace_relative_path(workspace, root)
+        if not normalized_glob or fnmatch.fnmatch(rel_path, normalized_glob) or fnmatch.fnmatch(root.name, normalized_glob):
+            entries.append(_list_workspace_file_entry(workspace, root))
+        return {
+            "workspace_id": workspace.workspace_id,
+            "path": posixpath.normpath((list_path or ".").strip() or "."),
+            "file_glob": file_glob,
+            "entries": entries,
+            "skipped": skipped,
+            "limit": max_results,
+            "truncated": False,
+        }
+    if not root.is_dir():
+        raise ProfileRouterError("not_a_directory", "workspace_file_list path must be a file or directory")
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        rel_dir = _workspace_relative_path(workspace, current)
+        safe_dirnames = []
+        for dirname in dirnames:
+            child_rel = posixpath.normpath(posixpath.join(rel_dir, dirname))
+            try:
+                resolve_workspace_path(workspace, child_rel)
+            except ProfileRouterError as exc:
+                skipped.append({"path": child_rel, "reason": exc.code})
+                continue
+            safe_dirnames.append(dirname)
+        dirnames[:] = safe_dirnames
+
+        for name in [*safe_dirnames, *filenames]:
+            candidate = current / name
+            rel_path = _workspace_relative_path(workspace, candidate)
+            if normalized_glob and not (
+                fnmatch.fnmatch(rel_path, normalized_glob)
+                or fnmatch.fnmatch(name, normalized_glob)
+            ):
+                continue
+            try:
+                resolve_workspace_path(workspace, rel_path)
+            except ProfileRouterError as exc:
+                skipped.append({"path": rel_path, "reason": exc.code})
+                continue
+            if len(entries) >= max_results:
+                truncated = True
+                skipped.append({"path": rel_path, "reason": "file_limit_exceeded"})
+                continue
+            entries.append(_list_workspace_file_entry(workspace, candidate))
+
+    return {
+        "workspace_id": workspace.workspace_id,
+        "path": posixpath.normpath((list_path or ".").strip() or "."),
+        "file_glob": file_glob,
+        "entries": entries,
+        "skipped": skipped,
+        "limit": max_results,
         "truncated": truncated,
     }
 
@@ -1642,7 +1811,9 @@ def search_workspace_files(
                             {
                                 "path": rel_path,
                                 "line": line_number,
-                                "content": line.rstrip("\n")[:MAX_SEARCH_LINE_CHARS],
+                                "content": _redact_sensitive_text_fields(
+                                    line.rstrip("\n")[:MAX_SEARCH_LINE_CHARS]
+                                ),
                             }
                         )
                         if len(matches) >= max_results:
@@ -1802,6 +1973,7 @@ def _bounded_unified_diff(before: str, after: str, rel_path: str) -> dict:
             tofile=f"b/{rel_path}",
         )
     )
+    diff = _redact_sensitive_text_fields(diff)
     truncated = len(diff) > MAX_WRITE_DIFF_CHARS
     if truncated:
         diff = diff[:MAX_WRITE_DIFF_CHARS] + "\n... [diff truncated]\n"
@@ -1984,13 +2156,13 @@ def _workspace_diff_path_status(workspace: WorkspaceMetadata, rel_path: str) -> 
     normalized = _normalize_git_relative_path(rel_path)
     if normalized is None:
         return None, "invalid_path"
-    if _is_secret_path(normalized):
-        return normalized, "secret_path_denied"
     parts = [part for part in normalized.split("/") if part]
     if parts and parts[0] in PROTECTED_WORKSPACE_DIFF_DIRS:
         return normalized, "protected_local_metadata"
     if parts and parts[-1] == FUNCIONES_TXT_FILENAME:
         return normalized, "protected_local_metadata"
+    if _is_secret_path(normalized):
+        return normalized, "secret_path_denied"
 
     candidate = posixpath.normpath(posixpath.join(workspace.root, normalized))
     if not _path_within_root(candidate, workspace.root):
@@ -2035,6 +2207,7 @@ def _filter_workspace_diff_paths(
 
 
 def _bounded_workspace_diff_text(diff_text: str) -> dict:
+    diff_text = _redact_sensitive_text_fields(diff_text)
     truncated = len(diff_text) > MAX_WORKSPACE_DIFF_CHARS
     if truncated:
         diff_text = diff_text[:MAX_WORKSPACE_DIFF_CHARS] + "\n... [diff truncated]\n"
@@ -3012,7 +3185,7 @@ def diff_workspace(
             "root_exposed": False,
             "uses_shell": False,
             "git_read_only": True,
-            "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+            "public_mcp_exposure": "enabled_read_only_v1",
         },
     }
 
@@ -3283,15 +3456,71 @@ def workspace_close(workspace_id: str) -> str:
         return _tool_error("workspace_close", exc)
 
 
+def workspace_file_list(
+    workspace_id: str,
+    path: str | None = None,
+    file_glob: str | None = None,
+    limit: int | None = MAX_FILE_LIST_RESULTS,
+    context_token: str | None = None,
+) -> str:
+    """MCP-ready wrapper: list bounded sanitized files after context hydration."""
+
+    try:
+        return _tool_envelope(
+            "workspace_file_list",
+            {
+                "ok": True,
+                "file_list": list_workspace_files(
+                    workspace_id,
+                    path=path,
+                    file_glob=file_glob,
+                    limit=limit,
+                    context_token=context_token,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_file_list", exc)
+
+
+def workspace_file_read(
+    workspace_id: str,
+    path: str,
+    offset: int | None = 1,
+    limit: int | None = MAX_FILE_READ_LINES,
+    context_token: str | None = None,
+) -> str:
+    """MCP-ready wrapper: read a bounded sanitized file slice after context hydration."""
+
+    try:
+        require_fresh_workspace_context(workspace_id, context_token=context_token)
+        return _tool_envelope(
+            "workspace_file_read",
+            {
+                "ok": True,
+                "file": read_workspace_file(
+                    workspace_id,
+                    path,
+                    offset=offset,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_file_read", exc)
+
+
 def file_read(
     workspace_id: str,
     path: str,
     offset: int | None = 1,
     limit: int | None = MAX_FILE_READ_LINES,
+    context_token: str | None = None,
 ) -> str:
-    """MCP-ready wrapper: read a bounded text slice from a workspace."""
+    """Legacy direct wrapper: read a bounded text slice from a workspace."""
 
     try:
+        require_fresh_workspace_context(workspace_id, context_token=context_token)
         return _tool_envelope(
             "file_read",
             {
@@ -3315,10 +3544,12 @@ def file_search(
     file_glob: str | None = None,
     output_mode: str = "content",
     limit: int | None = MAX_FILE_SEARCH_RESULTS,
+    context_token: str | None = None,
 ) -> str:
-    """MCP-ready wrapper: search bounded text files in a workspace."""
+    """Legacy direct wrapper: search bounded text files in a workspace."""
 
     try:
+        require_fresh_workspace_context(workspace_id, context_token=context_token)
         return _tool_envelope(
             "file_search",
             {
