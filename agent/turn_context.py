@@ -88,8 +88,6 @@ def build_turn_context(
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
-    agent._ensure_db_session()
-
     # Tell auxiliary_client what the live main provider/model are for this turn.
     try:
         from agent.auxiliary_client import set_runtime_main
@@ -237,7 +235,11 @@ def build_turn_context(
 
     active_system_prompt = agent._cached_system_prompt
 
-    # Crash-resilience: persist the inbound user turn as soon as the session row exists.
+    # Crash-resilience: persist the inbound user turn as soon as the session
+    # row exists and has a valid system prompt.  _ensure_db_session runs here
+    # (after _restore_or_build_system_prompt) so the row is created with the
+    # actual system prompt, not NULL.  See issue #45499.
+    agent._ensure_db_session()
     try:
         agent._persist_session(messages, conversation_history)
     except Exception:
