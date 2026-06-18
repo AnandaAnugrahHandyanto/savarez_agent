@@ -76,6 +76,7 @@ class TestSystemdServiceRefresh:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *a, **k: None)
 
         gateway_cli.systemd_start()
 
@@ -106,6 +107,7 @@ class TestSystemdServiceRefresh:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *a, **k: None)
 
         gateway_cli.systemd_restart()
 
@@ -1260,6 +1262,7 @@ class TestGatewaySystemServiceRouting:
             "_graceful_restart_via_sigusr1",
             lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
         )
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *a, **k: None)
 
         # Simulate systemctl reset-failed/restart followed by an active unit.
         # A plain start does not break systemd's auto-restart timer once the
@@ -1313,6 +1316,7 @@ class TestGatewaySystemServiceRouting:
             "_graceful_restart_via_sigusr1",
             lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
         )
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *a, **k: None)
         monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **kwargs: calls.append(args) or SimpleNamespace(stdout="", returncode=0))
         monkeypatch.setattr(
             gateway_cli,
@@ -1354,6 +1358,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *a, **k: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
         monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
 
@@ -1384,6 +1389,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *a, **k: None)
         monkeypatch.setattr(
             "gateway.status.read_runtime_status",
             lambda: {"restart_requested": True, "gateway_state": "stopped"},
