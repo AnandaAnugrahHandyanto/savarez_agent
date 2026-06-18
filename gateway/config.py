@@ -468,7 +468,11 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         cfg.extra.get("phone_number_id") and cfg.extra.get("access_token")
     ),
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
-    Platform.EMAIL: lambda cfg: bool(cfg.extra.get("address")),
+    Platform.EMAIL: lambda cfg: bool(
+        str(cfg.extra.get("address") or "").strip()
+        and str(cfg.extra.get("imap_host") or "").strip()
+        and str(cfg.extra.get("smtp_host") or "").strip()
+    ),
     Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
     Platform.API_SERVER: lambda cfg: True,
     Platform.WEBHOOK: lambda cfg: True,
@@ -1609,10 +1613,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 
     # Email
-    email_addr = os.getenv("EMAIL_ADDRESS")
-    email_pwd = os.getenv("EMAIL_PASSWORD")
-    email_imap = os.getenv("EMAIL_IMAP_HOST")
-    email_smtp = os.getenv("EMAIL_SMTP_HOST")
+    email_addr = (os.getenv("EMAIL_ADDRESS") or "").strip()
+    email_pwd = (os.getenv("EMAIL_PASSWORD") or "").strip()
+    email_imap = (os.getenv("EMAIL_IMAP_HOST") or "").strip()
+    email_smtp = (os.getenv("EMAIL_SMTP_HOST") or "").strip()
     if all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
