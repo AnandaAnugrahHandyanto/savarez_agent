@@ -470,6 +470,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # While True, send() short-circuits to a failure so callers
         # (cron live-adapter branch) fall through to standalone delivery.
         self._send_path_degraded: bool = False
+        # Periodic polling watchdog — asyncio task that periodically verifies the
+        # PTB Updater is actually consuming getUpdates responses.  Unlike the
+        # post-reconnect heartbeat (``_verify_polling_after_reconnect``), this
+        # runs continuously and catches the case where the polling task exits
+        # silently during normal operation (e.g. httpx client session collected
+        # by GC).  See https://github.com/NousResearch/hermes-agent/issues/18086.
+        self._polling_watchdog_task: Optional[asyncio.Task] = None
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # Track forum chats where we've already registered bot commands
@@ -1540,6 +1547,76 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await self._handle_polling_network_error(probe_err)
 
+    async def _start_periodic_polling_watchdog(self) -> None:
+        """Start the periodic polling health-check loop as a background task.
+
+        Unlike the one-shot post-reconnect probe (``_verify_polling_after_reconnect``),
+        this loop runs continuously at ``POLLING_WATCHDOG_INTERVAL`` and covers the
+        case where the PTB Updater's polling task silently exits during normal
+        operation (e.g. httpx client session collected by the GC).
+        """
+        if self._polling_watchdog_task and not self._polling_watchdog_task.done():
+            return  # already running
+
+        POLLING_WATCHDOG_INTERVAL = int(os.getenv(
+            "HERMES_TELEGRAM_POLLING_WATCHDOG_INTERVAL", "120",
+        ))
+
+        async def _watchdog_loop() -> None:
+            while True:
+                await asyncio.sleep(POLLING_WATCHDOG_INTERVAL)
+
+                if self.has_fatal_error:
+                    return
+                if not (self._app and self._app.updater):
+                    continue
+
+                # If the reconnect ladder is already active, skip this
+                # cycle to avoid racing with the current attempt.
+                if self._polling_network_error_count > 0:
+                    continue
+
+                # Check the Updater is still marked as running.
+                if not self._app.updater.running:
+                    logger.warning(
+                        "[%s] Polling watchdog: updater not running — reconnecting",
+                        self.name,
+                    )
+                    await self._handle_polling_network_error(
+                        RuntimeError("Updater not running (watchdog)")
+                    )
+                    continue
+
+                # Probe the Bot endpoint to verify the underlying httpx
+                # connection pool is healthy.  A wedged pool fails this
+                # probe silently (no error callback fires) — the reconnect
+                # ladder catches it from here.
+                try:
+                    await asyncio.wait_for(self._app.bot.get_me(), timeout=10)
+                    self._send_path_degraded = False
+                except Exception as probe_err:
+                    logger.warning(
+                        "[%s] Polling watchdog: probe failed (%s) — reconnecting",
+                        self.name, probe_err,
+                    )
+                    await self._handle_polling_network_error(probe_err)
+
+        self._polling_watchdog_task = asyncio.ensure_future(_watchdog_loop())
+        self._background_tasks.add(self._polling_watchdog_task)
+        self._polling_watchdog_task.add_done_callback(self._background_tasks.discard)
+        logger.debug("[%s] Periodic polling watchdog started (interval=%ds)", self.name, POLLING_WATCHDOG_INTERVAL)
+
+    async def _stop_periodic_polling_watchdog(self) -> None:
+        """Cancel the periodic polling watchdog task."""
+        if self._polling_watchdog_task and not self._polling_watchdog_task.done():
+            self._polling_watchdog_task.cancel()
+            try:
+                await self._polling_watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._polling_watchdog_task = None
+            logger.debug("[%s] Periodic polling watchdog stopped", self.name)
+
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
@@ -2245,6 +2322,13 @@ class TelegramAdapter(BasePlatformAdapter):
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
+            # Start periodic polling watchdog (polling mode only).
+            if not self._webhook_mode:
+                loop = asyncio.get_running_loop()
+                _wtask = loop.create_task(self._start_periodic_polling_watchdog())
+                self._background_tasks.add(_wtask)
+                _wtask.add_done_callback(self._background_tasks.discard)
+
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
             # Runs after connection is established so the bot can call createForumTopic.
             # Failures here are non-fatal — the bot works fine without topics.
@@ -2267,6 +2351,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Stop the periodic polling watchdog first.
+        await self._stop_periodic_polling_watchdog()
+
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()
