@@ -2715,7 +2715,13 @@ async def stream_events(ws: WebSocket):
         while True:
             cursor, events = await asyncio.to_thread(_fetch_new, cursor)
             if events:
-                await ws.send_json({"events": events, "cursor": cursor})
+                # Typed frame: every WS frame is self-describing so consumers
+                # branch on ``type`` rather than sniffing for an ``events`` vs
+                # ``presence`` key. Presence frames ({"type": "presence"}) may
+                # interleave in any order (incl. before the first events frame
+                # on connect), so an untyped events frame would force fragile
+                # key-presence sniffing on every consumer.
+                await ws.send_json({"type": "events", "events": events, "cursor": cursor})
 
             # Recompute presence when a relevant event arrived, or
             # every _PRESENCE_FLOOR_SECONDS as a floor (so idle→stale

@@ -876,7 +876,16 @@ def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp
     with c.websocket_connect(
         "/api/plugins/kanban/events?token=secret-xyz&board=default&since=0"
     ) as ws:
-        payload = ws.receive_json()
+        # Frames are typed ({"type": "events"|"presence"}). A presence frame
+        # is emitted on connect and may interleave, so read until the events
+        # frame arrives rather than assuming frame #1 is events.
+        payload = None
+        for _ in range(5):
+            frame = ws.receive_json()
+            if frame.get("type") == "events":
+                payload = frame
+                break
+        assert payload is not None, "no events frame received"
 
     task_ids = {event["task_id"] for event in payload["events"]}
     assert default_task in task_ids
