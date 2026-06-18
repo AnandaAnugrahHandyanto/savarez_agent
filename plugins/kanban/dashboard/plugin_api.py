@@ -2333,7 +2333,59 @@ def get_presence(board: Optional[str] = Query(None)):
 # ---------------------------------------------------------------------------
 # WebSocket: /events?since=<event_id>
 # ---------------------------------------------------------------------------
-
+#
+# PRESENCE FRAME CONTRACT (for frontend consumers — slice 3 / usePresence)
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# The /events WS emits TWO typed frames. Consumers MUST branch on
+# ``frame.type`` and MUST NOT assume frame ordering or sniff for key
+# presence (commit 0499a5744 — untyped events frame broke consumers when
+# presence frames interleaved before the first events frame).
+#
+# Frame 1 — events (existing, unchanged semantics):
+#   { "type": "events",
+#     "events": [{id, task_id, run_id, kind, payload, created_at}, ...],
+#     "cursor": <int> }
+#
+#   ``events`` is the raw task_events tail. ``cursor`` is the last event
+#   ID consumed; pass it as ``?since=<cursor>`` on reconnect to resume.
+#
+# Frame 2 — presence (added in slice 1, contract stabilized in slice 2):
+#   { "type": "presence",
+#     "profiles": [PresenceState, ...],
+#     "computed_at": <epoch_seconds_int> }
+#
+#   PresenceState fields (per ARCH_local_realtime_presence.md §3.1):
+#     profile: str            — e.g. "apollo", "zeus"
+#     online: bool            — True iff status in ("active", "idle")
+#     status: str             — "active" | "idle" | "stale" | "offline"
+#     current_task_id: str|null   — the task the profile is working on
+#     current_task_title: str|null
+#     run_id: int|null
+#     pid: int|null
+#     last_heartbeat_at: int|null — epoch seconds
+#     since: int|null             — run.started_at (for "active for Nm")
+#
+#   Triggers:
+#     1. On WS connect (immediate, before any events frame)
+#     2. On relevant task_events (claimed, spawned, completed, blocked,
+#        reclaimed, heartbeat)
+#     3. Every 5s floor (idle→stale transitions even without events)
+#
+#   The ``computed_at`` field lets consumers detect stale snapshots.
+#
+# Reconnect semantics:
+#   The ``?since`` cursor only affects which event rows are streamed;
+#   presence is ALWAYS emitted fresh on connect, regardless of cursor.
+#   On reconnect, the UI gets an authoritative presence snapshot — not
+#   a stale one from before the disconnect.
+#
+# No second socket or polling daemon:
+#   Both frame types ride the same /events WS. The server computes
+#   presence via one aggregate query over task_runs (no N+1). No
+#   separate channel is added — this is the "extend, don't duplicate"
+#   principle from AGENTS.md.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
 # Poll interval for the event tail loop. SQLite WAL + 300 ms polling is
 # the simplest and most robust approach; it adds a fraction of a percent
 # of CPU and has no shared state to synchronize across workers.

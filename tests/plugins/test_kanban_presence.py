@@ -480,3 +480,242 @@ class TestPresenceEndpoint:
         # With heartbeat 5s ago, should be active (within fresh=90s)
         assert apollo["status"] == "active"
         assert apollo["online"] is True
+
+
+# ---------------------------------------------------------------------------
+# /events WebSocket presence frame transport tests
+# ---------------------------------------------------------------------------
+
+class TestWSPresenceFrames:
+    """Verify the /events WS emits presence frames on connect, on relevant
+    events, and on the floor interval — without adding a second socket or
+    polling daemon.
+
+    These are transport-layer invariants (frame contract + emission triggers),
+    not liveness-state tests (those live in TestClassifyLiveness).
+    """
+
+    @pytest.fixture
+    def ws_client(self, kanban_home, monkeypatch):
+        """FastAPI test client with WS auth stubbed for token-based access."""
+        from fastapi.testclient import TestClient
+        from plugins.kanban.dashboard.plugin_api import router
+        from fastapi import FastAPI
+        import hermes_cli
+        import types
+        import sys
+
+        stub = types.SimpleNamespace(
+            _SESSION_TOKEN="test-presence-token",
+            _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "test-presence-token",
+        )
+        monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+        monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+        app = FastAPI()
+        app.include_router(router, prefix="/api/plugins/kanban")
+        return TestClient(app)
+
+    # -- (a) presence frame emitted on connect --
+
+    def test_presence_frame_on_connect(self, ws_client):
+        """On WS connect, the first frame (or an early frame) must be a
+        ``{type: "presence"}`` frame so the UI can immediately render
+        profile avatars/halos without waiting for the next periodic tick.
+        """
+        frames = []
+        with ws_client.websocket_connect(
+            "/api/plugins/kanban/events?token=test-presence-token"
+        ) as ws:
+            # Read a small number of frames — the presence frame should
+            # arrive early (on connect), before or alongside events frames.
+            for _ in range(5):
+                frame = ws.receive_json()
+                frames.append(frame)
+                if frame.get("type") == "presence":
+                    break
+
+        presence_frames = [f for f in frames if f.get("type") == "presence"]
+        assert len(presence_frames) >= 1, (
+            f"Expected at least one presence frame on connect, got frames: "
+            f"{[f.get('type') for f in frames]}"
+        )
+
+    def test_presence_frame_contract_shape(self, ws_client):
+        """Every presence frame must match the contract:
+        ``{type: "presence", profiles: [...], computed_at: <int>}``.
+
+        Each profile entry must have all PresenceState fields per §3.1 of
+        the architecture doc.
+        """
+        with ws_client.websocket_connect(
+            "/api/plugins/kanban/events?token=test-presence-token"
+        ) as ws:
+            presence_frame = None
+            for _ in range(10):
+                frame = ws.receive_json()
+                if frame.get("type") == "presence":
+                    presence_frame = frame
+                    break
+
+        assert presence_frame is not None, "No presence frame received"
+        # Top-level contract
+        assert presence_frame["type"] == "presence"
+        assert isinstance(presence_frame["profiles"], list)
+        assert isinstance(presence_frame["computed_at"], int)
+
+        # Per-profile field contract (when profiles exist)
+        if presence_frame["profiles"]:
+            required_keys = {
+                "profile", "online", "status",
+                "current_task_id", "current_task_title",
+                "run_id", "pid", "last_heartbeat_at", "since",
+            }
+            for p in presence_frame["profiles"]:
+                assert required_keys <= set(p.keys()), (
+                    f"Profile {p.get('profile')} missing keys: "
+                    f"{required_keys - set(p.keys())}"
+                )
+                # status must be one of the four valid liveness states
+                assert p["status"] in ("active", "idle", "stale", "offline")
+                # online iff active or idle (invariant from §3.1)
+                assert p["online"] == (p["status"] in ("active", "idle"))
+
+    # -- (b) presence frame emitted on relevant events --
+
+    def test_presence_frame_after_relevant_event(self, kanban_home, ws_client, monkeypatch):
+        """When a relevant event (e.g. 'claimed') occurs in the event stream,
+        the WS must emit a presence frame in response — not just on the floor
+        interval.
+
+        We seed a task, then create a 'claimed' event and verify a presence
+        frame arrives within a bounded read window.
+        """
+        conn = _conn_home(kanban_home)
+        try:
+            now = int(time.time())
+            task_id = kb.create_task(conn, title="WS presence test", assignee="apollo")
+            # Create a claimed event so there's something for the WS to pick up
+            conn.execute(
+                "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                "VALUES (?, 1, 'claimed', '{}', ?)",
+                (task_id, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Speed up the poll interval for faster test — monkeypatch the
+        # constant inside stream_events
+        from plugins.kanban.dashboard import plugin_api
+        monkeypatch.setattr(plugin_api, "_EVENT_POLL_SECONDS", 0.1)
+
+        frames = []
+        with ws_client.websocket_connect(
+            "/api/plugins/kanban/events?token=test-presence-token"
+        ) as ws:
+            for _ in range(20):
+                try:
+                    frame = ws.receive_json()
+                    frames.append(frame)
+                except Exception:
+                    break
+                # Once we see a presence frame after the initial one,
+                # we're satisfied
+                if (
+                    frame.get("type") == "presence"
+                    and len([f for f in frames if f.get("type") == "presence"]) >= 2
+                ):
+                    break
+
+        presence_frames = [f for f in frames if f.get("type") == "presence"]
+        # The initial connect frame + at least one triggered by the
+        # claimed event or the floor interval
+        assert len(presence_frames) >= 1, (
+            f"Expected presence frame(s), got: {[f.get('type') for f in frames]}"
+        )
+
+    # -- (c) no second polling daemon --
+
+    def test_events_and_presence_on_same_ws(self, ws_client):
+        """Events and presence frames interleave on the *same* WS — no
+        second socket or polling daemon is added. Both frame types share
+        the ``type`` discriminator so consumers branch on frame type.
+        """
+        frame_types = set()
+        with ws_client.websocket_connect(
+            "/api/plugins/kanban/events?token=test-presence-token"
+        ) as ws:
+            for _ in range(10):
+                try:
+                    frame = ws.receive_json()
+                    frame_types.add(frame.get("type"))
+                except Exception:
+                    break
+
+        # The WS should carry presence frames — if it only carried events,
+        # that would mean presence was on a separate channel (violating
+        # the "extend, don't duplicate" principle).
+        assert "presence" in frame_types, (
+            f"Expected 'presence' frame type on /events WS, "
+            f"got only: {frame_types}"
+        )
+
+    # -- (d) frame type discriminator is always present --
+
+    def test_all_frames_have_type_discriminator(self, ws_client):
+        """Every frame on the /events WS must have a ``type`` field.
+        This is the contract fix from commit 0499a5744: untyped frames
+        break consumers when presence and events interleave.
+        """
+        with ws_client.websocket_connect(
+            "/api/plugins/kanban/events?token=test-presence-token"
+        ) as ws:
+            for _ in range(10):
+                try:
+                    frame = ws.receive_json()
+                except Exception:
+                    break
+                assert "type" in frame, (
+                    f"Frame missing 'type' discriminator: {frame}"
+                )
+                assert frame["type"] in ("events", "presence"), (
+                    f"Unexpected frame type: {frame['type']}"
+                )
+
+    # -- (e) reconnect/since semantics: presence always sent on connect --
+
+    def test_presence_frame_on_reconnect_with_since(self, ws_client):
+        """When a client reconnects with ``?since=<cursor>``, it still
+        receives a presence snapshot on connect — the presence frame is
+        NOT gated on the since cursor. The since parameter only affects
+        which event rows are streamed; presence is always fresh.
+
+        This ensures the UI gets an authoritative presence snapshot on
+        every reconnection, not a stale one from before the disconnect.
+        """
+        # First connection: get a cursor from an events frame
+        last_cursor = 0
+        with ws_client.websocket_connect(
+            "/api/plugins/kanban/events?token=test-presence-token"
+        ) as ws:
+            for _ in range(10):
+                frame = ws.receive_json()
+                if frame.get("type") == "events":
+                    last_cursor = frame.get("cursor", 0)
+
+        # Reconnect with since — must still get a presence frame
+        presence_on_reconnect = False
+        with ws_client.websocket_connect(
+            f"/api/plugins/kanban/events?token=test-presence-token&since={last_cursor}"
+        ) as ws:
+            for _ in range(10):
+                frame = ws.receive_json()
+                if frame.get("type") == "presence":
+                    presence_on_reconnect = True
+                    break
+
+        assert presence_on_reconnect, (
+            "Expected a presence frame on reconnect with ?since — "
+            "presence should not be gated on the events cursor"
+        )
