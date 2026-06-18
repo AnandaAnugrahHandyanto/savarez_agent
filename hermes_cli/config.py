@@ -1707,7 +1707,7 @@ DEFAULT_CONFIG = {
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
-        "user_profile_enabled": False,
+        "user_profile_enabled": True,
         # Approval gate for memory writes (add/replace/remove), applied to BOTH
         # foreground agent turns and the background self-improvement review fork
         # (the source of unprompted "wrong assumption" saves users reported).
