@@ -114,3 +114,110 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="🔎",
 )
+
+
+# Sources we'll auto-install from (builtin/official + curated trusted repos).
+# Everything else (community/unknown) is held in quarantine for human approval.
+_AUTO_INSTALL_TRUST = {"builtin", "trusted"}
+
+
+def skill_acquire(identifier, category="", task_id=None):
+    """Acquire a discovered skill (the *acquire* half of the employee model).
+
+    Trust policy (Alon, 2026-06-18): a skill from a TRUSTED source (builtin /
+    official / curated-trusted) installs automatically once the safety scan
+    allows it; a skill from a community/unknown source — or one the scanner
+    flags — is held in quarantine for an operator to approve. Reuses the Hub's
+    own quarantine + scanner; never bypasses them.
+    """
+    if not identifier or not str(identifier).strip():
+        return json.dumps({"success": False, "error": "provide a skill 'identifier' (from skill_discover)"})
+    try:
+        from tools.skills_hub import (
+            GitHubAuth, create_source_router, ensure_hub_dirs,
+            quarantine_bundle, install_from_quarantine, HubLockFile,
+        )
+        from tools.skills_guard import scan_skill, should_allow_install
+        from hermes_cli.skills_hub import _resolve_source_meta_and_bundle, _resolve_short_name
+
+        ensure_hub_dirs()
+        sources = create_source_router(GitHubAuth())
+
+        class _Quiet:
+            def print(self, *a, **k):
+                pass
+
+        ident = str(identifier).strip()
+        if "/" not in ident:
+            ident = _resolve_short_name(ident, sources, _Quiet())
+            if not ident:
+                return json.dumps({"success": False, "error": f"no skill found for '{identifier}'"})
+
+        meta, bundle, _matched = _resolve_source_meta_and_bundle(ident, sources)
+        if not bundle or not meta:
+            return json.dumps({"success": False, "error": f"could not fetch '{identifier}' from any source"})
+
+        if HubLockFile().get_installed(bundle.name):
+            return json.dumps({"success": True, "installed": True, "already_installed": True,
+                               "skill": bundle.name, "note": "Already installed — use skill_view to load it."})
+
+        trust = getattr(meta, "trust_level", "community") or "community"
+        qpath = quarantine_bundle(bundle)
+        scan = scan_skill(qpath, source=trust)
+        scan_allows, reason = should_allow_install(scan)
+        verdict = getattr(scan, "verdict", "unknown")
+
+        if trust in _AUTO_INSTALL_TRUST and scan_allows:
+            install_from_quarantine(qpath, bundle.name, category or "", bundle, scan)
+            return json.dumps({
+                "success": True, "installed": True, "skill": bundle.name,
+                "trust": trust, "scan_verdict": verdict,
+                "note": "Installed (trusted source, scan passed). Load it with skill_view.",
+            })
+
+        # Untrusted source or flagged scan -> hold for human approval.
+        return json.dumps({
+            "success": True, "installed": False, "status": "requires_approval",
+            "skill": bundle.name, "trust": trust, "scan_verdict": verdict, "reason": reason,
+            "note": (
+                f"Not auto-installed: source trust='{trust}'"
+                + ("" if trust in _AUTO_INSTALL_TRUST else " (untrusted)")
+                + f", scan verdict='{verdict}'. Held in quarantine — an operator can approve "
+                f"with `hermes skills install {ident}`. Meanwhile, consider delegating the task."
+            ),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return tool_error(f"skill_acquire failed: {exc}")
+
+
+SKILL_ACQUIRE_SCHEMA = {
+    "name": "skill_acquire",
+    "description": (
+        "Acquire (install) a skill you found with skill_discover, so you can then use it. "
+        "Only skills from TRUSTED sources install automatically (after a safety scan); skills "
+        "from community/unknown sources are held for an operator's approval and won't be "
+        "available immediately — in that case, delegate the task or proceed without. Use "
+        "sparingly: only when a task genuinely needs a capability you and your skills_list lack."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "identifier": {"type": "string", "description": "The skill identifier from a skill_discover result."},
+            "category": {"type": "string", "description": "Optional category/subfolder to install under."},
+        },
+        "required": ["identifier"],
+    },
+}
+
+
+registry.register(
+    name="skill_acquire",
+    toolset="skills",
+    schema=SKILL_ACQUIRE_SCHEMA,
+    handler=lambda args, **kw: skill_acquire(
+        identifier=args.get("identifier"), category=args.get("category", ""),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_skills_requirements,
+    emoji="📥",
+)

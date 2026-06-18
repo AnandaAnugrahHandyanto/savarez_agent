@@ -166,7 +166,7 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage", "skill_discover"],
+        "tools": ["skills_list", "skill_view", "skill_manage", "skill_discover", "skill_acquire"],
         "includes": []
     },
 
