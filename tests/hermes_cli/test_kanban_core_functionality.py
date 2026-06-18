@@ -2985,8 +2985,14 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
-    in addition to the built-in kanban-worker."""
+    in addition to the built-in kanban-worker.
+
+    Resolution is mocked True here so the test stays focused on argv *shaping*;
+    the per-skill availability guard is exercised separately in
+    ``test_default_spawn_drops_unresolved_per_task_skills``.
+    """
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    monkeypatch.setattr(kb, "_kanban_skill_available", lambda _h, _s: True)
     captured = {}
 
     class FakeProc:
@@ -3032,6 +3038,50 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     assert last_skills_idx < chat_idx, (
         f"--skills must come before 'chat' in argv: {cmd}"
     )
+
+
+def test_default_spawn_drops_unresolved_per_task_skills(kanban_home, monkeypatch):
+    """A per-task skill that does not resolve under the worker's skills dir is
+    dropped from the spawn argv (with a warning) instead of being appended —
+    force-loading an unknown skill crashes the worker at CLI startup before the
+    agent loop runs."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    # Use the REAL _kanban_skill_available: nothing exists under the isolated
+    # test skills dir, so any per-task skill is unresolved and must be dropped.
+    captured = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 42
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="ghost-skill worker",
+            assignee="linguist",
+            skills=["does-not-exist"],
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    skill_names = [
+        cmd[i + 1] for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd)
+    ]
+    assert "does-not-exist" not in skill_names
+    # The built-in worker skill (mocked available) is still passed.
+    assert "kanban-worker" in skill_names
 
 
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
