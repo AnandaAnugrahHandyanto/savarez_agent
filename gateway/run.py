@@ -16492,8 +16492,10 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+        except BaseException as e:
+            # catch BaseException so provider SDK SystemExit (raised after
+            # retry exhaustion) does not crash the entire gateway process
+            logger.error("Cron tick error: %s: %s", type(e).__name__, e)
 
         tick_count += 1
 
