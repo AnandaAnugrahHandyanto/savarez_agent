@@ -91,6 +91,11 @@ class GatewayStreamConsumer:
         await task         # wait for final edit
     """
 
+    # WeCom's native stream UX shows a client-side "typing / thinking"
+    # indicator when the first stream frame has empty content.  The adapter
+    # maps this sentinel to empty native content; other platforms must not see it.
+    _WECOM_THINKING_PLACEHOLDER = "THINKING_MESSAGE"
+
     # After this many consecutive flood-control failures, permanently disable
     # progressive edits for the remainder of the stream.
     _MAX_FLOOD_STRIKES = 3
@@ -196,6 +201,10 @@ class GatewayStreamConsumer:
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
+        self._use_native_reply_streaming = False
+        self._native_stream_key = f"stream:{id(self)}"
+        self._native_prefix = ""
+        self._native_ambiguous_failure = False
 
     def _metadata_for_send(
         self,
@@ -300,6 +309,8 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+        self._native_prefix = ""
+        self._native_ambiguous_failure = False
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
         # can't fool the gateway. Safe: got_done returns before any reset, and
@@ -463,12 +474,18 @@ class GatewayStreamConsumer:
         # final answer as a regular sendMessage (drafts have no message_id
         # to edit).
         self._use_draft_streaming = self._resolve_draft_streaming()
+        self._use_native_reply_streaming = self._resolve_native_reply_streaming()
         if self._use_draft_streaming:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
             logger.debug(
                 "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                 self.chat_id, self._draft_id,
+            )
+        if self._use_native_reply_streaming:
+            await self._send_native_reply_chunk(
+                self._WECOM_THINKING_PLACEHOLDER,
+                finalize=False,
             )
 
         try:
@@ -525,6 +542,7 @@ class GatewayStreamConsumer:
                     if (
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
+                        and not self._use_native_reply_streaming
                     ):
                         # No existing message to edit (first message or after a
                         # segment break).  Use truncate_message — the same
@@ -568,6 +586,7 @@ class GatewayStreamConsumer:
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is not None
                         and self._edit_supported
+                        and not self._use_native_reply_streaming
                     ):
                         _cp_budget = _custom_unit_to_cp(
                             self._accumulated, _safe_limit, _len_fn,
@@ -610,13 +629,15 @@ class GatewayStreamConsumer:
                     # the next segment (tool progress, next chunk) creates a
                     # new message below it.  got_done has its own finalize
                     # path below so we don't finalize here for it.
-                    current_update_visible = await self._send_or_edit(
-                        display_text,
-                        finalize=(got_done or got_segment_break),
-                        # A segment-break finalize closes a preamble, not the
-                        # turn-final answer — only got_done marks delivered (#29346).
-                        is_turn_final=got_done,
-                    )
+                    current_update_visible = False
+                    if not (got_segment_break and self._use_native_reply_streaming):
+                        current_update_visible = await self._send_or_edit(
+                            display_text,
+                            finalize=(got_done or got_segment_break),
+                            # A segment-break finalize closes a preamble, not the
+                            # turn-final answer — only got_done marks delivered (#29346).
+                            is_turn_final=got_done,
+                        )
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
@@ -634,6 +655,20 @@ class GatewayStreamConsumer:
                             # deleted the preview).  Running a second finalize
                             # edit here would duplicate the message / re-delete,
                             # so just record delivery and stop.
+                            self._final_content_delivered = True
+                        elif self._use_native_reply_streaming and not self._native_ambiguous_failure:
+                            self._final_response_sent = await self._send_native_reply_chunk(
+                                self._accumulated,
+                                finalize=True,
+                            )
+                            if self._native_ambiguous_failure:
+                                self._final_response_sent = False
+                            elif self._fallback_final_send:
+                                await self._send_fallback_final(self._accumulated)
+                            elif self._final_response_sent:
+                                self._final_content_delivered = True
+                        elif self._use_native_reply_streaming and self._native_ambiguous_failure:
+                            self._final_response_sent = True
                             self._final_content_delivered = True
                         elif (
                             current_update_visible
@@ -699,6 +734,8 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
+                    if self._use_native_reply_streaming and not self._fallback_final_send:
+                        continue
                     # If the segment-break edit failed to deliver the
                     # accumulated content (flood control that has not yet
                     # promoted to fallback mode, or fallback mode itself),
@@ -714,6 +751,13 @@ class GatewayStreamConsumer:
                         and self._message_id != "__no_edit__"
                     ):
                         await self._flush_segment_tail_on_edit_failure()
+                    elif (
+                        self._accumulated
+                        and self._use_native_reply_streaming
+                        and self._fallback_final_send
+                        and not self._native_ambiguous_failure
+                    ):
+                        await self._send_fallback_final(self._accumulated)
                     self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
@@ -993,6 +1037,102 @@ class GatewayStreamConsumer:
         err = getattr(result, "error", "") or ""
         err_lower = err.lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
+
+    def _has_native_reply_context(self) -> bool:
+        metadata = self.metadata if isinstance(self.metadata, dict) else {}
+        reply = metadata.get("reply")
+        return isinstance(reply, dict) and bool(reply.get("msgid"))
+
+    def _resolve_native_reply_streaming(self) -> bool:
+        # Native reply streaming is a capability-based branch inside the
+        # gateway's normal streaming modes (not a separate public transport
+        # value). In ``auto``/``native`` modes it intentionally takes precedence
+        # over draft/edit streaming when a provider reply context is available,
+        # while explicit ``edit`` preserves the legacy edit-only path.
+        transport = (self.cfg.transport or "edit").lower()
+        if transport in {"edit", "off"}:
+            return False
+        if not self._has_native_reply_context():
+            return False
+        return (
+            getattr(self.adapter, "SUPPORTS_NATIVE_STREAMING_REPLIES", False) is True
+            and callable(getattr(self.adapter, "send_stream_chunk", None))
+        )
+
+    @staticmethod
+    def _confirmed_prefix_len(result: Any) -> int:
+        raw = getattr(result, "raw_response", None)
+        if not isinstance(raw, dict):
+            return 0
+        confirmed = raw.get("confirmed_prefix_len")
+        if confirmed is None:
+            return 0
+        try:
+            return max(0, int(confirmed))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _delivered_prefix_text(result: Any) -> str:
+        raw = getattr(result, "raw_response", None)
+        if not isinstance(raw, dict):
+            return ""
+        prefix = raw.get("delivered_prefix")
+        return prefix if isinstance(prefix, str) else ""
+
+    def _apply_native_delivery_result(self, content: str, result: Any) -> tuple[bool, bool]:
+        if getattr(result, "success", False):
+            self._native_prefix = content
+            return True, True
+
+        delivered_prefix = self._delivered_prefix_text(result)
+        if delivered_prefix:
+            if content.startswith(delivered_prefix):
+                self._native_prefix = delivered_prefix
+                return False, True
+            self._native_ambiguous_failure = True
+            self._use_native_reply_streaming = False
+            self._fallback_final_send = False
+            self._already_sent = True
+            self._accumulated = ""
+            return False, False
+
+        confirmed_len = self._confirmed_prefix_len(result)
+        if confirmed_len > 0:
+            self._native_prefix = content[:confirmed_len]
+            return False, True
+
+        return False, False
+
+    async def _send_native_reply_chunk(self, text: str, *, finalize: bool = False) -> bool:
+        result = await self.adapter.send_stream_chunk(
+            chat_id=self.chat_id,
+            content=text,
+            reply_to=self._initial_reply_to_id,
+            stream_key=self._native_stream_key,
+            finalize=finalize,
+            metadata=self.metadata,
+        )
+        if text == self._WECOM_THINKING_PLACEHOLDER:
+            if getattr(result, "success", False):
+                return True
+            self._use_native_reply_streaming = False
+            return False
+        delivered, visible = self._apply_native_delivery_result(text, result)
+        if delivered:
+            self._already_sent = True
+            self._last_sent_text = text
+            if finalize:
+                self._final_response_sent = True
+            return True
+        if visible:
+            self._already_sent = True
+            self._fallback_final_send = True
+            self._fallback_prefix = self._native_prefix
+            self._edit_supported = False
+            return False
+        self._use_native_reply_streaming = False
+        return False
 
     def _resolve_draft_streaming(self) -> bool:
         """Decide whether this run should use native draft streaming.
@@ -1358,6 +1498,12 @@ class GatewayStreamConsumer:
                 and self.cfg.cursor in text
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
+
+        if (
+            self._use_native_reply_streaming
+            and self._message_id is None
+        ):
+            return await self._send_native_reply_chunk(text, finalize=finalize)
 
         # Native draft streaming: route mid-stream frames through send_draft.
         # The final answer is delivered via the regular sendMessage path
