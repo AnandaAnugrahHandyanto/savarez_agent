@@ -47,14 +47,14 @@ Honcho provides AI-native cross-session user modeling. It learns who the user is
 ### Cloud (app.honcho.dev)
 
 ```bash
-hermes honcho setup
+hermes memory setup honcho
 # select "cloud", paste API key from https://app.honcho.dev
 ```
 
 ### Self-hosted
 
 ```bash
-hermes honcho setup
+hermes memory setup honcho
 # select "local", enter base URL (e.g. http://localhost:8000)
 ```
 
@@ -288,7 +288,11 @@ Write or delete a persistent conclusion about a peer. Pass `conclusion: "..."` t
 All 5 tools accept an optional `peer` parameter:
 - `peer: "user"` (default) — operates on the user peer
 - `peer: "ai"` — operates on this profile's AI peer
-- `peer: "<explicit-id>"` — any peer ID in the workspace
+
+Unrecognized free-form values resolve to the user peer rather than creating a
+new peer, so the model can't fragment one user's memory across display-name
+variants. To target additional peers deliberately, declare them via
+`userPeerAliases` in `honcho.json`.
 
 Examples:
 ```
