@@ -9,6 +9,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.i18n import get_language, get_language_name
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +20,17 @@ logger = logging.getLogger(__name__)
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
-_TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
-)
+
+def _build_title_prompt() -> str:
+    """Build the title-generation system prompt respecting the configured language."""
+    lang = get_language()
+    lang_name = get_language_name(lang)
+    return (
+        "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
+        "following exchange. The title should capture the main topic or intent. "
+        "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes. "
+        f"The user's configured language is {lang_name} — output the title in {lang_name}."
+    )
 
 
 def generate_title(
@@ -49,7 +56,7 @@ def generate_title(
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
     messages = [
-        {"role": "system", "content": _TITLE_PROMPT},
+        {"role": "system", "content": _build_title_prompt()},
         {"role": "user", "content": f"User: {user_snippet}\n\nAssistant: {assistant_snippet}"},
     ]
 

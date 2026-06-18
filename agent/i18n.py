@@ -46,6 +46,28 @@ SUPPORTED_LANGUAGES: tuple[str, ...] = (
 )
 DEFAULT_LANGUAGE = "en"
 
+# Human-readable language names for LLM-facing prompts (context compression,
+# title generation, etc.).  Keyed by the same normalized codes used by
+# ``get_language()`` and ``t()``.
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "zh": "Chinese",
+    "zh-hant": "Traditional Chinese",
+    "ja": "Japanese",
+    "de": "German",
+    "es": "Spanish",
+    "fr": "French",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "af": "Afrikaans",
+    "ko": "Korean",
+    "it": "Italian",
+    "ga": "Irish",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "hu": "Hungarian",
+}
+
 # Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
 # get the right catalog instead of silently falling back to English.
 _LANGUAGE_ALIASES: dict[str, str] = {
@@ -249,6 +271,17 @@ def get_language() -> str:
     return DEFAULT_LANGUAGE
 
 
+def get_language_name(lang: str | None = None) -> str:
+    """Return the human-readable name of *lang* (or the active language).
+
+    Falls back to ``"English"`` for unrecognised codes so LLM prompts always
+    get a sensible value.
+    """
+    if lang is None:
+        lang = get_language()
+    return LANGUAGE_NAMES.get(lang, "English")
+
+
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted key to the active language.
 
@@ -296,7 +329,9 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
 __all__ = [
     "SUPPORTED_LANGUAGES",
     "DEFAULT_LANGUAGE",
+    "LANGUAGE_NAMES",
     "t",
     "get_language",
+    "get_language_name",
     "reset_language_cache",
 ]
