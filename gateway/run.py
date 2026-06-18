@@ -16963,7 +16963,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-ticker",
     )
     cron_thread.start()
-    
+
+    # Inspector server (read-only meta API for external containers)
+    _inspector_server = None
+    _inspector_host = os.environ.get("HERMES_INSPECTOR_HOST", "127.0.0.1")
+    _inspector_port = int(os.environ.get("HERMES_INSPECTOR_PORT", "8646"))
+    if os.environ.get("HERMES_INSPECTOR_DISABLED", "").lower() not in ("1", "true", "yes"):
+        try:
+            from gateway.inspector import InspectorServer
+            _inspector_server = InspectorServer(
+                host=_inspector_host,
+                port=_inspector_port,
+                gateway_state_file=str(_hermes_home / "gateway_state.json"),
+                hermes_home=str(_hermes_home),
+            )
+            await _inspector_server.start()
+            logger.info("Inspector server listening on %s:%s", _inspector_host, _inspector_port)
+        except Exception as _ins_exc:
+            logger.warning("Inspector server failed to start: %s", _ins_exc)
+            _inspector_server = None
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -16971,7 +16990,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
-    
+
+    # Stop inspector server
+    if _inspector_server is not None:
+        try:
+            await _inspector_server.stop()
+        except Exception as _ins_stop_exc:
+            logger.debug("Inspector server stop error: %s", _ins_stop_exc)
+
     # Stop cron ticker cleanly
     cron_stop.set()
     cron_thread.join(timeout=5)
