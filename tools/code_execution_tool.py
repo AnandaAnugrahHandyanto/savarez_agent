@@ -48,6 +48,8 @@ from typing import Any, Dict, List, Optional
 
 from tools.thread_context import propagate_context_to_thread
 
+from tools.resource_limits import estimate_memory, build_memory_warning, MEMORY_WARNING_THRESHOLD_MB
+
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
 # ``_use_tcp_rpc`` in ``_execute_local`` below.  That makes execute_code
@@ -1119,6 +1121,13 @@ def execute_code(
             "duration_seconds": 0,
         }, ensure_ascii=False)
 
+    # --- Memory estimation check (Layer 2 defence) ---
+    _est_bytes, _est_desc = estimate_memory(code)
+    _mem_warning = build_memory_warning(_est_bytes, MEMORY_WARNING_THRESHOLD_MB)
+    if _mem_warning:
+        logger.debug("execute_code memory estimate: %s", _mem_warning)
+    # --- End memory estimation ---
+
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 
@@ -1451,6 +1460,7 @@ def execute_code(
             "output": stdout_text,
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
+            "memory_warning": _mem_warning if _mem_warning else None,
         }
 
         if status == "timeout":

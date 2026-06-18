@@ -4,11 +4,15 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+import logging
 import os
+import re
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 _profile_fallback_warned: bool = False
@@ -68,11 +72,11 @@ def get_hermes_home() -> Path:
     """
     override = get_hermes_home_override()
     if override:
-        return Path(override)
+        return normalize_windows_path(override)
 
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
-        return Path(val)
+        return normalize_windows_path(val)
 
     # Guard: if a non-default profile is sticky-active, warn once that
     # the fallback to the default profile is almost certainly wrong.
@@ -105,7 +109,7 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return _get_platform_default_hermes_home()
+    return normalize_windows_path(_get_platform_default_hermes_home())
 
 
 def get_default_hermes_root() -> Path:
@@ -592,3 +596,69 @@ FINISH_REASON_LENGTH = "length"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+
+
+# ─── Windows Path Normalization ─────────────────────────────────────────────
+
+def normalize_windows_path(raw: str | Path) -> Path:
+    """Repair cross-shell path artifacts from Git Bash / MSYS / WSL / PowerShell.
+
+    Fix patterns (applied in order):
+      - ``C:\\c\\Users\\...``  → ``C:\\Users\\...``   (patch-tool parse bug)
+      - ``/C:/Users/...``     → ``C:\\Users\\...``   (MSYS double-drive)
+      - ``/c/Users/...``      → ``C:\\Users\\...``   (Git Bash style)
+      - ``C:/Users/...``      → ``C:\\Users\\...``   (forward-slash → backslash)
+      - mixed-slashes         → uniform backslashes
+
+    On non-Windows platforms, returns ``Path(raw)`` unchanged.
+    Logs a WARNING for every path that was actually repaired.
+    """
+    if sys.platform != "win32":
+        return Path(raw)
+
+    s = str(raw)
+    original = s
+
+    # 1. Fix ``C:\\c\\Users\\...`` → ``C:\\Users\\...``  (patch-tool double-drive bug)
+    #    The ``c`` here is the literal drive letter escaped into the path, not a
+    #    directory called ``c``.  Only strip when it forms a drive-root pattern.
+    m = re.match(r'^([A-Za-z]):[\\/]c([\\/].+)$', s)
+    if m:
+        s = f"{m.group(1)}:{m.group(2)}"
+
+    # 2. Fix ``/C:/Users/...`` → ``C:\\Users\\...``  (MSYS double-drive)
+    m = re.match(r'^/([A-Za-z]):([\\/].+)$', s)
+    if m:
+        s = f"{m.group(1)}:{m.group(2)}"
+
+    # 3. Fix ``/c/Users/...`` → ``C:\\Users\\...``  (Git Bash)
+    m = re.match(r'^/([a-z])([/\\].+)$', s)
+    if m and len(m.group(1)) == 1:
+        s = f"{m.group(1).upper()}:{m.group(2)}"
+
+    # 4. Uniform forward-slashes to backslashes
+    s = s.replace("/", "\\")
+
+    # Collapse doubled backslashes (but not UNC ``\\\\server``)
+    if not s.startswith("\\\\"):
+        while "\\\\" in s:
+            s = s.replace("\\\\", "\\")
+
+    result = Path(s)
+    if s != original:
+        logger.warning("normalize_windows_path: fixed %s → %s", raw, result)
+
+    return result
+
+
+# ─── Self-test (python -m hermes_constants) ─────────────────────────────────
+
+if __name__ == "__main__":
+    assert str(normalize_windows_path(r"C:\c\Users\admin")) == r"C:\Users\admin"
+    assert str(normalize_windows_path("/c/Users/admin")) == r"C:\Users\admin"
+    assert str(normalize_windows_path(r"C:\Users\admin")) == r"C:\Users\admin"
+    assert str(normalize_windows_path("C:/Users/admin/test")) == r"C:\Users\admin\test"
+    assert str(normalize_windows_path("/C:/Users/admin")) == r"C:\Users\admin"
+    # Idempotent: already-correct paths are unchanged
+    assert str(normalize_windows_path(r"C:\Users\admin")) == r"C:\Users\admin"
+    print("All normalize tests passed")

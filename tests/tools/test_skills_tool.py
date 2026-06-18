@@ -1153,7 +1153,7 @@ class TestSkillViewCollisionDetection:
 
     def test_nested_local_collides_with_top_level_external(self, tmp_path):
         """The original bug scenario: nested local + top-level external,
-        same name. Now refuses with both paths surfaced."""
+        same name. Now auto-selects highest priority (local profile dir)."""
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -1172,18 +1172,13 @@ class TestSkillViewCollisionDetection:
             raw = skill_view("explore-codebase")
 
         result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous skill name 'explore-codebase'" in result["error"]
-        assert "matches" in result
-        assert len(result["matches"]) == 2
-        # Both paths surfaced
-        assert any("foundations/runtime" in p for p in result["matches"])
-        assert any("external" in p for p in result["matches"])
-        assert "hint" in result
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+        assert "EXTERNAL VERSION" not in result["content"]
 
     def test_top_level_local_collides_with_external(self, tmp_path):
         """Top-level local + top-level external with the same name also
-        refuses — same-name shadowing is ambiguous regardless of nesting."""
+        auto-selects highest priority — local wins over external."""
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -1197,9 +1192,8 @@ class TestSkillViewCollisionDetection:
             raw = skill_view("shared-name")
 
         result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous" in result["error"]
-        assert len(result["matches"]) == 2
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
 
     def test_collision_resolvable_via_categorized_path(self, tmp_path):
         """User can recover from a collision by passing the full
@@ -1257,7 +1251,8 @@ class TestSkillViewCollisionDetection:
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["path"] == "creative/sketch/SKILL.md"
+        # Normalize path separators for cross-platform comparison
+        assert os.path.normpath(result["path"]) == os.path.normpath("creative/sketch/SKILL.md")
         assert "REAL SKETCH SKILL" in result["content"]
 
     def test_reference_package_skill_md_is_not_active_skill(self, tmp_path):
@@ -1327,8 +1322,8 @@ class TestSkillViewCollisionDetection:
         assert "EXTERNAL BODY" in result["content"]
 
     def test_two_externals_same_name_also_refuse(self, tmp_path):
-        """Collision detection is symmetric — two external dirs with
-        same-name skills also trigger the refusal."""
+        """Two external dirs with same-name skills also auto-select
+        the first (highest priority) external dir."""
         local_dir = tmp_path / "local"
         ext_a = tmp_path / "ext_a"
         ext_b = tmp_path / "ext_b"
@@ -1344,9 +1339,9 @@ class TestSkillViewCollisionDetection:
             raw = skill_view("pr")
 
         result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous" in result["error"]
-        assert len(result["matches"]) == 2
+        assert result["success"] is True
+        assert "EXT_A VERSION" in result["content"]
+        assert "EXT_B VERSION" not in result["content"]
 
     def test_local_only_skill_loads_normally(self, tmp_path):
         """Sanity: a single local skill (no external collision) loads

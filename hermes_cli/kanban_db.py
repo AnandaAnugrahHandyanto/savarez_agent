@@ -774,6 +774,9 @@ class Task:
     # list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
+    # JSON blob with degradation info when graceful degradation was applied
+    # (model switch, split attempt, etc.). NULL = no degradation applied.
+    degradation_metadata: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -864,6 +867,9 @@ class Task:
             ),
             skills=skills_value,
             model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
+            degradation_metadata=(
+                row["degradation_metadata"] if "degradation_metadata" in keys and row["degradation_metadata"] else None
+            ),
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
@@ -1016,6 +1022,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to the worker, overriding the profile's default model. NULL = use
     -- the profile default.
     model_override       TEXT,
+    -- JSON blob with graceful-degradation state. Written when the
+    -- dispatcher applies a degradation strategy (model switch, auto-split
+    -- attempt) after hitting the degradation threshold. NULL = no
+    -- degradation history.
+    degradation_metadata TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -1669,6 +1680,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
+
+    if "degradation_metadata" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "degradation_metadata", "degradation_metadata TEXT"
+        )
 
     if "goal_mode" not in cols:
         # Ralph-style goal loop toggle for the dispatched worker. 0 (the
@@ -4811,9 +4827,14 @@ def schedule_task(
 # dispatcher stops retrying and parks the task in ``blocked`` with a reason so
 # a human can investigate. Prevents retry storms when a worker repeatedly times
 # out, crashes, or cannot spawn.
-DEFAULT_FAILURE_LIMIT = 2
+DEFAULT_FAILURE_LIMIT = 3
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
+
+# Degradation threshold: at this many consecutive failures, the dispatcher
+# applies graceful degradation (switch model + auto-split attempt) before
+# allowing one more retry. Must be < DEFAULT_FAILURE_LIMIT.
+DEFAULT_DEGRADE_THRESHOLD = 2
 
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
@@ -4855,9 +4876,241 @@ _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
 # Pattern matching a GitHub PR URL in task comments.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+    r"https?://github\\.com/[^/\\s]+/[^/\\s]+/pull/\\d+",
     re.IGNORECASE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Graceful degradation helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_fallback_model(conn=None) -> Optional[str]:
+    """Resolve the fallback model for degraded retry from configuration.
+
+    Checks, in order:
+      1. ``HERMES_KANBAN_DEGRADED_MODEL`` env var (operator override)
+      2. ``kanban.degraded_model`` in config.yaml (project default)
+
+    Returns ``None`` when no fallback is configured — degradation still
+    records the attempt in metadata but does not change the model.
+    """
+    env_val = os.environ.get("HERMES_KANBAN_DEGRADED_MODEL", "").strip()
+    if env_val:
+        return env_val or None
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        cfg_val = (cfg.get("kanban", {}) or {}).get("degraded_model", "").strip()
+        if cfg_val:
+            return cfg_val
+    except Exception:
+        pass
+    return None
+
+
+def _attempt_task_split(body: Optional[str]) -> Optional[list[dict]]:
+    """Heuristically split a task body into subtask outlines.
+
+    Looking for:
+      - Markdown headings (``## ...``, ``### ...``)
+      - Numbered sections (``1. ...``, ``2. ...``)
+
+    Returns a list of ``{"title": ..., "body_snippet": ...}`` dicts, or
+    ``None`` when no meaningful split points are found (fewer than 2 sections,
+    or sections too short to be real work items).
+    """
+    if not body or len(body) < 40:
+        return None
+    import re as _re
+    # Try heading splits first.
+    heading_pattern = _re.compile(r"^(#{2,4})\s+(.+)$", _re.MULTILINE)
+    heading_matches = list(heading_pattern.finditer(body))
+    if len(heading_matches) >= 2:
+        outlines = []
+        for i, m in enumerate(heading_matches):
+            start = m.end()
+            end = heading_matches[i + 1].start() if i + 1 < len(heading_matches) else len(body)
+            snippet = body[start:end].strip()[:200]
+            outlines.append({"title": m.group(2).strip(), "body_snippet": snippet})
+        return outlines if len(outlines) >= 2 else None
+    # Try numbered-list splits.
+    num_pattern = _re.compile(r"^(\d+)[\.\)]\s+(.+)$", _re.MULTILINE)
+    num_matches = list(num_pattern.finditer(body))
+    if len(num_matches) >= 2:
+        outlines = []
+        for i, m in enumerate(num_matches):
+            start = m.end()
+            end = num_matches[i + 1].start() if i + 1 < len(num_matches) else len(body)
+            snippet = body[start:end].strip()[:200]
+            outlines.append({"title": m.group(2).strip(), "body_snippet": snippet})
+        return outlines if len(outlines) >= 2 else None
+    return None
+
+
+def _maybe_apply_degradation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    error: str = "",
+    protocol_violation: bool = False,
+) -> Optional[str]:
+    """Apply graceful degradation when the task hits the degradation threshold.
+
+    Called from ``detect_crashed_workers`` before recording the failure.
+    When the current ``consecutive_failures + 1 == DEFAULT_DEGRADE_THRESHOLD``:
+
+    **Plan B (model switch):** Sets ``model_override`` to the configured
+    fallback model so the next retry uses a different model.
+
+    **Plan A (auto-split):** Attempts to heuristically split the task body
+    into child subtask cards and links them as children. The original task
+    stays live for its degraded retry.
+
+    Stores a JSON degradation blob in ``degradation_metadata`` and emits a
+    ``degradation`` event.
+
+    Returns the fallback model name when degradation was applied, ``None``
+    otherwise (already degraded, protocol violation, not at threshold).
+    """
+    if protocol_violation:
+        return None
+
+    row = conn.execute(
+        "SELECT consecutive_failures, body, degradation_metadata FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    current_failures = int(row["consecutive_failures"])
+    # Degradation fires at the threshold (default: 2nd consecutive failure).
+    if current_failures + 1 != DEFAULT_DEGRADE_THRESHOLD:
+        return None
+
+    # Don't degrade twice.
+    if row["degradation_metadata"]:
+        return None
+
+    # Plan B: resolve fallback model.
+    fallback_model = _resolve_fallback_model()
+
+    # Plan A: heuristically split body.
+    split_outlines = _attempt_task_split(row["body"])
+
+    degradation_meta = {
+        "applied_at": int(time.time()),
+        "failure_count": current_failures + 1,
+        "error_snippet": error[:200] if error else "",
+        "plan_b_model": fallback_model,
+        "plan_a_split_outlines": split_outlines,
+        "reason": (
+            f"自动降级：连续 {current_failures + 1} 次运行失败，"
+            f"已达降级阈值。切换模型重试一次。"
+            + (" 已尝试拆分子任务。" if split_outlines else "")
+        ),
+    }
+
+    with write_txn(conn):
+        # Plan B: set model override for next spawn.
+        if fallback_model:
+            conn.execute(
+                "UPDATE tasks SET model_override = ?, degradation_metadata = ? "
+                "WHERE id = ?",
+                (fallback_model, json.dumps(degradation_meta, ensure_ascii=False), task_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE tasks SET degradation_metadata = ? WHERE id = ?",
+                (json.dumps(degradation_meta, ensure_ascii=False), task_id),
+            )
+
+        # Plan A: create child subtask cards when a split was found.
+        child_ids: list[str] = []
+        if split_outlines:
+            parent_title = conn.execute(
+                "SELECT title FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            parent_prefix = (parent_title["title"] if parent_title else task_id)[:60]
+            for outline in split_outlines:
+                child_title = outline["title"]
+                if len(child_title) > 100:
+                    child_title = child_title[:97] + "..."
+                child_body = (
+                    f"# 拆分自: {task_id}\n\n"
+                    f"原任务: {parent_prefix}\n\n"
+                    f"降级重试子任务\n\n"
+                    f"{outline['body_snippet']}"
+                )
+                child_id = _make_task_id()
+                now_ts = int(time.time())
+                conn.execute(
+                    """INSERT INTO tasks
+                       (id, title, body, status, priority, created_at,
+                        workspace_kind)
+                       VALUES (?, ?, ?, 'ready', ?, ?, 'scratch')""",
+                    (child_id, child_title, child_body, 0, now_ts),
+                )
+                _append_event(conn, child_id, "created", {
+                    "title": child_title,
+                    "source": "degradation_split",
+                    "parent_task": task_id,
+                })
+                child_ids.append(child_id)
+
+            # Link children.
+            for cid in child_ids:
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
+                    "VALUES (?, ?)",
+                    (task_id, cid),
+                )
+
+        _append_event(conn, task_id, "degradation", {
+            "failure_count": current_failures + 1,
+            "fallback_model": fallback_model,
+            "child_tasks": child_ids if child_ids else None,
+            "error": error[:200] if error else "",
+        })
+
+    return fallback_model
+
+
+_ILLEGAL_CONTROL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]')
+_MAX_BODY_BYTES = 100 * 1024
+
+
+def validate_task_body(body: Optional[str]) -> "tuple[bool, str, Optional[str]]":
+    """Validate a task body before dispatching to a worker.
+
+    Returns ``(valid, reason, cleaned_body)``. ``valid=False`` means the
+    dispatcher must skip the spawn and log ``reason``. ``valid=True``
+    returns the body (possibly truncated or cleaned) or the original.
+
+    Rules (from kanban first-line defense spec):
+    * ``body=None`` → pass-through (no body provided at all).
+    * Empty / whitespace-only body → reject.
+    * Body > 100 KB → warn + truncate (no block).
+    * Illegal control characters → strip in-place (no block).
+    """
+    if body is None:
+        return (True, "", None)
+    if not body.strip():
+        return (False, "task body is empty", None)
+
+    raw_bytes = body.encode("utf-8", errors="replace")
+    if len(raw_bytes) > _MAX_BODY_BYTES:
+        truncated = raw_bytes[:_MAX_BODY_BYTES].decode("utf-8", errors="replace")
+        _log.warning(
+            "kanban validate: task body exceeds %d bytes, truncated",
+            _MAX_BODY_BYTES,
+        )
+        return (True, "body truncated (>100 KB)", truncated)
+
+    cleaned = _ILLEGAL_CONTROL_RE.sub("", body)
+    if cleaned != body:
+        _log.info("kanban validate: stripped control characters from task body")
+    return (True, "", cleaned)
 
 
 @dataclass
@@ -5593,6 +5846,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # ready → blocked with a ``gave_up`` event on top of the ``crashed``
     # event we already emitted.
     #
+    # Before recording the failure, check the graceful-degradation
+    # threshold: at the 2nd consecutive crash (DEFAULT_DEGRADE_THRESHOLD),
+    # apply degradation (switch model + auto-split attempt) to give the
+    # task one more chance with a different config. Only the 3rd crash
+    # (DEFAULT_FAILURE_LIMIT) trips the circuit breaker.
+    #
     # Protocol-violation crashes force an immediate trip (failure_limit=1)
     # because clean-exit-without-transition is deterministic: the next
     # respawn will do exactly the same thing. Better to surface to a
@@ -5611,6 +5870,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 not protocol_violation
                 and _fp_counts.get(fp, 0) >= 3
             )
+            # --- Graceful degradation check ---
+            # Only for real crashes (not protocol violations, not systemic).
+            # The degradation fires at the 2nd consecutive failure — it sets
+            # a fallback model and optionally creates child subtask cards.
+            if not protocol_violation and not is_systemic:
+                _maybe_apply_degradation(
+                    conn, tid,
+                    error=error_text,
+                    protocol_violation=False,
+                )
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
@@ -6727,6 +6996,13 @@ def _default_spawn(
     vars all resolve to the same board the dispatcher claimed the task
     from. Workers cannot accidentally see other boards.
     """
+    valid, reason, _ = validate_task_body(task.body)
+    if not valid:
+        _log.warning(
+            "kanban dispatch: skipping spawn for task %s: %s",
+            task.id, reason,
+        )
+        return None
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
@@ -7114,18 +7390,46 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # Cross-task role history: what else has THIS assignee completed
     # recently? Gives the worker implicit continuity — "I'm the reviewer
     # and my last three reviews focused on security" — without forcing
-    # the user to wire anything into SOUL.md / MEMORY.md. Bounded to the
-    # most recent 5 completed runs, excluding this task so the retry
-    # section above isn't duplicated. Safe on assignee=None (skipped).
+    # the user to wire anything into SOUL.md / MEMORY.md.
+    #
+    # v1.5.1 — Task-type-aware injection (context-health-check companion):
+    #   simple   → 0 sessions (trivial tasks, max speed)
+    #   standard → 2 sessions (balance context vs cost)
+    #   critical → 5 sessions (full continuity, safety first)
+    #   missing  → 3 sessions (safe fallback — never inject 0 on unknown)
+    #
+    # See: skills/context-health-check v1.5.0 for the parallel triage.
     if task.assignee:
-        role_rows = conn.execute(
-            "SELECT t.id, t.title, r.summary, r.ended_at "
-            "FROM task_runs r JOIN tasks t ON r.task_id = t.id "
-            "WHERE r.profile = ? AND r.task_id != ? "
-            "  AND r.outcome = 'completed' "
-            "ORDER BY r.ended_at DESC LIMIT 5",
-            (task.assignee, task_id),
-        ).fetchall()
+        # Parse task_type from body tag (zero-cost regex, Planner injects)
+        _role_limit = 5  # default: critical / legacy
+        _task_type_label = "missing"
+        if task.body:
+            import re
+            _m = re.search(r'\[task_type:\s*(simple|standard|critical)\]', task.body)
+            if _m:
+                _task_type_label = _m.group(1)
+        _role_limit = {"simple": 0, "standard": 2, "critical": 5}.get(
+            _task_type_label, 3  # fallback: missing/unknown → 3
+        )
+
+        _logger = logging.getLogger(__name__)
+        _logger.debug(
+            "[KanbanDB] Task type: %s. Injected %d recent sessions for @%s.",
+            _task_type_label, _role_limit, task.assignee,
+        )
+
+        if _role_limit > 0:
+            role_rows = conn.execute(
+                "SELECT t.id, t.title, r.summary, r.ended_at "
+                "FROM task_runs r JOIN tasks t ON r.task_id = t.id "
+                "WHERE r.profile = ? AND r.task_id != ? "
+                "  AND r.outcome = 'completed' "
+                "ORDER BY r.ended_at DESC LIMIT ?",
+                (task.assignee, task_id, _role_limit),
+            ).fetchall()
+        else:
+            role_rows = []
+
         if role_rows:
             lines.append(f"## Recent work by @{task.assignee}")
             for row in role_rows:

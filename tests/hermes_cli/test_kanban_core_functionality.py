@@ -101,7 +101,7 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
-        assert kb.DEFAULT_FAILURE_LIMIT == 2
+        assert kb.DEFAULT_FAILURE_LIMIT == 3
         # One default-limit failure → still ready, counter grows.
         res1 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
         assert tid not in res1.auto_blocked
@@ -109,12 +109,19 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
         assert task.status == "ready"
         assert task.consecutive_failures == 1
 
-        # Second default-limit failure trips the guard.
+        # Second default-limit failure → degradation fires, still ready.
         res2 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
-        assert tid in res2.auto_blocked
+        assert tid not in res2.auto_blocked
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 2
+
+        # Third default-limit failure trips the guard.
+        res3 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
+        assert tid in res3.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        assert task.consecutive_failures >= 2
+        assert task.consecutive_failures >= 3
         assert task.last_failure_error and "no PATH" in task.last_failure_error
     finally:
         conn.close()
@@ -1013,7 +1020,7 @@ def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
                 conn, title="long job", assignee="worker",
                 max_runtime_seconds=1,
             )
-            for expected_failures in (1, 2):
+            for expected_failures in (1, 2, 3):
                 kb.claim_task(conn, tid)
                 kb._set_worker_pid(conn, tid, os.getpid())
                 _age_active_run(conn, tid)
@@ -1024,7 +1031,7 @@ def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
             task = kb.get_task(conn, tid)
             assert task.status == "blocked"
             events = kb.list_events(conn, tid)
-            assert [e.kind for e in events].count("timed_out") == 2
+            assert [e.kind for e in events].count("timed_out") == 3
             gave_up = [e for e in events if e.kind == "gave_up"]
             assert gave_up and gave_up[-1].payload["trigger_outcome"] == "timed_out"
         finally:
@@ -2408,8 +2415,8 @@ def test_build_worker_context_role_history_skipped_when_no_assignee(kanban_home)
 
 
 def test_build_worker_context_role_history_bounded_to_5(kanban_home):
-    """Role history must be capped at 5 entries even when the assignee
-    has many completed tasks."""
+    """Role history limit depends on task_type tag. Without tags (legacy),
+    fallback is 3. With [task_type: critical], cap is 5."""
     conn = kb.connect()
     try:
         for i in range(10):
@@ -2419,12 +2426,32 @@ def test_build_worker_context_role_history_bounded_to_5(kanban_home):
             kb.claim_task(conn, tid)
             kb.complete_task(conn, tid, summary=f"done #{i}")
 
-        new_tid = kb.create_task(conn, title="new", assignee="worker")
-        ctx = kb.build_worker_context(conn, new_tid)
-        # Section should exist and contain exactly 5 bullet lines.
+        # No tag → fallback 3
+        new_no_tag = kb.create_task(conn, title="new", assignee="worker")
+        ctx = kb.build_worker_context(conn, new_no_tag)
         section = ctx.split("## Recent work by @worker")[1]
         bullets = [l for l in section.splitlines() if l.startswith("- ")]
-        assert len(bullets) == 5, f"expected 5 bullets, got {len(bullets)}"
+        assert len(bullets) == 3, f"no-tag fallback expected 3, got {len(bullets)}"
+
+        # Explicit critical → 5
+        new_critical = kb.create_task(
+            conn, title="new critical", assignee="worker",
+            body="[task_type: critical]",
+        )
+        ctx = kb.build_worker_context(conn, new_critical)
+        section = ctx.split("## Recent work by @worker")[1]
+        bullets = [l for l in section.splitlines() if l.startswith("- ")]
+        assert len(bullets) == 5, f"critical expected 5, got {len(bullets)}"
+
+        # Explicit simple → 0 section
+        new_simple = kb.create_task(
+            conn, title="new simple", assignee="worker",
+            body="[task_type: simple]",
+        )
+        ctx = kb.build_worker_context(conn, new_simple)
+        assert "## Recent work by @worker" not in ctx, (
+            "simple tasks should have no recent work section"
+        )
     finally:
         conn.close()
 
