@@ -155,6 +155,33 @@ Use `/model` to switch models mid-session. Use a frontier model (Claude Sonnet/O
 Run `/usage` periodically to see your token consumption. Run `/insights` for a broader view of usage patterns over the last 30 days.
 :::
 
+### Gateway Memory Under Cron Load
+
+If you run many cron jobs or scheduled tasks, the gateway process may show steadily climbing RSS (resident memory). This is usually not a leak in the code -- it is Python's memory allocator holding onto freed memory for reuse.
+
+Python's default allocator manages memory in 4MB "arenas." When objects are freed, the memory stays mapped to the process and is never returned to the OS. Under sustained cron workloads with many short-lived subagent sessions, this causes RSS to climb from ~400MB toward several GB over hours.
+
+**The fix:** preload jemalloc, an allocator that actively returns unused pages to the OS:
+
+```bash
+# Create a systemd drop-in
+mkdir -p ~/.config/systemd/user/hermes-gateway.service.d
+cat > ~/.config/systemd/user/hermes-gateway.service.d/memory.conf << 'EOF'
+[Service]
+Environment="LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2"
+EOF
+systemctl --user daemon-reload
+systemctl --user restart hermes-gateway
+```
+
+Verify it is active:
+
+```bash
+cat /proc/$(pgrep -f 'hermes_cli.main.*gateway' | head -1)/maps | grep jemalloc
+```
+
+With jemalloc loaded, gateway RSS stays flat under the same workload. See [Production Deployment](./production-deployment.md) for the full guide.
+
 ## Messaging Tips
 
 ### Set a Home Channel
