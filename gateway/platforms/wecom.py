@@ -214,6 +214,8 @@ class WeComAdapter(BasePlatformAdapter):
             self._set_fatal_error("wecom_missing_credentials", message, retryable=True)
             logger.warning("[%s] %s", self.name, message)
             return False
+        if not self._acquire_platform_lock("wecom-bot-id", self._bot_id, "WeCom bot ID"):
+            return False
 
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
@@ -235,6 +237,7 @@ class WeComAdapter(BasePlatformAdapter):
             if self._http_client:
                 await self._http_client.aclose()
                 self._http_client = None
+            self._release_platform_lock()
             return False
 
     async def disconnect(self) -> None:
@@ -266,6 +269,7 @@ class WeComAdapter(BasePlatformAdapter):
             self._http_client = None
 
         self._dedup.clear()
+        self._release_platform_lock()
         logger.info("[%s] Disconnected", self.name)
 
     async def _cleanup_ws(self) -> None:
