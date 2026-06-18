@@ -196,13 +196,12 @@ def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
     """Briefly block until background MCP discovery finishes, up to ``timeout``.
 
     MCP discovery runs in a daemon thread spawned at startup (see main()) so a
-    slow/dead server can't freeze ``gateway.ready``.  But the agent snapshots
-    its tool list ONCE at build time and never re-reads it, so a reachable-but-
-    slow server that finishes connecting *after* the first prompt would be
-    invisible for the whole session.  Joining with a short bounded timeout
+    slow/dead server can't freeze ``gateway.ready``.  A short bounded wait
     before the first agent build lets already-spawning fast servers land
-    without re-introducing the startup hang: a dead server simply isn't waited
-    on beyond ``timeout``.  No-op when no discovery thread was started.
+    without re-introducing the startup hang.  Slow servers (lark ~8s, redis
+    ~10s) are handled by the late-binding refresh thread that auto-merges
+    their tools into the running agent once discovery completes (see
+    ``spawn_late_mcp_refresh`` in ``hermes_cli.mcp_startup``).
     """
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
@@ -289,6 +288,16 @@ def main():
         # already-spawning fast servers to land (see wait_for_mcp_discovery).
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
+        # Also publish to mcp_startup so spawn_late_mcp_refresh can see it.
+        # Only mark as started if the thread is actually alive — avoids
+        # permanently blocking start_background_mcp_discovery() on failure.
+        try:
+            import hermes_cli.mcp_startup as _mcp_startup
+            _mcp_startup._mcp_discovery_thread = _mcp_thread
+            if _mcp_thread.is_alive():
+                _mcp_startup._mcp_discovery_started = True
+        except Exception:
+            pass
 
     if not write_json({
         "jsonrpc": "2.0",
