@@ -1026,6 +1026,118 @@ def _build_rename_summary(
     return "\n".join(lines)
 
 
+_REF_LINK_RE = re.compile(r"references/[\w\-./]+\.md")
+_REF_MIN_BYTES = 200
+
+
+def _verify_consolidation_integrity(
+    consolidated: List[Dict[str, Any]],
+    pruned: List[Dict[str, Any]],
+    skills_root: Path,
+    archive_root: Path,
+) -> Dict[str, Any]:
+    """Post-pass on-disk verification for the curator's consolidation claims.
+
+    The curator's LLM consolidation pass directs a subagent to copy each
+    sibling's content into ``<umbrella>/references/<topic>.md`` and then
+    archive the source. We trust the model's textual summary, but the
+    subagent occasionally drops the copy step while still listing the
+    reference in the new umbrella SKILL.md — silent dead links.
+
+    This helper independently checks each consolidation/pruning claim
+    against the filesystem and returns a structured report. It NEVER
+    raises: any error reading a SKILL.md is logged and that entry is
+    skipped, so verification failures cannot break the run report.
+    """
+    result: Dict[str, Any] = {
+        "consolidations_checked": 0,
+        "prunings_checked": 0,
+        "missing_refs": [],
+        "missing_archives": [],
+        "prunings_without_archive": [],
+        "prunings_with_empty_refs": [],
+        "ok": True,
+    }
+
+    for entry in consolidated or []:
+        if not isinstance(entry, dict):
+            continue
+        src = entry.get("name")
+        dst = entry.get("into")
+        if not src or not dst:
+            continue
+        result["consolidations_checked"] += 1
+
+        archived_skill = archive_root / src / "SKILL.md"
+        if not archived_skill.exists():
+            result["missing_archives"].append({"from": src, "into": dst})
+            continue
+
+        try:
+            body = archived_skill.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            logger.debug("Verifier could not read %s: %s", archived_skill, e)
+            continue
+
+        declared_refs = sorted(set(_REF_LINK_RE.findall(body)))
+        for ref in declared_refs:
+            target = skills_root / dst / ref
+            if not target.exists():
+                result["missing_refs"].append(
+                    {"from": src, "into": dst, "ref": ref, "reason": "absent"}
+                )
+            else:
+                try:
+                    if target.stat().st_size <= _REF_MIN_BYTES:
+                        result["missing_refs"].append(
+                            {"from": src, "into": dst, "ref": ref, "reason": "too_small"}
+                        )
+                except Exception as e:
+                    logger.debug("Verifier stat failed on %s: %s", target, e)
+
+    for entry in pruned or []:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+        else:
+            name = entry
+        if not name:
+            continue
+        result["prunings_checked"] += 1
+
+        archived_skill = archive_root / name / "SKILL.md"
+        if not archived_skill.exists():
+            result["prunings_without_archive"].append(
+                {"name": name, "archive_missing": True}
+            )
+            continue
+
+        refs_dir = archive_root / name / "references"
+        if refs_dir.is_dir():
+            try:
+                if not any(refs_dir.iterdir()):
+                    result["prunings_with_empty_refs"].append({"name": name})
+            except Exception as e:
+                logger.debug("Verifier could not list %s: %s", refs_dir, e)
+
+    if (
+        result["missing_refs"]
+        or result["missing_archives"]
+        or result["prunings_without_archive"]
+        or result["prunings_with_empty_refs"]
+    ):
+        result["ok"] = False
+        logger.warning(
+            "Curator verification found issues: %d missing refs, %d missing archives, "
+            "%d prunings without archive, %d prunings with empty refs",
+            len(result["missing_refs"]),
+            len(result["missing_archives"]),
+            len(result["prunings_without_archive"]),
+            len(result["prunings_with_empty_refs"]),
+        )
+
+    return result
+
+
 def _write_run_report(
     *,
     started_at: datetime,
@@ -1156,6 +1268,30 @@ def _write_run_report(
             "error": str(e),
         }
 
+    # On-disk verification of the curator's consolidation/pruning claims.
+    # See _verify_consolidation_integrity for rationale (issue #44760).
+    skills_root = get_hermes_home() / "skills"
+    archive_root = skills_root / ".archive"
+    try:
+        verification = _verify_consolidation_integrity(
+            consolidated=consolidated,
+            pruned=pruned,
+            skills_root=skills_root,
+            archive_root=archive_root,
+        )
+    except Exception as e:
+        logger.debug("Curator verification helper failed: %s", e, exc_info=True)
+        verification = {
+            "consolidations_checked": 0,
+            "prunings_checked": 0,
+            "missing_refs": [],
+            "missing_archives": [],
+            "prunings_without_archive": [],
+            "prunings_with_empty_refs": [],
+            "ok": True,
+            "error": str(e),
+        }
+
     payload = {
         "started_at": started_at.isoformat(),
         "duration_seconds": round(elapsed_seconds, 2),
@@ -1173,6 +1309,11 @@ def _write_run_report(
             "state_transitions": len(transitions),
             "cron_jobs_rewritten": int(cron_rewrites.get("jobs_updated", 0)),
             "tool_calls_total": sum(tc_counts.values()),
+            "verification_missing_refs": len(verification.get("missing_refs", [])),
+            "verification_missing_archives": (
+                len(verification.get("missing_archives", []))
+                + len(verification.get("prunings_without_archive", []))
+            ),
         },
         "tool_call_counts": tc_counts,
         "archived": removed,
@@ -1182,6 +1323,7 @@ def _write_run_report(
         "added": added,
         "state_transitions": transitions,
         "cron_rewrites": cron_rewrites,
+        "verification": verification,
         "llm_final": llm_meta.get("final", ""),
         "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"),
@@ -1377,6 +1519,58 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
                 "(see `cron_rewrites.json`)"
             )
         lines.append("")
+
+    # Verification — on-disk audit of consolidation/pruning claims.
+    # Rendered only when there's at least one finding so normal runs
+    # stay quiet (issue #44760).
+    verification = p.get("verification") or {}
+    missing_refs = verification.get("missing_refs") or []
+    missing_archives = verification.get("missing_archives") or []
+    prunings_without_archive = verification.get("prunings_without_archive") or []
+    prunings_with_empty_refs = verification.get("prunings_with_empty_refs") or []
+    if (
+        missing_refs
+        or missing_archives
+        or prunings_without_archive
+        or prunings_with_empty_refs
+    ):
+        lines.append("## Verification\n")
+        archive_issues = (
+            len(missing_archives)
+            + len(prunings_without_archive)
+            + len(prunings_with_empty_refs)
+        )
+        lines.append(
+            f"⚠ Found {len(missing_refs)} dead reference link(s) and "
+            f"{archive_issues} archive-integrity issue(s).\n"
+        )
+        if missing_refs:
+            lines.append("### Missing references (declared by umbrella but not on disk)\n")
+            for entry in missing_refs:
+                lines.append(
+                    f"- `{entry.get('from','?')}` → `{entry.get('into','?')}` — "
+                    f"`{entry.get('ref','?')}` (reason: {entry.get('reason','?')})"
+                )
+            lines.append("")
+        if missing_archives:
+            lines.append("### Consolidations missing archived source\n")
+            for entry in missing_archives:
+                lines.append(
+                    f"- `{entry.get('from','?')}` → `{entry.get('into','?')}` — "
+                    "no archived SKILL.md at expected location"
+                )
+            lines.append("")
+        if prunings_without_archive or prunings_with_empty_refs:
+            lines.append("### Prunings without recoverable archive\n")
+            for entry in prunings_without_archive:
+                lines.append(
+                    f"- `{entry.get('name','?')}` — archive missing"
+                )
+            for entry in prunings_with_empty_refs:
+                lines.append(
+                    f"- `{entry.get('name','?')}` — archived references/ left empty"
+                )
+            lines.append("")
 
     # Full LLM final response
     final = (p.get("llm_final") or "").strip()
