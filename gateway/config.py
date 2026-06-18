@@ -1041,6 +1041,17 @@ def load_gateway_config() -> GatewayConfig:
             # Slack settings → env vars (env vars take precedence)
             slack_cfg = yaml_cfg.get("slack", {})
             if isinstance(slack_cfg, dict):
+                _slack_plat = platforms_data.setdefault(Platform.SLACK.value, {})
+                _slack_extra = _slack_plat.setdefault("extra", {})
+                for _key in (
+                    "backfill_channels",
+                    "socket_stale_after_s",
+                    "backfill_interval_s",
+                    "backfill_window_s",
+                ):
+                    if _key in slack_cfg:
+                        _slack_extra.setdefault(_key, slack_cfg[_key])
+
                 if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
                     os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
                 if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
