@@ -6887,11 +6887,34 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
     # desktop routes their DELETE to the remote backend. Omit for current/default.
     db = _open_session_db_for_profile(profile)
     try:
-        if not db.delete_session(session_id):
-            raise HTTPException(status_code=404, detail="Session not found")
-        return {"ok": True}
+        if db.delete_session(session_id):
+            return {"ok": True}
     finally:
         db.close()
+
+    # Session not found in the requested/current profile's state.db.
+    # When the desktop active profile differs from the session's owning
+    # profile, the Electron router may send the request to the wrong backend
+    # (e.g. active=job but session lives in default).  Fall back to scanning
+    # every local profile so the delete still succeeds.
+    from hermes_state import SessionDB
+    from hermes_cli import profiles as profiles_mod
+    for info in profiles_mod.list_profiles():
+        home = info.path
+        db_path = home / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = SessionDB(db_path=db_path)
+        except Exception:
+            continue
+        try:
+            if db.delete_session(session_id):
+                return {"ok": True}
+        finally:
+            db.close()
+
+    raise HTTPException(status_code=404, detail="Session not found")
 
 
 class SessionRename(BaseModel):
@@ -6913,27 +6936,51 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
     db = _open_session_db_for_profile(body.profile)
     try:
         sid = db.resolve_session_id(session_id)
-        if not sid:
-            raise HTTPException(status_code=404, detail="Session not found")
-        if body.title is None and body.archived is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Nothing to update; provide 'title' and/or 'archived'.",
-            )
-        if body.title is not None:
-            try:
-                db.set_session_title(sid, body.title or "")
-            except ValueError as e:
-                # Title too long, invalid characters, or already in use.
-                raise HTTPException(status_code=400, detail=str(e))
-        if body.archived is not None:
-            db.set_session_archived(sid, body.archived)
-        result = {"ok": True, "title": db.get_session_title(sid) or ""}
-        if body.archived is not None:
-            result["archived"] = bool(body.archived)
-        return result
+        if sid:
+            return _apply_session_update(db, sid, body)
     finally:
         db.close()
+
+    # Fallback: scan all profiles (same rationale as delete_session_endpoint).
+    from hermes_state import SessionDB
+    from hermes_cli import profiles as profiles_mod
+    for info in profiles_mod.list_profiles():
+        home = info.path
+        db_path = home / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = SessionDB(db_path=db_path)
+        except Exception:
+            continue
+        try:
+            sid = db.resolve_session_id(session_id)
+            if sid:
+                return _apply_session_update(db, sid, body)
+        finally:
+            db.close()
+
+    raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _apply_session_update(db, sid: str, body: SessionRename):
+    """Apply title/archived mutations to an already-resolved session."""
+    if body.title is None and body.archived is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Nothing to update; provide 'title' and/or 'archived'.",
+        )
+    if body.title is not None:
+        try:
+            db.set_session_title(sid, body.title or "")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    if body.archived is not None:
+        db.set_session_archived(sid, body.archived)
+    result = {"ok": True, "title": db.get_session_title(sid) or ""}
+    if body.archived is not None:
+        result["archived"] = bool(body.archived)
+    return result
 
 
 @app.get("/api/sessions/{session_id}/export")
