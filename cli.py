@@ -9825,10 +9825,12 @@ class HermesCLI:
         self._clarify_freetext = False
         self._clarify_deadline = 0
         self._invalidate()
-        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
+        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — treating as refusal){_RST}")
         return (
             "The user did not provide a response within the time limit. "
-            "Use your best judgement to make the choice and proceed."
+            "Treat this as a refusal — do NOT proceed with any pending "
+            "destructive or irreversible action. Ask again or wait for "
+            "explicit confirmation."
         )
 
     def _sudo_password_callback(self) -> str:
