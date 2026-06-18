@@ -2,13 +2,14 @@
 get_tool_definitions().
 
 Invariants:
-- Core tools (_STUB_MODE_FULL_TOOLS) keep full schemas (parameters present).
-- Non-core tools are reduced to {name, description} only.
+- Core tools (_STUB_MODE_FULL_TOOLS) keep full schemas (parameters present with properties).
+- Non-core tools are reduced to a minimal stub: {name, description, parameters: {type:object, properties:{}}}.
 - The description of a stubbed tool is annotated with the delegation hint.
 - stub_mode=False (default) leaves all schemas intact.
-- stub_mode is cache-keyed independently — a full call and a stub call
-  never share a cached object.
+- stub_mode is cache-keyed independently — a full call and a stub call never share a cached object.
 - _apply_stub_mode is safe on an empty list.
+- Subagents (platform="subagent") always receive full schemas regardless of config.
+- stub_mode bypasses Tool Search assembly so the full catalog is available to stub.
 """
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ import pytest
 
 import model_tools
 from model_tools import _apply_stub_mode, _STUB_MODE_FULL_TOOLS
+
+_MINIMAL_STUB_PARAMS = {"type": "object", "properties": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +34,18 @@ def _make_tool(name: str, *, extra_param: bool = True) -> dict:
             "required": ["arg1"],
         }
     return {"type": "function", "function": fn}
+
+
+def _is_stub(tool: dict) -> bool:
+    """True if this tool entry carries only the minimal stub parameters."""
+    params = tool["function"].get("parameters", {})
+    return params == _MINIMAL_STUB_PARAMS
+
+
+def _is_full(tool: dict) -> bool:
+    """True if the tool has a non-trivial parameters schema (real properties)."""
+    params = tool["function"].get("parameters", {})
+    return bool(params.get("properties"))
 
 
 # Pick one known core tool and one known non-core tool for parametrised tests.
@@ -50,19 +65,19 @@ class TestApplyStubMode:
         tool = _make_tool(_CORE_TOOL)
         result = _apply_stub_mode([tool])
         assert len(result) == 1
-        fn = result[0]["function"]
-        assert "parameters" in fn, "Core tool must retain its parameters schema."
+        assert _is_full(result[0]), "Core tool must retain its full parameters schema."
 
     def test_non_core_tool_is_reduced_to_stub(self):
         tool = _make_tool(_NON_CORE_TOOL)
         result = _apply_stub_mode([tool])
         assert len(result) == 1
         fn = result[0]["function"]
-        assert "parameters" not in fn, (
-            "Non-core tool must not expose parameters in stub mode."
-        )
         assert fn["name"] == _NON_CORE_TOOL
-        assert fn["description"]  # must have some description
+        assert fn["description"]
+        # Stub must carry a minimal valid parameters shape — not the real one.
+        assert fn.get("parameters") == _MINIMAL_STUB_PARAMS, (
+            "Stubbed tool must have a minimal valid parameters shape, not the real schema."
+        )
 
     def test_stub_description_includes_delegation_hint(self):
         tool = _make_tool(_NON_CORE_TOOL)
@@ -73,16 +88,18 @@ class TestApplyStubMode:
         )
 
     def test_mixed_tools_split_correctly(self):
-        """All core tools keep full schemas; all non-core tools are stubbed."""
+        """Core tools keep full schemas; non-core tools carry minimal stub params."""
         core = [_make_tool(name) for name in _STUB_MODE_FULL_TOOLS]
         non_core = [_make_tool("fake_non_core_tool")]
         result = _apply_stub_mode(core + non_core)
         for item in result:
             name = item["function"]["name"]
             if name in _STUB_MODE_FULL_TOOLS:
-                assert "parameters" in item["function"], f"{name} must keep full schema"
+                assert _is_full(item), f"{name} must keep full schema"
             else:
-                assert "parameters" not in item["function"], f"{name} must be stubbed"
+                assert item["function"].get("parameters") == _MINIMAL_STUB_PARAMS, (
+                    f"{name} must carry minimal stub parameters"
+                )
 
     def test_type_field_preserved(self):
         """The 'type': 'function' wrapper must survive stubbing."""
@@ -94,7 +111,18 @@ class TestApplyStubMode:
         """A tool that already has no parameters field must not crash."""
         tool = _make_tool(_NON_CORE_TOOL, extra_param=False)
         result = _apply_stub_mode([tool])
-        assert result[0]["function"]["name"] == _NON_CORE_TOOL
+        fn = result[0]["function"]
+        assert fn["name"] == _NON_CORE_TOOL
+        # Still gets the minimal stub parameters.
+        assert fn.get("parameters") == _MINIMAL_STUB_PARAMS
+
+    def test_stub_parameters_is_valid_json_schema(self):
+        """Minimal stub parameters must satisfy strict provider schema validation."""
+        tool = _make_tool(_NON_CORE_TOOL)
+        result = _apply_stub_mode([tool])
+        params = result[0]["function"]["parameters"]
+        assert params["type"] == "object"
+        assert isinstance(params["properties"], dict)
 
 
 # ---------------------------------------------------------------------------
@@ -111,22 +139,24 @@ def _clear_cache():
 class TestGetToolDefinitionsStubMode:
     def test_stub_mode_false_returns_full_schemas(self):
         tools = model_tools.get_tool_definitions(quiet_mode=True, stub_mode=False)
-        # At least some non-core tool must have a non-trivial schema.
         non_core = [
             t for t in tools
             if t["function"]["name"] not in _STUB_MODE_FULL_TOOLS
         ]
-        assert any(
-            "parameters" in t["function"] for t in non_core
-        ), "stub_mode=False must leave full schemas intact."
+        assert any(_is_full(t) for t in non_core), (
+            "stub_mode=False must leave full schemas intact."
+        )
 
     def test_stub_mode_true_strips_non_core_parameters(self):
         tools = model_tools.get_tool_definitions(quiet_mode=True, stub_mode=True)
         for t in tools:
             name = t["function"]["name"]
             if name not in _STUB_MODE_FULL_TOOLS:
-                assert "parameters" not in t["function"], (
-                    f"stub_mode=True: {name} must not expose parameters."
+                assert not _is_full(t), (
+                    f"stub_mode=True: {name} must not expose real parameter properties."
+                )
+                assert t["function"].get("parameters") == _MINIMAL_STUB_PARAMS, (
+                    f"stub_mode=True: {name} must carry minimal valid parameters."
                 )
 
     def test_stub_mode_true_preserves_core_tools(self):
@@ -134,8 +164,8 @@ class TestGetToolDefinitionsStubMode:
         by_name = {t["function"]["name"]: t for t in tools}
         for core_name in _STUB_MODE_FULL_TOOLS:
             if core_name in by_name:
-                assert "parameters" in by_name[core_name]["function"], (
-                    f"stub_mode=True: core tool {core_name} must retain parameters."
+                assert _is_full(by_name[core_name]), (
+                    f"stub_mode=True: core tool {core_name} must retain full parameters."
                 )
 
     def test_stub_and_full_use_separate_cache_entries(self):
@@ -143,8 +173,7 @@ class TestGetToolDefinitionsStubMode:
         model_tools.get_tool_definitions(quiet_mode=True, stub_mode=False)
         model_tools.get_tool_definitions(quiet_mode=True, stub_mode=True)
         assert len(model_tools._tool_defs_cache) == 2, (
-            "stub_mode should be part of the cache key — "
-            "full and stub results must not overwrite each other."
+            "stub_mode must be part of the cache key — full and stub results must not overwrite each other."
         )
 
     def test_stub_mode_skip_tool_search_assembly_respected(self):
@@ -155,13 +184,22 @@ class TestGetToolDefinitionsStubMode:
             stub_mode=True,
             skip_tool_search_assembly=True,
         )
-        # At least one non-core tool must retain full schema via bridge path.
         non_core_full = [
             t for t in tools_bridge
             if t["function"]["name"] not in _STUB_MODE_FULL_TOOLS
-            and "parameters" in t["function"]
+            and _is_full(t)
         ]
         assert non_core_full, (
             "skip_tool_search_assembly=True must bypass stub mode — "
             "the bridge reader needs full schemas."
+        )
+
+    def test_stub_mode_returns_all_tools_not_proxied(self):
+        """stub_mode bypasses Tool Search assembly — the returned list must not
+        contain tool_search / tool_describe / tool_call proxy entries."""
+        tools = model_tools.get_tool_definitions(quiet_mode=True, stub_mode=True)
+        tool_names = {t["function"]["name"] for t in tools}
+        proxy_names = {"tool_search", "tool_describe", "tool_call"}
+        assert not (tool_names & proxy_names), (
+            "stub_mode must bypass Tool Search so proxy entries don't replace real tool stubs."
         )

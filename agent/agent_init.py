@@ -957,7 +957,11 @@ def init_agent(
     _tool_stub_mode = False
     try:
         from hermes_cli.config import load_config as _load_tools_cfg
-        _tool_stub_mode = bool(cfg_get(_load_tools_cfg(), "tools", "stub_mode", default=False))
+        # Subagents must always receive full schemas — stub_mode is a main-thread
+        # context optimisation and the delegate_task contract requires that
+        # subagents can actually invoke the tools they're handed.
+        if platform != "subagent":
+            _tool_stub_mode = bool(cfg_get(_load_tools_cfg(), "tools", "stub_mode", default=False))
     except Exception:
         pass
     agent.tools = _ra().get_tool_definitions(

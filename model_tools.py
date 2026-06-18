@@ -307,6 +307,9 @@ def _apply_stub_mode(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "function": {
                     "name": name,
                     "description": f"{desc} [stub — use delegate_task to invoke]",
+                    # Minimal valid parameters shape so strict-schema validators
+                    # and provider sanitizers don't reject the tool entry.
+                    "parameters": {"type": "object", "properties": {}},
                 },
             })
     return result
@@ -567,7 +570,13 @@ def _compute_tool_definitions(
     try:
         from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
         ts_cfg = _load_ts_config()
-        if not skip_tool_search_assembly and ts_cfg.enabled != "off":
+        # stub_mode and Tool Search both reduce main-thread token overhead via
+        # different mechanisms.  Running them together would hide tools behind
+        # tool_search proxies before stubs are applied, breaking the "main agent
+        # can see every tool for planning" contract.  Bypass Tool Search when
+        # stub_mode is active so the full catalog is available to be stubbed.
+        effective_skip_tsa = skip_tool_search_assembly or stub_mode
+        if not effective_skip_tsa and ts_cfg.enabled != "off":
             context_length = _resolve_active_context_length()
             assembly = assemble_tool_defs(
                 filtered_tools,

@@ -2215,7 +2215,8 @@ DEFAULT_CONFIG = {
         # invocations through delegate_task.  Tools in _STUB_MODE_FULL_TOOLS
         # (delegate_task, memory, skills_list, skill_view, skill_manage, clarify,
         # send_message, session_search, todo, cronjob) always keep full schemas.
-        # Saves ~8–10k tokens per call on a typical 29-tool load.
+        # Saves ~2,750 tokens/call (~21%) on a typical 30-tool load; scales
+        # further with each MCP tool added.
         "stub_mode": False,
         "tool_search": {
             # "auto" (default) — activate only when deferrable tool schemas
