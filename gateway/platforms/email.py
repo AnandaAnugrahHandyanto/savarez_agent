@@ -336,8 +336,13 @@ class EmailAdapter(BasePlatformAdapter):
 
         IMAP UIDs are monotonically increasing integers. When the set grows
         beyond the cap, we keep only the highest half — old UIDs are safe to
-        drop because new messages always have higher UIDs and IMAP's UNSEEN
-        flag prevents re-delivery regardless.
+        drop because new messages always have higher UIDs.  Note: since we
+        use BODY.PEEK[] (which does not set ``\\Seen``), this set is the
+        **sole** deduplication mechanism — a trimmed UID that remains
+        UNSEEN could be re-fetched if enough higher-UID messages arrive
+        within a single long-lived session.  On reconnect, ``connect()``
+        reseeds from ``search ALL``, so only in-session redelivery is
+        possible.
         """
         if len(self._seen_uids) <= self._seen_uids_max:
             return
@@ -484,7 +489,7 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
                     if status != "OK":
                         continue
 
