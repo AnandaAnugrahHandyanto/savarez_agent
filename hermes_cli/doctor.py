@@ -363,10 +363,8 @@ def _check_windows_python_stubs(
     This check compares the PATH-resolved ``python`` / ``pythonw``
     against the venv's real binaries and flags the mismatch.
     """
-    import os as _os
-
     windowsapps = (
-        Path(_os.environ.get("LOCALAPPDATA", ""))
+        Path(os.environ.get("LOCALAPPDATA", ""))
         / "Microsoft"
         / "WindowsApps"
     )
