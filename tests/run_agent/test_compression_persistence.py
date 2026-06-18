@@ -101,7 +101,7 @@ class TestFlushAfterCompression:
             )
 
     def test_flush_with_stale_history_recovers_from_persisted_prefix(self):
-        """Stale conversation_history must not skip unpersisted compressed messages."""
+        """Stale conversation_history no longer causes data loss."""
         from hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,12 +121,13 @@ class TestFlushAfterCompression:
             ]
 
             # A stale API-call history cursor can be longer than the compressed
-            # messages list.  The SessionDB flush cursor should recover from the
-            # durable persisted prefix (0 here), not skip messages[100:].
+            # messages list. The SessionDB flush must recover from the durable
+            # persisted prefix (0 here), not skip messages[100:].
             stale_history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
             agent._flush_messages_to_session_db(compressed, stale_history)
 
             rows = db.get_messages("new-session")
+            assert len(rows) == 2
             assert [row["content"] for row in rows] == ["summary", "continuing..."]
 
 
