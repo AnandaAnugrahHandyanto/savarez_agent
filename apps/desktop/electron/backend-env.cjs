@@ -106,7 +106,9 @@ module.exports = {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  currentPathValue,
   delimiterForPlatform,
   normalizeHermesHomeRoot,
+  pathModuleForPlatform,
   pathEnvKey
 }

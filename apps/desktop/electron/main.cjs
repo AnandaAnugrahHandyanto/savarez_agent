@@ -40,6 +40,7 @@ const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
+const { buildDesktopResolverPath, findExecutableOnPath } = require('./desktop-path-resolver.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
@@ -274,6 +275,16 @@ const HERMES_HOME = resolveHermesHome()
 const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
 const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
+// GUI-launched macOS apps often inherit a minimal PATH that omits Homebrew.
+// Resolve desktop bootstrap prerequisites against the same augmented PATH we
+// pass to the backend so Hermes, Python, Git, and shell probes are discovered
+// from one explicit trust boundary: the Hermes-managed backend environment.
+// Keep callers that should remain system-PATH-only off findOnPath().
+const DESKTOP_RESOLVER_PATH = buildDesktopResolverPath({
+  hermesHome: HERMES_HOME,
+  venvRoot: VENV_ROOT,
+  currentEnv: process.env
+})
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
 // (Phase 1D) after install.ps1 has completed all stages and the user has
 // finished initial configuration. Presence of this marker means the install
@@ -1095,29 +1106,16 @@ function unpackedPathFor(filePath) {
 }
 
 function findOnPath(command) {
-  if (!command) return null
-
-  if (path.isAbsolute(command) || command.includes(path.sep) || (IS_WINDOWS && command.includes('/'))) {
-    if (!fileExists(command)) return null
-    if (isWindowsBinaryPathInWsl(command, { isWsl: IS_WSL })) return null
-    return command
-  }
-
-  const pathEntries = String(process.env.PATH || '')
-    .split(path.delimiter)
-    .filter(Boolean)
-  const extensions = IS_WINDOWS
-    ? ['', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
-    : ['']
-
-  for (const entry of pathEntries) {
-    for (const extension of extensions) {
-      const candidate = path.join(entry, `${command}${extension}`)
-      if (fileExists(candidate)) return candidate
-    }
-  }
-
-  return null
+  // Backend-aligned lookup by design: every current caller is part of desktop
+  // bootstrap/update/backend discovery and should see the same PATH the backend
+  // subprocess will receive. Add a separate helper for future system-only probes.
+  return findExecutableOnPath(command, {
+    searchPath: DESKTOP_RESOLVER_PATH,
+    currentEnv: process.env,
+    fileExists,
+    isWindowsBinaryPathInWsl,
+    isWsl: IS_WSL
+  })
 }
 
 function isCommandScript(command) {
