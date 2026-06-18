@@ -4363,24 +4363,41 @@ class DiscordAdapter(BasePlatformAdapter):
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
             return thread
         except Exception as direct_error:
-            display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
-            reason = f"Auto-threaded from mention by {display_name}"
-            try:
-                seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
-                thread = await seed_msg.create_thread(
-                    name=thread_name,
-                    auto_archive_duration=1440,
-                    reason=reason,
-                )
-                return thread
-            except Exception as fallback_error:
-                logger.warning(
-                    "[%s] Auto-thread creation failed. Direct error: %s. Fallback error: %s",
-                    self.name,
-                    direct_error,
-                    fallback_error,
-                )
-                return None
+            # If another client/bot already created a thread from this starter
+            # message, Discord rejects a second `message.create_thread()` call.
+            # Reuse that existing thread instead of creating a new top-level
+            # seed message, which visibly duplicates the user's topic.
+            existing_thread = getattr(message, "thread", None)
+            if existing_thread is not None:
+                return existing_thread
+            if self._client is not None:
+                try:
+                    existing_thread = self._client.get_channel(int(message.id))
+                    if existing_thread is None:
+                        existing_thread = await self._client.fetch_channel(int(message.id))
+                    if existing_thread is not None:
+                        return existing_thread
+                except Exception:
+                    logger.debug(
+                        "[%s] Could not resolve existing Discord thread for starter message %s",
+                        self.name,
+                        getattr(message, "id", "unknown"),
+                        exc_info=True,
+                    )
+
+            # Do not fall back to sending a new top-level seed message here.
+            # Auto-threading is triggered by an existing user message; if
+            # Discord rejects `message.create_thread()` and we cannot resolve a
+            # pre-existing thread for that starter message, posting a fresh seed
+            # message creates a visible duplicate topic. Prefer a normal channel
+            # reply over manufacturing a second top-level thread.
+            logger.warning(
+                "[%s] Auto-thread creation failed for starter message %s; not posting seed-message fallback to avoid duplicate top-level threads. Direct error: %s",
+                self.name,
+                getattr(message, "id", "unknown"),
+                direct_error,
+            )
+            return None
 
     async def create_handoff_thread(
         self,
