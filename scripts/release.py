@@ -246,6 +246,7 @@ AUTHOR_MAP = {
     "3153586+xzessmedia@users.noreply.github.com": "xzessmedia",
     "AdamPlatin123@outlook.com": "AdamPlatin123",
     "32711803+waefrebeorn@users.noreply.github.com": "waefrebeorn",
+    "wubu.bounty.hunter@users.noreply.github.com": "waefrebeorn",
     "32869278+dusterbloom@users.noreply.github.com": "dusterbloom",
     "189737461+basilalshukaili@users.noreply.github.com": "basilalshukaili",
     "liuhao1024@users.noreply.github.com": "liuhao1024",
