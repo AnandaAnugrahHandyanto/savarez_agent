@@ -777,13 +777,13 @@ def _install_neutts_deps() -> bool:
         if prompt_yes_no("Install espeak-ng now?", True):
             try:
                 if sys.platform == "darwin":
-                    subprocess.run(["brew", "install", "espeak-ng"], check=True)
+                    subprocess.run(["brew", "install", "espeak-ng"], check=True, timeout=120)
                 elif sys.platform == "win32":
-                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
+                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True, timeout=120)
                 else:
-                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
+                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True, timeout=120)
                 print_success("espeak-ng installed")
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
                 print_warning(f"Could not install espeak-ng automatically: {e}")
                 print_info("Please install it manually and re-run setup.")
                 return False
@@ -1283,12 +1283,14 @@ def setup_terminal_backend(config: dict):
                         ],
                         capture_output=True,
                         text=True,
+                        timeout=120,
                     )
                 else:
                     result = subprocess.run(
                         [sys.executable, "-m", "pip", "install", "modal"],
                         capture_output=True,
                         text=True,
+                        timeout=120,
                     )
                 if result.returncode == 0:
                     print_success("modal SDK installed")
@@ -1336,12 +1338,14 @@ def setup_terminal_backend(config: dict):
                     [uv_bin, "pip", "install", "--python", sys.executable, "daytona"],
                     capture_output=True,
                     text=True,
+                    timeout=120,
                 )
             else:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "daytona"],
                     capture_output=True,
                     text=True,
+                    timeout=120,
                 )
             if result.returncode == 0:
                 print_success("daytona SDK installed")
@@ -1991,11 +1995,13 @@ def _setup_matrix():
                     result = subprocess.run(
                         [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
                         capture_output=True, text=True,
+                        timeout=120,
                     )
                 else:
                     result = subprocess.run(
                         [sys.executable, "-m", "pip", "install", matrix_pkg],
                         capture_output=True, text=True,
+                        timeout=120,
                     )
                 if result.returncode == 0:
                     print_success(f"{matrix_pkg} installed")
