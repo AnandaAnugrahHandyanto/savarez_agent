@@ -1278,6 +1278,8 @@ export const en: Translations = {
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
     queueEdit: 'Edit',
+    queueExpand: 'Expand',
+    queueCollapse: 'Collapse',
     queueSendNext: 'Next',
     queueSend: 'Send',
     queueDelete: 'Delete',
