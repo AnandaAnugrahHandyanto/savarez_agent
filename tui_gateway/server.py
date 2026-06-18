@@ -5208,10 +5208,10 @@ def _(rid, params: dict) -> dict:
     # the agent thread is running, prompt.submit's post-run history
     # write would either clobber the undo (version matches) or
     # silently drop the agent's output (version mismatch, see below).
-    # Neither is what the user wants — make them /interrupt first.
+    # Neither is what the user wants — make them interrupt first.
     if session.get("running"):
         return _err(
-            rid, 4009, "session busy — /interrupt the current turn before /undo"
+            rid, 4009, "session busy — interrupt the current turn before /undo"
         )
     removed = 0
     with session["history_lock"]:
@@ -5234,7 +5234,7 @@ def _(rid, params: dict) -> dict:
         return err
     if session.get("running"):
         return _err(
-            rid, 4009, "session busy — /interrupt the current turn before /compress"
+            rid, 4009, "session busy — interrupt the current turn before /compress"
         )
     sid = params.get("session_id", "")
     focus_topic = str(params.get("focus_topic", "") or "").strip()
@@ -7283,7 +7283,7 @@ def _(rid, params: dict) -> dict:
                     return _err(
                         rid,
                         4009,
-                        "session busy — /interrupt the current turn before switching models",
+                        "session busy — interrupt the current turn before switching models",
                     )
                 from hermes_cli.model_switch import parse_model_flags
 
@@ -8431,7 +8431,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4001, "no active session to retry")
         if session.get("running"):
             return _err(
-                rid, 4009, "session busy — /interrupt the current turn before /retry"
+                rid, 4009, "session busy — interrupt the current turn before /retry"
             )
         history = session.get("history", [])
         if not history:
@@ -8561,7 +8561,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4001, "no active session to undo")
         if session.get("running"):
             return _err(
-                rid, 4009, "session busy — /interrupt the current turn before /undo"
+                rid, 4009, "session busy — interrupt the current turn before /undo"
             )
         db = _get_db()
         if db is None:
@@ -9365,7 +9365,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     # runner's running-agent /model guard.
     _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
     if name in _MUTATES_WHILE_RUNNING and session.get("running"):
-        return f"session busy — /interrupt the current turn before running /{name}"
+        return f"session busy — interrupt the current turn before running /{name}"
 
     try:
         if name == "model" and arg and agent:
@@ -9821,7 +9821,7 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid,
             4009,
-            "session busy — /interrupt the current turn before full rollback.restore",
+            "session busy — interrupt the current turn before full rollback.restore",
         )
     try:
 
