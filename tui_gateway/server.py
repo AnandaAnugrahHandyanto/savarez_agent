@@ -4419,6 +4419,12 @@ def _(rid, params: dict) -> dict:
             found = {}
         else:
             return _err(rid, 4007, "session not found")
+
+    get_tip = getattr(db, "get_compression_tip", None)
+    tip = get_tip(target) if callable(get_tip) else None
+    if isinstance(tip, str) and tip and tip != target:
+        target = tip
+        found = db.get_session(target) or found
     profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
         profile_home
     )

@@ -911,6 +911,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def get_session(self, target):
             return {"id": target}
 
+        def get_compression_tip(self, target):
+            return target
+
         def reopen_session(self, target):
             captured["reopened"] = target
 
@@ -954,6 +957,106 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_session_resume_canonicalizes_compression_parent_to_tip(monkeypatch):
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "model_config": "{}"}
+
+        def get_compression_tip(self, target):
+            captured["tip_lookup"] = target
+            return "tip" if target == "root" else target
+
+        def reopen_session(self, target):
+            captured["reopened"] = target
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            captured.setdefault("history_calls", []).append((target, include_ancestors))
+            return [{"role": "user", "content": "tip prompt"}]
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured["agent_key"] = key
+        captured["agent_session_id"] = session_id
+        return types.SimpleNamespace(model="test")
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
+    )
+
+    def fake_init_session(sid, key, agent, history, cols=80, **_kwargs):
+        server._sessions[sid] = {"agent": agent, "session_key": key}
+
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": "root"}}
+        )
+
+        assert resp["result"]["resumed"] == "tip"
+        assert captured["tip_lookup"] == "root"
+        assert captured["reopened"] == "tip"
+        assert captured["history_calls"] == [("tip", False), ("tip", True)]
+        assert captured["agent_key"] == "tip"
+        assert captured["agent_session_id"] == "tip"
+    finally:
+        server._sessions.clear()
+
+
+def test_session_resume_lazy_canonicalizes_compression_parent_to_tip(monkeypatch):
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "model_config": "{}"}
+
+        def get_compression_tip(self, target):
+            captured["tip_lookup"] = target
+            return "tip" if target == "root" else target
+
+        def reopen_session(self, target):
+            captured["reopened"] = target
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            captured.setdefault("history_calls", []).append((target, include_ancestors))
+            return [{"role": "user", "content": "tip prompt"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_child_run_active", lambda target: False)
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "main")
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "auto")
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.resume",
+                "params": {"session_id": "root", "lazy": True},
+            }
+        )
+
+        assert resp["result"]["resumed"] == "tip"
+        assert resp["result"]["session_key"] == "tip"
+        assert captured["tip_lookup"] == "root"
+        assert captured["reopened"] == "tip"
+        assert captured["history_calls"] == [("tip", False)]
+        runtime_sid = resp["result"]["session_id"]
+        assert server._sessions[runtime_sid]["resume_session_id"] == "tip"
+        assert server._sessions[runtime_sid]["session_key"] == "tip"
+    finally:
+        server._sessions.clear()
+
+
 def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     captured = {}
 
@@ -965,6 +1068,9 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 "billing_provider": "openai-codex",
                 "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
             }
+
+        def get_compression_tip(self, target):
+            return target
 
         def reopen_session(self, target):
             pass
