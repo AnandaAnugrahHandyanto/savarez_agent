@@ -859,9 +859,9 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
 async def test_codex_budget_fail_closed_when_compression_aborts(monkeypatch, tmp_path):
     """A over-budget Codex/GPT-5.5 Telegram session must not make another model call.
 
-    This is the synthetic 170+ message guard test: 170 persisted messages are
-    enough to cross the default hygiene_hard_message_limit=160. If compression
-    aborts, the gateway returns a stop notice and never calls _run_agent.
+    This reproduces the Jun 14 shape: low visible/tool activity with many
+    persisted API calls. The gateway must stop before launching _run_agent;
+    this is not an ordinary high-message compression test.
     """
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -926,7 +926,7 @@ async def test_codex_budget_fail_closed_when_compression_aborts(monkeypatch, tmp
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
-    runner.session_store.load_transcript.return_value = _make_history(170, content_size=40)
+    runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.append_to_transcript = MagicMock()
@@ -949,14 +949,14 @@ async def test_codex_budget_fail_closed_when_compression_aborts(monkeypatch, tmp
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_codex_session_usage_snapshot", lambda _sid: {
-        "api_call_count": 81,
-        "message_count": 170,
-        "tool_call_count": 70,
-        "input_tokens": 9_000_000,
-        "cache_read_tokens": 2_000_000,
+        "api_call_count": 41,
+        "message_count": 11,
+        "tool_call_count": 0,
+        "input_tokens": 900_000,
+        "cache_read_tokens": 250_000,
         "output_tokens": 10_000,
         "reasoning_tokens": 1_000,
-        "accounted_tokens": 11_011_000,
+        "accounted_tokens": 1_161_000,
     })
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
@@ -977,35 +977,95 @@ async def test_codex_budget_fail_closed_when_compression_aborts(monkeypatch, tmp
     result = await runner._handle_message(event)
 
     assert "stopped before making another GPT-5.5 call" in result
-    assert "synthetic compression failure" in result
+    assert "low-visible session" in result
     runner._run_agent.assert_not_called()
     assert adapter.sent, "Expected visible stop notice to be sent"
     assert "stopped before making another GPT-5.5 call" in adapter.sent[-1]["content"]
 
 
-def test_codex_budget_reason_trips_for_api_calls_and_tokens():
+def test_codex_budget_reason_allows_normal_cache_rich_long_sessions():
     gateway_run = importlib.import_module("gateway.run")
     reason = gateway_run._codex_budget_reason(
         model="gpt-5.5",
         provider="openai-codex",
         platform_key="telegram",
-        user_config={"gateway": {"codex_budget": {"max_api_calls": 80, "max_accounted_tokens": 10_000_000}}},
-        usage={"api_call_count": 81, "accounted_tokens": 1_000},
-        message_count=20,
-        hard_message_limit=160,
+        user_config={"gateway": {"codex_budget": {}}},
+        usage={
+            "api_call_count": 166,
+            "accounted_tokens": 17_700_000,
+            "input_tokens": 336_651,
+            "message_count": 332,
+            "tool_call_count": 120,
+        },
+        message_count=332,
+        hard_message_limit=400,
     )
-    assert "API calls 81 reached budget 80" == reason
+    assert reason is None
+
+
+def test_codex_budget_reason_trips_absolute_last_resort_caps():
+    gateway_run = importlib.import_module("gateway.run")
+    reason = gateway_run._codex_budget_reason(
+        model="gpt-5.5",
+        provider="openai-codex",
+        platform_key="telegram",
+        user_config={"gateway": {"codex_budget": {}}},
+        usage={"api_call_count": 251, "accounted_tokens": 1_000, "message_count": 300, "tool_call_count": 80},
+        message_count=300,
+        hard_message_limit=400,
+    )
+    assert "API calls 251 reached absolute budget 250" == reason
 
     reason = gateway_run._codex_budget_reason(
         model="gpt-5.5",
         provider="openai-codex",
         platform_key="telegram",
-        user_config={"gateway": {"codex_budget": {"max_api_calls": 80, "max_accounted_tokens": 10_000_000}}},
-        usage={"api_call_count": 10, "accounted_tokens": 10_000_001},
-        message_count=20,
+        user_config={"gateway": {"codex_budget": {}}},
+        usage={"api_call_count": 120, "accounted_tokens": 30_000_001, "message_count": 300, "tool_call_count": 80},
+        message_count=300,
+        hard_message_limit=400,
+    )
+    assert "accounted tokens 30,000,001 reached absolute budget 30,000,000" == reason
+
+
+def test_codex_budget_reason_trips_for_low_visible_high_api_sessions():
+    gateway_run = importlib.import_module("gateway.run")
+    reason = gateway_run._codex_budget_reason(
+        model="gpt-5.5",
+        provider="openai-codex",
+        platform_key="telegram",
+        user_config={"gateway": {"codex_budget": {}}},
+        usage={
+            "api_call_count": 41,
+            "message_count": 11,
+            "tool_call_count": 0,
+            "accounted_tokens": 1_200_000,
+            "input_tokens": 700_000,
+        },
+        message_count=11,
         hard_message_limit=160,
     )
-    assert "accounted tokens 10,000,001 reached budget 10,000,000" == reason
+    assert reason == "low-visible session made 41 API calls with 11 messages and 0 tools"
+
+
+def test_codex_budget_reason_trips_for_high_fresh_input_share():
+    gateway_run = importlib.import_module("gateway.run")
+    reason = gateway_run._codex_budget_reason(
+        model="gpt-5.5",
+        provider="openai-codex",
+        platform_key="telegram",
+        user_config={"gateway": {"codex_budget": {"max_api_calls": 80, "max_accounted_tokens": 20_000_000}}},
+        usage={
+            "api_call_count": 25,
+            "message_count": 60,
+            "tool_call_count": 20,
+            "accounted_tokens": 3_000_000,
+            "input_tokens": 1_800_000,
+        },
+        message_count=60,
+        hard_message_limit=160,
+    )
+    assert reason == "fresh-input share 60.0% reached budget 45%"
 
 
 def test_cost_saver_defaults_are_preserved_in_generated_config():
@@ -1015,6 +1075,8 @@ def test_cost_saver_defaults_are_preserved_in_generated_config():
     assert DEFAULT_CONFIG["compression"]["hygiene_hard_message_limit"] == 120
     assert DEFAULT_CONFIG["compression"]["codex_gpt55_autoraise"] is False
     assert DEFAULT_CONFIG["gateway"]["codex_budget"]["enabled"] is True
-    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_api_calls"] == 50
-    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_accounted_tokens"] == 6_000_000
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_api_calls"] == 250
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_accounted_tokens"] == 30_000_000
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_low_visible_api_calls"] == 40
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_fresh_input_share_pct"] == 45
 

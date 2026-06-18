@@ -18,6 +18,7 @@ from tools.approval import (
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
+    detect_outbound_email_send,
 )
 
 
@@ -1564,8 +1565,95 @@ class TestEtcPatternsUnaffectedByRefactor:
 #      plugins, hooks, and audit pipelines can act on the timeout without
 #      string-parsing the message.
 #   3. Explicit /deny carries the same shape (treat-as-not-consented).
-# =========================================================================
+class TestOutboundEmailApprovalGuard:
+    """Outbound email sends are consent-critical and never yolo-able."""
 
+    SESSION_KEY = "test-email-approval-session"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_YOLO_MODE", "HERMES_SESSION_KEY",
+                      "HERMES_INTERACTIVE", "HERMES_EXEC_ASK")
+        }
+        for k in self._saved_env:
+            os.environ.pop(k, None)
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_detects_gws_message_send_but_not_draft_create(self):
+        assert detect_outbound_email_send("gws gmail users messages send me --raw x")[0] is True
+        assert detect_outbound_email_send("gws gmail users drafts send me draft-id")[0] is True
+        assert detect_outbound_email_send("gws gmail users drafts create me --message x")[0] is False
+
+    def test_yolo_does_not_bypass_outbound_email_send(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {"mode": "manual", "gateway_timeout": 1, "timeout": 1},
+        )
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards("gws gmail users messages send me --raw abc", "local")
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "timeout"
+        assert result.get("user_consent") is False
+        assert notified and notified[0]["allow_permanent"] is False
+        assert notified[0]["pattern_key"] == "outbound email send"
+
+    def test_execute_code_gmail_send_requires_approval(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {"mode": "manual", "gateway_timeout": 1, "timeout": 1},
+        )
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_execute_code_guard(
+            "service.users().messages().send(userId='me').execute()",
+            "local",
+        )
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "timeout"
+        assert result.get("user_consent") is False
+        assert notified and notified[0]["allow_permanent"] is False
+        assert notified[0]["pattern_key"] == "outbound email send"
+
+    def test_noninteractive_email_send_fails_closed(self):
+        from tools import approval as mod
+        result = mod.check_all_command_guards("gws gmail users messages send me --raw abc", "local")
+        assert result["approved"] is False
+        assert result.get("outcome") == "blocked"
+        assert result.get("user_consent") is False
+        assert "no interactive approval surface" in result["message"]
+
+
+# =========================================================================
+# Regression tests: approval timeout is not consent.
 
 class TestApprovalTimeoutIsNotConsent:
     """The gateway approval contract: silence is not consent (#24912)."""

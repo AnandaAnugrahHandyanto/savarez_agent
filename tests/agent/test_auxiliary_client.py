@@ -11,6 +11,7 @@ import pytest
 
 from agent.auxiliary_client import (
     get_text_auxiliary_client,
+    get_async_text_auxiliary_client,
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,
@@ -26,6 +27,7 @@ from agent.auxiliary_client import (
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
+    _try_main_agent_model_fallback,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -903,6 +905,100 @@ class TestExplicitProviderRouting:
             "OPENROUTER_API_KEY not set" in record.message
             for record in caplog.records
         )
+
+
+
+class TestCodexGpt55AuxCircuitBreaker:
+    def test_direct_high_cost_aux_refuses_codex_gpt55_family_by_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+
+        with patch("agent.auxiliary_client._build_codex_client", side_effect=AssertionError("codex should be blocked")):
+            client, model = resolve_provider_client("codex", "openai/gpt-5.5-pro", task="compression")
+
+        assert client is None
+        assert model is None
+
+    def test_text_auxiliary_wrappers_pass_task_to_codex_guard(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-codex", "gpt-5.5", None, None, None),
+            ),
+            patch("agent.auxiliary_client._get_provider_chain", return_value=[]),
+            patch("agent.auxiliary_client._build_codex_client", side_effect=AssertionError("codex should be blocked")),
+        ):
+            client, model = get_text_auxiliary_client("compression")
+            async_client, async_model = get_async_text_auxiliary_client("compression")
+
+        assert (client, model) == (None, None)
+        assert (async_client, async_model) == (None, None)
+
+    def test_non_premium_aux_task_keeps_codex_when_explicitly_requested(self, monkeypatch):
+        fake_client = MagicMock()
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+
+        with patch("agent.auxiliary_client._build_codex_client", return_value=(fake_client, "gpt-5.5")):
+            client, model = resolve_provider_client("openai-codex", "gpt-5.5", task="goal_judge")
+
+        assert client is fake_client
+        assert model == "gpt-5.5"
+
+    def test_auto_high_cost_aux_skips_main_codex_gpt55(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.5"),
+            patch("agent.auxiliary_client._get_provider_chain", return_value=[]),
+            patch("agent.auxiliary_client._build_codex_client", side_effect=AssertionError("codex should be skipped")),
+        ):
+            client, model = _resolve_auto(task="compression")
+
+        assert client is None
+        assert model is None
+
+    def test_main_agent_fallback_refuses_codex_gpt55_for_high_cost_aux(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+
+        with (
+            patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.5"),
+            patch("agent.auxiliary_client._build_codex_client", side_effect=AssertionError("codex fallback should be blocked")),
+        ):
+            client, model, label = _try_main_agent_model_fallback("openrouter", task="compression")
+
+        assert client is None
+        assert model is None
+        assert label == ""
+
+    def test_broad_opt_in_without_task_scope_still_blocks_named_high_cost_aux(self, monkeypatch):
+        monkeypatch.setenv("HERMES_ALLOW_CODEX_GPT55_AUX", "1")
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX_TASKS", raising=False)
+
+        with patch("agent.auxiliary_client._build_codex_client", side_effect=AssertionError("codex should be blocked")):
+            client, model = resolve_provider_client("openai-codex", "gpt-5.5", task="compression")
+
+        assert client is None
+        assert model is None
+
+    def test_foreground_or_explicit_opt_in_can_still_use_codex_gpt55(self, monkeypatch):
+        fake_client = MagicMock()
+
+        with patch("agent.auxiliary_client._build_codex_client", return_value=(fake_client, "gpt-5.5")):
+            client, model = resolve_provider_client("openai-codex", "gpt-5.5")
+
+        assert client is fake_client
+        assert model == "gpt-5.5"
+
+        monkeypatch.setenv("HERMES_ALLOW_CODEX_GPT55_AUX", "1")
+        monkeypatch.setenv("HERMES_ALLOW_CODEX_GPT55_AUX_TASKS", "compression")
+        with patch("agent.auxiliary_client._build_codex_client", return_value=(fake_client, "gpt-5.5")):
+            client, model = resolve_provider_client("openai-codex", "gpt-5.5", task="compression")
+
+        assert client is fake_client
+        assert model == "gpt-5.5"
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
@@ -2989,30 +3085,43 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["stream"] is True
         assert response.choices[0].message.content == "summary"
 
-    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        now = [1000.0]
+        closed = []
+
+        def fake_monotonic():
+            return now[0]
+
+        monkeypatch.setattr(aux_mod.time, "monotonic", fake_monotonic)
+
         class _SlowAliveCreateStream:
             def __iter__(self):
                 for _ in range(5):
-                    time.sleep(0.03)
+                    now[0] += 0.03
                     yield SimpleNamespace(type="response.in_progress")
 
-            def close(self): pass
+            def close(self):
+                closed.append("stream")
 
         class FakeResponses:
             def create(self, **kwargs):
                 return _SlowAliveCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        fake_client = SimpleNamespace(
+            responses=FakeResponses(),
+            close=lambda: closed.append("client"),
+        )
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
-        started = time.monotonic()
         with pytest.raises(TimeoutError):
             adapter.create(
                 messages=[{"role": "user", "content": "summarize this"}],
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert closed == ["client", "stream"]
 
 
 class TestCodexAuxiliaryToolMessageConversion:
@@ -3832,6 +3941,72 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+    def test_call_llm_explicit_codex_gpt55_aux_falls_through_to_auto(self, monkeypatch):
+        """Configured Codex/GPT-5.5 aux tasks should still try non-Codex auto fallback."""
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX_TASKS", raising=False)
+        fallback_client = MagicMock()
+        fallback_resp = MagicMock()
+        fallback_resp.choices = [MagicMock(message=MagicMock(content="summary ok"))]
+        fallback_client.chat.completions.create.return_value = fallback_resp
+
+        def fake_get_cached(provider, *args, **kwargs):
+            if provider == "openai-codex":
+                return None, None
+            if provider == "auto":
+                return fallback_client, "gemini-3-flash-preview"
+            raise AssertionError(f"unexpected provider {provider!r}")
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-codex", "gpt-5.5", None, None, None),
+            ),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=fake_get_cached) as cached,
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "compress me"}],
+            )
+
+        assert result is fallback_resp
+        assert [call.args[0] for call in cached.call_args_list] == ["openai-codex", "auto"]
+        fallback_client.chat.completions.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_explicit_codex_gpt55_aux_falls_through_to_auto(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+        monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX_TASKS", raising=False)
+        fallback_client = MagicMock()
+        fallback_resp = MagicMock()
+        fallback_resp.choices = [MagicMock(message=MagicMock(content="summary ok"))]
+        fallback_client.chat.completions.create = AsyncMock(return_value=fallback_resp)
+
+        def fake_get_cached(provider, *args, **kwargs):
+            if provider == "openai-codex":
+                return None, None
+            if provider == "auto":
+                return fallback_client, "gemini-3-flash-preview"
+            raise AssertionError(f"unexpected provider {provider!r}")
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-codex", "gpt-5.5", None, None, None),
+            ),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=fake_get_cached) as cached,
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "find sessions"}],
+            )
+
+        assert result is fallback_resp
+        assert [call.args[0] for call in cached.call_args_list] == ["openai-codex", "auto"]
+        fallback_client.chat.completions.create.assert_awaited_once()
 
 
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────

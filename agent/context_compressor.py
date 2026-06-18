@@ -619,6 +619,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._summary_failure_cooldown_reason = ""
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
@@ -749,6 +750,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
+        self._summary_failure_cooldown_reason: str = ""
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
         # record how many turns were unrecoverably dropped so callers
@@ -1326,9 +1328,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """
         now = time.monotonic()
         if now < self._summary_failure_cooldown_until:
+            remaining = max(0, int(self._summary_failure_cooldown_until - now))
+            self._last_summary_error = (
+                self._summary_failure_cooldown_reason
+                or f"summary retry cooldown active ({remaining}s remaining after previous failure)"
+            )
             logger.debug(
                 "Skipping context summary during cooldown (%.0fs remaining)",
-                self._summary_failure_cooldown_until - now,
+                remaining,
             )
             return None
 
@@ -1529,6 +1536,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
+            self._summary_failure_cooldown_reason = self._last_summary_error
             logger.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
@@ -1625,6 +1633,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
             self._last_summary_error = err_text
+            self._summary_failure_cooldown_reason = err_text
             logger.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",

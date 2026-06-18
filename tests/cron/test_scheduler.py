@@ -912,6 +912,43 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_passes_job_model_to_runtime_resolver(self, tmp_path):
+        job = {
+            "id": "model-job",
+            "name": "model check",
+            "prompt": "hello",
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://chatgpt.com/backend-api/codex",
+                     "provider": "openai-codex",
+                     "api_mode": "codex_responses",
+                 },
+             ) as resolve_runtime, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        resolve_runtime.assert_called_once()
+        assert resolve_runtime.call_args.kwargs["requested"] == "openai-codex"
+        assert resolve_runtime.call_args.kwargs["target_model"] == "gpt-5.5"
+        assert mock_agent_cls.call_args.kwargs["model"] == "gpt-5.5"
+
     def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
         # The cron session's first message is the injected "[IMPORTANT: …]"
         # hint, which used to surface as the sidebar/history row label. run_job

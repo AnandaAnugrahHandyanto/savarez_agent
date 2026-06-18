@@ -50,6 +50,25 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from agent.codex_responses_adapter import _chat_messages_to_responses_input
+from agent.codex_runtime import _consume_codex_event_stream
+
+
+_CODEX_HIGH_COST_AUX_TASKS = frozenset({
+    "approval",
+    "background_review",
+    "compression",
+    "curator",
+    "mcp",
+    "monitor",
+    "session_search",
+    "skills_hub",
+    "title_generation",
+    "triage_specifier",
+    "vision",
+    "web_extract",
+})
+
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
 # graders/*). We expose `OpenAI` here as a thin proxy that imports the SDK on
@@ -662,8 +681,6 @@ class _CodexCompletionsAdapter:
         # assistant tool calls as `function_call` items and tool results as
         # `function_call_output` items with a valid call_id, so every
         # Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
-
         instructions = "You are a helpful assistant."
         replay_messages: List[Dict[str, Any]] = []
         for msg in messages:
@@ -831,8 +848,6 @@ class _CodexCompletionsAdapter:
             # Consuming raw events and assembling the final response
             # ourselves from ``response.output_item.done`` makes us
             # structurally immune to that drift.
-            from agent.codex_runtime import _consume_codex_event_stream
-
             stream_kwargs = dict(resp_kwargs)
             stream_kwargs["stream"] = True
 
@@ -2196,6 +2211,64 @@ _AUTO_PROVIDER_LABELS = {
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
 
 
+def _is_openai_codex_gpt55(provider: Optional[str], model: Optional[str]) -> bool:
+    provider_l = _normalize_aux_provider((provider or "").strip().lower())
+    model_l = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return (
+        provider_l in {"openai-codex", "codex"}
+        and (
+            model_l in {"gpt-5.5", "gpt5.5"}
+            or model_l.startswith("gpt-5.5-")
+            or model_l.startswith("gpt-5.5.")
+        )
+    )
+
+
+def _allow_codex_gpt55_aux(task: Optional[str] = None) -> bool:
+    """Return True only when expensive Codex aux calls were explicitly enabled.
+
+    OpenAI Codex GPT-5.5 is the foreground agent runtime for some installs, but
+    large side tasks like compression, search, title generation, and curator
+    review must not silently consume that quota.  Keep direct, deliberate
+    foreground use intact while fail-closing high-cost auxiliary work unless the
+    operator opts in for a specific maintenance run.
+
+    A broad ``HERMES_ALLOW_CODEX_GPT55_AUX=1`` is not sufficient for named
+    high-cost tasks.  The Jun 14 drain incident showed that broad inherited
+    process env can silently reopen the expensive path; named aux work must be
+    explicitly scoped with ``HERMES_ALLOW_CODEX_GPT55_AUX_TASKS``.
+    """
+    raw = os.getenv("HERMES_ALLOW_CODEX_GPT55_AUX", "").strip().lower()
+    if raw not in {"1", "true", "yes", "on"}:
+        return False
+    if not task:
+        return True
+    task_list = os.getenv("HERMES_ALLOW_CODEX_GPT55_AUX_TASKS", "").strip()
+    if not task_list:
+        return False
+    allowed = {part.strip().lower() for part in task_list.split(",") if part.strip()}
+    return (task or "").strip().lower() in allowed
+
+
+def _codex_gpt55_aux_blocked_reason(
+    provider: Optional[str],
+    model: Optional[str],
+    task: Optional[str] = None,
+) -> Optional[str]:
+    if not _is_openai_codex_gpt55(provider, model):
+        return None
+    task_key = (task or "").strip().lower()
+    if task_key not in _CODEX_HIGH_COST_AUX_TASKS:
+        return None
+    if _allow_codex_gpt55_aux(task_key):
+        return None
+    return (
+        f"auxiliary task {task_key!r} would use openai-codex/gpt-5.5; "
+        "set HERMES_ALLOW_CODEX_GPT55_AUX=1 and "
+        "HERMES_ALLOW_CODEX_GPT55_AUX_TASKS=<task> to opt in temporarily"
+    )
+
+
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Return a sanitized copy of a live main-runtime override.
 
@@ -2807,6 +2880,7 @@ def _retry_same_provider_sync(
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
             main_runtime=main_runtime,
+            task=task,
         )
     if retry_client is None:
         raise RuntimeError(
@@ -2840,6 +2914,7 @@ async def _retry_same_provider_async(
     resolved_base_url: Optional[str],
     resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str],
+    main_runtime: Optional[Dict[str, Any]],
     final_model: Optional[str],
     messages: list,
     temperature: Optional[float],
@@ -2864,6 +2939,8 @@ async def _retry_same_provider_async(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
+            task=task,
         )
     if retry_client is None:
         raise RuntimeError(
@@ -3029,9 +3106,17 @@ def _try_main_agent_model_fallback(
         _log_skip_unhealthy(main_provider, task)
         return None, None, ""
 
+    blocked = _codex_gpt55_aux_blocked_reason(main_provider, main_model, task)
+    if blocked:
+        logger.warning(
+            "Auxiliary %s: refusing main-agent fallback after %s on %s: %s",
+            task or "call", reason, failed_provider, blocked,
+        )
+        return None, None, ""
+
     try:
         client, resolved_model = resolve_provider_client(
-            provider=main_provider, model=main_model,
+            provider=main_provider, model=main_model, task=task,
         )
     except Exception:
         client, resolved_model = None, None
@@ -3086,7 +3171,7 @@ def _try_configured_fallback_chain(
 
         try:
             fb_client = _resolve_single_provider(
-                fb_provider, fb_model, fb_base_url, fb_api_key)
+                fb_provider, fb_model, fb_base_url, fb_api_key, task=task)
         except Exception:
             fb_client = None
 
@@ -3111,6 +3196,7 @@ def _resolve_single_provider(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    task: Optional[str] = None,
 ) -> Optional[Any]:
     """Resolve a single provider entry from fallback_chain to an OpenAI client.
 
@@ -3120,12 +3206,17 @@ def _resolve_single_provider(
     client, resolved_model = resolve_provider_client(
         provider=provider,
         model=model,
-        base_url=base_url,
-        api_key=api_key,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+        task=task,
     )
     return client
 
-def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_auto(
+    main_runtime: Optional[Dict[str, Any]] = None,
+    *,
+    task: Optional[str] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
 
     Priority:
@@ -3202,13 +3293,18 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             # so that a working key is reused instead of re-selecting from the pool
             # (which might pick a different, potentially exhausted key).
             explicit_api_key = runtime_api_key
+        blocked = _codex_gpt55_aux_blocked_reason(resolved_provider, main_model, task)
+        if blocked:
+            logger.warning("Auxiliary auto-detect: refusing main provider: %s", blocked)
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call
         # on a depleted main provider would pay one doomed 402 RTT before
         # falling to Step-2.
         main_chain_label = _normalize_chain_label(resolved_provider)
-        if main_chain_label and _is_provider_unhealthy(main_chain_label):
+        if blocked:
+            pass
+        elif main_chain_label and _is_provider_unhealthy(main_chain_label):
             _log_skip_unhealthy(main_chain_label)
         else:
             client, resolved = resolve_provider_client(
@@ -3217,6 +3313,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
+                task=task,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -3344,6 +3441,7 @@ def resolve_provider_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -3371,6 +3469,8 @@ def resolve_provider_client(
             "codex_responses", or None (auto-detect).  When set to
             "codex_responses", the client is wrapped in
             CodexAuxiliaryClient to route through the Responses API.
+        task: Auxiliary task name. High-cost aux tasks refuse Codex GPT-5.5
+            unless explicitly opted in.
 
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
@@ -3464,7 +3564,7 @@ def resolve_provider_client(
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
-        client, resolved = _resolve_auto(main_runtime=main_runtime)
+        client, resolved = _resolve_auto(main_runtime=main_runtime, task=task)
         if client is None:
             return None, None
         # When auto-detection lands on a non-OpenRouter provider (e.g. a
@@ -3512,6 +3612,10 @@ def resolve_provider_client(
 
     # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
     if provider == "openai-codex":
+        blocked = _codex_gpt55_aux_blocked_reason(provider, model, task)
+        if blocked:
+            logger.warning("resolve_provider_client: refusing auxiliary Codex client: %s", blocked)
+            return None, None
         if not model:
             logger.warning(
                 "resolve_provider_client: openai-codex requested without a "
@@ -3971,11 +4075,11 @@ def resolve_provider_client(
     elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":
-            return resolve_provider_client("nous", model, async_mode)
+            return resolve_provider_client("nous", model, async_mode, task=task)
         if provider == "openai-codex":
-            return resolve_provider_client("openai-codex", model, async_mode)
+            return resolve_provider_client("openai-codex", model, async_mode, task=task)
         if provider == "xai-oauth":
-            return resolve_provider_client("xai-oauth", model, async_mode)
+            return resolve_provider_client("xai-oauth", model, async_mode, task=task)
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
@@ -4010,6 +4114,7 @@ def get_text_auxiliary_client(
         explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+        task=task or None,
     )
 
 
@@ -4029,6 +4134,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
         explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+        task=task or None,
     )
 
 
@@ -4088,7 +4194,7 @@ def _resolve_strict_vision_backend(
         # Route through resolve_provider_client so the caller's explicit
         # model is used.  There is no safe default Codex model (shifting
         # allow-list); callers must specify via auxiliary.<task>.model.
-        return resolve_provider_client("openai-codex", model, is_vision=True)
+        return resolve_provider_client("openai-codex", model, is_vision=True, task="vision")
     if provider == "anthropic":
         return _try_anthropic()
     if provider == "custom":
@@ -4115,7 +4221,7 @@ def get_available_vision_backends() -> List[str]:
             if _strict_vision_backend_available(main_provider):
                 available.append(main_provider)
         else:
-            client, _ = resolve_provider_client(main_provider, _read_main_model())
+            client, _ = resolve_provider_client(main_provider, _read_main_model(), task="vision")
             if client is not None:
                 available.append(main_provider)
     # 2. OpenRouter, 3. Nous — skip if already covered by main provider.
@@ -4165,6 +4271,7 @@ def resolve_vision_provider_client(
             explicit_base_url=resolved_base_url,
             explicit_api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            task="vision",
         )
         if client is None:
             return provider_for_base_override, None, None
@@ -4230,7 +4337,8 @@ def resolve_vision_provider_client(
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
                     api_mode=resolved_api_mode,
-                    is_vision=True)
+                    is_vision=True,
+                    task="vision")
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using main provider %s (%s)",
@@ -4273,20 +4381,23 @@ def resolve_vision_provider_client(
                 api_key=resolved_api_key or None,
                 api_mode="chat_completions",
                 is_vision=True,
+                task="vision",
             )
             if client is not None:
                 return _finalize(requested, client, final_model)
         # Fallback: try without explicit base_url (old behavior)
         client, final_model = _get_cached_client(requested, resolved_model, async_mode,
                                                  api_mode=resolved_api_mode,
-                                                 is_vision=True)
+                                                 is_vision=True,
+                                                 task="vision")
         if client is None:
             return requested, None, None
         return requested, client, final_model
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
                                              api_mode=resolved_api_mode,
-                                             is_vision=True)
+                                             is_vision=True,
+                                             task="vision")
     if client is None:
         return requested, None, None
     return requested, client, final_model
@@ -4357,11 +4468,12 @@ def _client_cache_key(
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, pool_hint)
+    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, task or "", pool_hint)
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -4554,6 +4666,7 @@ def _get_cached_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -4591,6 +4704,7 @@ def _get_cached_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
+        task=task,
     )
     with _client_cache_lock:
         if cache_key in _client_cache:
@@ -4635,6 +4749,7 @@ def _get_cached_client(
         api_mode=api_mode,
         main_runtime=runtime,
         is_vision=is_vision,
+        task=task,
     )
     if client is not None:
         # For async clients, remember which loop they were created on so we
@@ -5120,7 +5235,23 @@ def call_llm(
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
             main_runtime=main_runtime,
+            task=task,
         )
+        if client is None:
+            blocked = _codex_gpt55_aux_blocked_reason(
+                resolved_provider,
+                resolved_model,
+                task,
+            )
+            if blocked and not resolved_base_url:
+                logger.info(
+                    "Auxiliary %s: %s; trying auto-detection chain instead",
+                    task or "call",
+                    blocked,
+                )
+                client, final_model = _get_cached_client(
+                    "auto", main_runtime=main_runtime, task=task
+                )
         if client is None:
             # When the user explicitly chose a non-OpenRouter provider but no
             # credentials were found, fail fast instead of silently routing
@@ -5140,7 +5271,7 @@ def call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", main_runtime=main_runtime)
+                client, final_model = _get_cached_client("auto", main_runtime=main_runtime, task=task)
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -5624,7 +5755,24 @@ async def async_call_llm(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
+            task=task,
         )
+        if client is None:
+            blocked = _codex_gpt55_aux_blocked_reason(
+                resolved_provider,
+                resolved_model,
+                task,
+            )
+            if blocked and not resolved_base_url:
+                logger.info(
+                    "Auxiliary %s (async): %s; trying auto-detection chain instead",
+                    task or "call",
+                    blocked,
+                )
+                client, final_model = _get_cached_client(
+                    "auto", async_mode=True, main_runtime=main_runtime, task=task
+                )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
@@ -5636,7 +5784,7 @@ async def async_call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", async_mode=True)
+                client, final_model = _get_cached_client("auto", async_mode=True, main_runtime=main_runtime, task=task)
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -5825,6 +5973,7 @@ async def async_call_llm(
                     resolved_base_url=resolved_base_url,
                     resolved_api_key=resolved_api_key,
                     resolved_api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
                     final_model=final_model,
                     messages=messages,
                     temperature=temperature,
@@ -5862,6 +6011,7 @@ async def async_call_llm(
                         resolved_base_url=resolved_base_url,
                         resolved_api_key=resolved_api_key,
                         resolved_api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
                         final_model=final_model,
                         messages=messages,
                         temperature=temperature,

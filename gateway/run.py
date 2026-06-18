@@ -121,10 +121,21 @@ def _codex_budget_config(user_config: Dict[str, Any], platform_key: str) -> Dict
     return {
         "enabled": _as_bool(cfg.get("enabled"), True),
         "platform_enabled": not platforms or platform_key.lower() in platforms,
-        "warn_api_calls": _as_positive_int(cfg.get("warn_api_calls"), 30),
-        "max_api_calls": _as_positive_int(cfg.get("max_api_calls"), 50),
-        "warn_accounted_tokens": _as_positive_int(cfg.get("warn_accounted_tokens"), 4_000_000),
-        "max_accounted_tokens": _as_positive_int(cfg.get("max_accounted_tokens"), 6_000_000),
+        "warn_api_calls": _as_positive_int(cfg.get("warn_api_calls"), 80),
+        # These are last-ditch absolute caps, not normal long-session limits.
+        # Legitimate Jun 11-13 Codex/GPT-5.5 work regularly exceeded 100 API
+        # calls with hundreds of visible messages and strong cache reuse. Keep
+        # anomaly tripwires below tight, but set absolute caps high enough not
+        # to ban ordinary foreground GPT-5.5 work.
+        "max_api_calls": _as_positive_int(cfg.get("max_api_calls"), 250),
+        "warn_accounted_tokens": _as_positive_int(cfg.get("warn_accounted_tokens"), 12_000_000),
+        "max_accounted_tokens": _as_positive_int(cfg.get("max_accounted_tokens"), 30_000_000),
+        "low_visible_message_limit": _as_positive_int(cfg.get("low_visible_message_limit"), 15),
+        "low_visible_tool_limit": _as_positive_int(cfg.get("low_visible_tool_limit"), 2),
+        "max_low_visible_api_calls": _as_positive_int(cfg.get("max_low_visible_api_calls"), 40),
+        "fresh_share_min_api_calls": _as_positive_int(cfg.get("fresh_share_min_api_calls"), 20),
+        "fresh_share_min_accounted_tokens": _as_positive_int(cfg.get("fresh_share_min_accounted_tokens"), 2_000_000),
+        "max_fresh_input_share_pct": _as_positive_int(cfg.get("max_fresh_input_share_pct"), 45),
     }
 
 
@@ -194,11 +205,32 @@ def _codex_budget_reason(
         return None
     if message_count >= hard_message_limit:
         return f"message count {message_count} reached hard limit {hard_message_limit}"
-    if usage.get("api_call_count", 0) >= budget["max_api_calls"]:
-        return f"API calls {usage.get('api_call_count', 0)} reached budget {budget['max_api_calls']}"
-    if usage.get("accounted_tokens", 0) >= budget["max_accounted_tokens"]:
+    if (
+        usage.get("message_count", message_count) <= budget["low_visible_message_limit"]
+        and usage.get("tool_call_count", 0) <= budget["low_visible_tool_limit"]
+        and usage.get("api_call_count", 0) >= budget["max_low_visible_api_calls"]
+    ):
         return (
-            f"accounted tokens {usage.get('accounted_tokens', 0):,} reached budget "
+            f"low-visible session made {usage.get('api_call_count', 0)} API calls "
+            f"with {usage.get('message_count', message_count)} messages and "
+            f"{usage.get('tool_call_count', 0)} tools"
+        )
+    accounted = usage.get("accounted_tokens", 0)
+    if (
+        usage.get("api_call_count", 0) >= budget["fresh_share_min_api_calls"]
+        and accounted >= budget["fresh_share_min_accounted_tokens"]
+    ):
+        fresh_share_pct = (usage.get("input_tokens", 0) / accounted) * 100 if accounted else 0.0
+        if fresh_share_pct >= budget["max_fresh_input_share_pct"]:
+            return (
+                f"fresh-input share {fresh_share_pct:.1f}% reached budget "
+                f"{budget['max_fresh_input_share_pct']}%"
+            )
+    if usage.get("api_call_count", 0) >= budget["max_api_calls"]:
+        return f"API calls {usage.get('api_call_count', 0)} reached absolute budget {budget['max_api_calls']}"
+    if accounted >= budget["max_accounted_tokens"]:
+        return (
+            f"accounted tokens {accounted:,} reached absolute budget "
             f"{budget['max_accounted_tokens']:,}"
         )
     return None
@@ -8735,6 +8767,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or _budget_reason is not None
                 )
 
+                # Codex budget tripwires are hard stop signs, not just reasons
+                # to run another compression attempt and then continue. The
+                # Jun 14 regression produced low-visible/high-API sessions with
+                # almost no transcript to compress; treating that as ordinary
+                # hygiene let the gateway spend again immediately. Stop before
+                # the next foreground GPT-5.5 call and make the user choose a
+                # reset/compress/continue path. Normal high-message, cache-rich
+                # foreground GPT-5.5 sessions do not hit these anomaly guards.
+                if _budget_reason is not None:
+                    _budget_msg = (
+                        "⚠️ I stopped before making another GPT-5.5 call because "
+                        f"this session tripped the Codex safety budget ({_budget_reason}). "
+                        "Run /compress to retry context cleanup, /reset for a clean session, "
+                        "or explicitly ask me to continue after checking the usage."
+                    )
+                    try:
+                        _adapter = self.adapters.get(source.platform)
+                        if _adapter and source.chat_id:
+                            _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                            await _adapter.send(source.chat_id, _budget_msg, metadata=_hyg_meta)
+                    except Exception:
+                        logger.debug("Failed to deliver Codex budget stop notice", exc_info=True)
+                    logger.warning(
+                        "Session hygiene: fail-closed before Codex call for session %s (%s)",
+                        session_entry.session_id, _budget_reason,
+                    )
+                    return _budget_msg
+
                 if _needs_compress:
                     logger.info(
                         "Session hygiene: %s messages, ~%s tokens (%s), %s API calls, %s accounted tokens — auto-compressing "
@@ -15037,7 +15097,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata={
+                                    **(_status_thread_metadata or {}),
+                                    "approval_allow_permanent": approval_data.get("allow_permanent", True),
+                                },
                             ),
                             _loop_for_step,
                             logger=logger,

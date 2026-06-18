@@ -232,6 +232,33 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args[1]
         assert "..." in kwargs["text"]
         assert len(kwargs["text"]) < 5000
+    @pytest.mark.asyncio
+    async def test_consent_critical_prompt_hides_session_and_always(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setattr(
+            "gateway.platforms.telegram.InlineKeyboardButton",
+            lambda text, callback_data: {"text": text, "callback_data": callback_data},
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.telegram.InlineKeyboardMarkup",
+            lambda rows: rows,
+        )
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="gws gmail users messages send me --raw abc",
+            session_key="s",
+            description="outbound email send requires explicit user approval",
+            metadata={"approval_allow_permanent": False},
+        )
+
+        markup = adapter._bot.send_message.call_args[1]["reply_markup"]
+        labels = [button["text"] for row in markup for button in row]
+        assert labels == ["✅ Allow Once", "❌ Deny"]
+
 # _handle_callback_query — approval button clicks
 # ===========================================================================
 

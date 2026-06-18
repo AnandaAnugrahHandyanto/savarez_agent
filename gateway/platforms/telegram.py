@@ -3112,16 +3112,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._approval_counter = itertools.count(1)
             approval_id = next(self._approval_counter)
 
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
-                ],
-                [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
-                ],
-            ])
+            if (metadata or {}).get("approval_allow_permanent") is False:
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
+                        InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    ]
+                ])
+            else:
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
+                        InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
+                        InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    ],
+                ])
 
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),

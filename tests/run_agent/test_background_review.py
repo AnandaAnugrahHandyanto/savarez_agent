@@ -313,3 +313,30 @@ def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
         "the fork leaks harness prompts into the user's real memory "
         "namespace via on_turn_start / prefetch_all / sync_all."
     )
+
+
+def test_background_review_skips_codex_gpt55_without_spawning_thread(monkeypatch):
+    started = []
+
+    class RecordingThread:
+        def __init__(self, *, target, daemon=None, name=None):
+            self._target = target
+
+        def start(self):
+            started.append(True)
+            self._target()
+
+    monkeypatch.delenv("HERMES_ALLOW_CODEX_GPT55_AUX", raising=False)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", RecordingThread)
+
+    agent = _bare_agent()
+    setattr(agent, "provider", "openai-codex")
+    setattr(agent, "model", "gpt-5.5")
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert started == []

@@ -666,6 +666,42 @@ def detect_dangerous_command(command: str) -> tuple:
     return (False, None, None)
 
 
+EMAIL_SEND_PATTERN_KEY = "outbound email send"
+EMAIL_SEND_DESCRIPTION = (
+    "outbound email send requires explicit user approval. "
+    "Draft/review first; silence, yolo, and session approval are not consent."
+)
+
+_EMAIL_SEND_PATTERNS_COMPILED = [
+    # Google Workspace CLI Gmail send paths. Creating drafts remains allowed;
+    # only the irreversible send operations are consent-critical.
+    re.compile(r"\bgws\s+gmail\s+users\s+messages\s+send\b", _RE_FLAGS),
+    re.compile(r"\bgws\s+gmail\s+users\s+drafts\s+send\b", _RE_FLAGS),
+    # Direct Gmail REST calls, including curl/httpie/custom wrappers.
+    re.compile(r"gmail\.googleapis\.com/gmail/v1/users/[^\s'\"]+/messages/send\b", _RE_FLAGS),
+    re.compile(r"gmail\.googleapis\.com/gmail/v1/users/[^\s'\"]+/drafts/send\b", _RE_FLAGS),
+    # Common Gmail API client method chains in Python/JS snippets.
+    re.compile(r"\bmessages\s*\(\s*\)\s*\.\s*send\s*\(", _RE_FLAGS),
+    re.compile(r"\bdrafts\s*\(\s*\)\s*\.\s*send\s*\(", _RE_FLAGS),
+    re.compile(r"\bgmail\s*\.\s*users\s*\.\s*messages\s*\.\s*send\b", _RE_FLAGS),
+    re.compile(r"\bgmail\s*\.\s*users\s*\.\s*drafts\s*\.\s*send\b", _RE_FLAGS),
+]
+
+
+def detect_outbound_email_send(command_or_code: str) -> tuple[bool, str | None, str | None]:
+    """Detect commands or scripts that send email.
+
+    This is intentionally separate from the general dangerous-command list:
+    outbound email is consent-critical even under /yolo or approvals.mode=off,
+    and it must never gain session/permanent allowlist semantics.
+    """
+    normalized = _normalize_command_for_detection(command_or_code)
+    for pattern_re in _EMAIL_SEND_PATTERNS_COMPILED:
+        if pattern_re.search(normalized):
+            return (True, EMAIL_SEND_PATTERN_KEY, EMAIL_SEND_DESCRIPTION)
+    return (False, None, None)
+
+
 # =========================================================================
 # Per-session approval state (thread-safe)
 # =========================================================================
@@ -1364,15 +1400,118 @@ def check_all_command_guards(command: str, env_type: str,
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
 
-    # --yolo or approvals.mode=off: bypass all approval prompts.
+    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_gateway = _is_gateway_approval_context()
+    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+
+    is_email_send, email_pattern_key, email_description = detect_outbound_email_send(command)
+    if is_email_send:
+        # Outbound email is consent-critical.  It must fail closed before yolo,
+        # approvals.mode=off, smart approval, or permanent/session allowlists can
+        # bypass the user's explicit final-send approval requirement.
+        session_key = get_current_session_key()
+        if env_var_enabled("HERMES_CRON_SESSION") or (not is_cli and not is_gateway and not is_ask):
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: outbound email send requires explicit user approval, "
+                    "but no interactive approval surface is available. Draft the "
+                    "email and ask the user for final approval instead."
+                ),
+                "pattern_key": email_pattern_key,
+                "description": email_description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+
+        if is_gateway or is_ask:
+            with _lock:
+                notify_cb = _gateway_notify_cbs.get(session_key)
+            if notify_cb is None:
+                submit_pending(session_key, {
+                    "command": command,
+                    "pattern_key": email_pattern_key,
+                    "pattern_keys": [email_pattern_key],
+                    "description": email_description,
+                    "allow_permanent": False,
+                })
+                return {
+                    "approved": False,
+                    "pattern_key": email_pattern_key,
+                    "status": "pending_approval",
+                    "approval_pending": True,
+                    "command": command,
+                    "description": email_description,
+                    "message": (
+                        f"⚠️ {email_description}. Asking the user for approval.\n\n"
+                        f"**Email send command:**\n```\n{command}\n```"
+                    ),
+                }
+            approval_data = {
+                "command": command,
+                "pattern_key": email_pattern_key,
+                "pattern_keys": [email_pattern_key],
+                "description": email_description,
+                "allow_permanent": False,
+                "consent_critical": True,
+            }
+            decision = _await_gateway_decision(
+                session_key, notify_cb, approval_data, surface="gateway"
+            )
+            if decision.get("notify_failed"):
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Failed to send email approval request to user. Do NOT retry.",
+                    "pattern_key": email_pattern_key,
+                    "description": email_description,
+                    "outcome": "notify_failed",
+                    "user_consent": False,
+                }
+            resolved = decision["resolved"]
+            choice = decision["choice"]
+            if not resolved or choice is None or choice == "deny":
+                reason = "timed out without user response" if not resolved else "denied by user"
+                addendum = " Silence is not consent." if not resolved else ""
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: outbound email send {reason}. The user has NOT "
+                        f"consented to sending this email. Do NOT retry, do NOT "
+                        f"send via another tool, and keep it as a draft.{addendum}"
+                    ),
+                    "pattern_key": email_pattern_key,
+                    "description": email_description,
+                    "outcome": "timeout" if not resolved else "denied",
+                    "user_consent": False,
+                }
+            # Any affirmative choice approves this one send only.  No session or
+            # permanent persistence for email sends.
+            return {"approved": True, "message": None, "user_approved": True,
+                    "description": email_description, "approval_scope": "once"}
+
+        choice = prompt_dangerous_approval(
+            command,
+            email_description or EMAIL_SEND_DESCRIPTION,
+            allow_permanent=False,
+            approval_callback=approval_callback,
+        )
+        if choice == "deny":
+            return {
+                "approved": False,
+                "message": "BLOCKED: User denied outbound email send. Keep it as a draft.",
+                "pattern_key": email_pattern_key,
+                "description": email_description,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None, "user_approved": True,
+                "description": email_description, "approval_scope": "once"}
+
+    # --yolo or approvals.mode=off: bypass normal approval prompts only.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
-
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
-    is_gateway = _is_gateway_approval_context()
-    is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
@@ -1658,13 +1797,99 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass (session- or process-scoped).
-    approval_mode = _get_approval_mode()
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
+    is_email_send, email_pattern_key, email_description = detect_outbound_email_send(code)
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+
+    if is_email_send:
+        # execute_code can call Gmail clients directly without passing through
+        # terminal().  Email sends still require explicit one-shot approval and
+        # fail closed when no interactive approval surface is present.
+        session_key = get_current_session_key()
+        command = f"execute_code <<'PY'\n{code}\nPY"
+        if env_var_enabled("HERMES_CRON_SESSION") or (not is_gateway and not is_ask):
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: outbound email send requires explicit user approval, "
+                    "but no interactive approval surface is available. Draft the "
+                    "email and ask the user for final approval instead."
+                ),
+                "pattern_key": email_pattern_key,
+                "description": email_description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+        if notify_cb is None:
+            submit_pending(session_key, {
+                "command": command,
+                "pattern_key": email_pattern_key,
+                "pattern_keys": [email_pattern_key],
+                "description": email_description,
+                "allow_permanent": False,
+            })
+            return {
+                "approved": False,
+                "pattern_key": email_pattern_key,
+                "status": "pending_approval",
+                "approval_pending": True,
+                "command": command,
+                "description": email_description,
+                "message": (
+                    f"⚠️ {email_description}. Asking the user for approval.\n\n"
+                    f"**Code:**\n```python\n{code}\n```"
+                ),
+            }
+        decision = _await_gateway_decision(
+            session_key,
+            notify_cb,
+            {
+                "command": command,
+                "pattern_key": email_pattern_key,
+                "pattern_keys": [email_pattern_key],
+                "description": email_description,
+                "allow_permanent": False,
+                "consent_critical": True,
+            },
+            surface="gateway",
+        )
+        if decision.get("notify_failed"):
+            return {
+                "approved": False,
+                "message": "BLOCKED: Failed to send email approval request to user. Do NOT retry.",
+                "pattern_key": email_pattern_key,
+                "description": email_description,
+                "outcome": "notify_failed",
+                "user_consent": False,
+            }
+        resolved = decision["resolved"]
+        choice = decision["choice"]
+        if not resolved or choice is None or choice == "deny":
+            reason = "timed out without user response" if not resolved else "denied by user"
+            addendum = " Silence is not consent." if not resolved else ""
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: outbound email send {reason}. The user has NOT "
+                    f"consented to sending this email. Do NOT retry, do NOT send "
+                    f"via another tool, and keep it as a draft.{addendum}"
+                ),
+                "pattern_key": email_pattern_key,
+                "description": email_description,
+                "outcome": "timeout" if not resolved else "denied",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None, "user_approved": True,
+                "description": email_description, "approval_scope": "once"}
+
+    # --yolo or approvals.mode=off: bypass (session- or process-scoped) only
+    # after consent-critical email send detection.
+    approval_mode = _get_approval_mode()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+        return {"approved": True, "message": None}
 
     # Cron: no user is present to approve arbitrary code.
     if env_var_enabled("HERMES_CRON_SESSION"):

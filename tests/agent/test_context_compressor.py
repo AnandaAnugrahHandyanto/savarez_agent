@@ -1061,6 +1061,19 @@ class TestAbortOnSummaryFailure:
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
 
+    def test_aborted_compress_reports_cooldown_reason_not_unknown_error(self):
+        c = self._make_compressor()
+        msgs = self._make_msgs()
+        c._summary_failure_cooldown_until = 2000.0
+        c._summary_failure_cooldown_reason = "no auxiliary LLM provider configured"
+
+        with patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c.compress(msgs)
+
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_error == "no auxiliary LLM provider configured"
+
     def test_force_true_bypasses_failure_cooldown(self):
         """Manual /compress passes force=True so it can retry immediately
         after an auto-compress abort instead of waiting out the 30-60s

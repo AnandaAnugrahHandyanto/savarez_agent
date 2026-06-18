@@ -1430,6 +1430,16 @@ class AIAgent:
         here so existing tests that patch ``run_agent.threading.Thread``
         keep working.
         """
+        from agent.auxiliary_client import _codex_gpt55_aux_blocked_reason
+        blocked = _codex_gpt55_aux_blocked_reason(
+            getattr(self, "provider", None),
+            getattr(self, "model", None),
+            "background_review",
+        )
+        if blocked:
+            logger.warning("Skipping background review: %s", blocked)
+            return
+
         from agent.background_review import spawn_background_review_thread
         target, _prompt = spawn_background_review_thread(
             self,
