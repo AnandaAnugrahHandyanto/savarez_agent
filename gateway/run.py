@@ -12674,7 +12674,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     process_registry as _pr_check,
                     should_queue_process_notification,
                 )
-                
+
                 completion_evt = {
                     "type": "completion",
                     "session_id": session_id,
