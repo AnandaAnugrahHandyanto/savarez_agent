@@ -788,6 +788,75 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
 
+    def test_insert_session_row_accepts_kwargs(self, db):
+        """_insert_session_row must accept **kwargs for forward compatibility."""
+        # This should not raise TypeError for unexpected keyword arguments
+        db._insert_session_row(
+            session_id="test-sess",
+            source="test-source",
+            model="test-model",
+            cwd="/test/path",
+            unexpected_arg="should-be-ignored",
+            another_arg=42,
+        )
+        
+        # Verify the session was created with expected values
+        session = db.get_session("test-sess")
+        assert session is not None
+        assert session["source"] == "test-source"
+        assert session["model"] == "test-model"
+        assert session["cwd"] == "/test/path"
+
+    def test_append_message_accepts_timestamp(self, db):
+        """append_message must accept timestamp parameter and use it when provided."""
+        db.create_session(session_id="test-sess", source="test")
+        
+        # Test 1: Provide explicit timestamp
+        fixed_time = 1234567890.0
+        msg_id = db.append_message(
+            session_id="test-sess",
+            role="user",
+            content="Test message with explicit timestamp",
+            timestamp=fixed_time,
+        )
+        
+        # Verify the message was stored with the provided timestamp
+        messages = db.get_messages("test-sess")
+        assert len(messages) == 1
+        assert messages[0]["timestamp"] == fixed_time
+        assert messages[0]["content"] == "Test message with explicit timestamp"
+        
+        # Test 2: Omit timestamp (should default to current time)
+        db.append_message(
+            session_id="test-sess",
+            role="assistant",
+            content="Test message with default timestamp",
+        )
+        
+        messages = db.get_messages("test-sess")
+        assert len(messages) == 2
+        # Second message should have a recent timestamp (within last 5 seconds)
+        assert messages[1]["timestamp"] is not None
+        assert isinstance(messages[1]["timestamp"], float)
+        assert messages[1]["timestamp"] > time.time() - 5
+        
+        # Test 3: Explicitly pass None (should also default to current time)
+        db.append_message(
+            session_id="test-sess",
+            role="tool",
+            content="Tool result with None timestamp",
+            timestamp=None,
+        )
+        
+        messages = db.get_messages("test-sess")
+        assert len(messages) == 3
+        # Third message should also have a recent timestamp
+        assert messages[2]["timestamp"] is not None
+        assert isinstance(messages[2]["timestamp"], float)
+        assert messages[2]["timestamp"] > time.time() - 5
+
+
+
 # =========================================================================
 # FTS5 search
 # =========================================================================

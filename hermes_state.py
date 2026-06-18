@@ -1282,6 +1282,7 @@ class SessionDB:
         user_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        **kwargs,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
@@ -2374,6 +2375,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        timestamp: float = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2420,12 +2422,12 @@ class SessionDB:
                 (
                     session_id,
                     role,
-                    stored_content,
-                    tool_call_id,
-                    tool_calls_json,
-                    tool_name,
-                    time.time(),
-                    token_count,
+                     stored_content,
+                     tool_call_id,
+                     tool_calls_json,
+                     tool_name,
+                     time.time() if timestamp is None else timestamp,
+                     token_count,
                     finish_reason,
                     reasoning,
                     reasoning_content,
