@@ -25,8 +25,7 @@ import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import {
-  $composerAttachments,
+import { $composerAttachments,
   clearComposerAttachments,
   clearSessionDraft,
   type ComposerAttachment,
@@ -52,6 +51,7 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
+import { $conversationModeBySession, getConversationMode } from '@/store/conversation-mode'
 import { notify } from '@/store/notifications'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -100,6 +100,8 @@ import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
+import { ConversationModeToggle } from './conversation-mode-toggle'
+import { GoalStatusBar } from './goal-status-bar'
 
 const COMPOSER_STACK_BREAKPOINT_PX = 320
 
@@ -184,8 +186,10 @@ export function ChatBar({
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const statusItemsBySession = useStore($statusItemsBySession)
+  const conversationModeBySession = useStore($conversationModeBySession)
   const scrolledUp = useStore($threadScrolledUp)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const conversationMode = getConversationMode(activeQueueSessionKey)
 
   const queuedPrompts = useMemo(
     () => (activeQueueSessionKey ? (queuedPromptsBySession[activeQueueSessionKey] ?? []) : []),
@@ -1612,12 +1616,24 @@ export function ChatBar({
     } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()
     } else if (payloadPresent) {
-      const submittedAttachments = cloneAttachments(attachments)
-      triggerHaptic('submit')
-      resetBrowseState(sessionId)
-      clearDraft()
-      clearComposerAttachments()
-      dispatchSubmit(text, submittedAttachments)
+      // In queue mode, non-slash messages are enqueued rather than sent
+      // immediately so the user can drop multiple tasks without triggering
+      // a full response per item. Slash commands bypass this (they are
+      // client-side or gateway RPCs that need to run right away).
+      if (
+        conversationMode === 'queue' &&
+        !attachments.length &&
+        !SLASH_COMMAND_RE.test(text.trim())
+      ) {
+        queueCurrentDraft()
+      } else {
+        const submittedAttachments = cloneAttachments(attachments)
+        triggerHaptic('submit')
+        resetBrowseState(sessionId)
+        clearDraft()
+        clearComposerAttachments()
+        dispatchSubmit(text, submittedAttachments)
+      }
     }
 
     focusInput()
@@ -1735,6 +1751,7 @@ export function ChatBar({
       }}
       disabled={disabled}
       hasComposerPayload={hasComposerPayload}
+      sessionId={sessionId ?? null}
       onDictate={dictate}
       onSteer={steerDraft}
       state={state}
@@ -1852,6 +1869,8 @@ export function ChatBar({
               onPick={replaceTriggerWithChip}
             />
           )}
+          {/* Goal status bar — shown above status stack when /goal is active */}
+          <GoalStatusBar sessionId={statusSessionId} />
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). Out of flow so it never inflates the composer's measured
               height; it overlays the chat instead of pushing it, and publishes

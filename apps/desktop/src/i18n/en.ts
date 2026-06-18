@@ -1339,6 +1339,33 @@ export const en: Translations = {
     exit: code => `exit ${code}`
   },
 
+  goalBar: {
+    ariaLabel: 'Goal status',
+    states: {
+      active: 'Active',
+      paused: 'Paused',
+      waiting: 'Waiting',
+      completed: 'Done',
+      failed: 'Failed'
+    },
+    details: 'Details',
+    nextStep: 'Next:',
+    pause: 'Pause',
+    resume: 'Resume',
+    end: 'End goal',
+    justNow: 'just now',
+    minutesAgo: n => `${n}m ago`
+  },
+
+  conversationMode: {
+    guidance: 'Guidance',
+    queue: 'Queue',
+    guidanceDesc: 'Active mode — Hermes responds to each message immediately and drives the goal forward.',
+    queueDesc: 'Queue mode — messages are queued for sequential processing. Hermes sends brief acknowledgements.',
+    toggleAria: current => `Conversation mode: ${current}. Click to switch.`,
+    queueHint: 'Queue mode — messages will be queued'
+  },
+
   updates: {
     stages: {
       idle: 'Getting ready…',

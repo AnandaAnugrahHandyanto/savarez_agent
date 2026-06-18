@@ -30,6 +30,7 @@ import { setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
+import { parseGoalResponse, refreshSessionGoal, setSessionGoal } from '@/store/goal'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -824,6 +825,13 @@ export function useMessageStream({
 
         void refreshHermesConfig()
 
+        // If the backend includes a `goal` field in session.info, apply it
+        // immediately so the goal bar updates without a round-trip poll.
+        if (sessionId && payload?.goal !== undefined) {
+          const goalState = parseGoalResponse(payload.goal as string | Record<string, unknown>)
+          setSessionGoal(sessionId, goalState)
+        }
+
         if (modelChanged || providerChanged) {
           void queryClient.invalidateQueries({
             queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
@@ -899,6 +907,10 @@ export function useMessageStream({
         if (payload?.usage) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
+
+        // Refresh goal state after each turn so the goal bar reflects
+        // any state change that happened during the run (active→paused, etc.).
+        void refreshSessionGoal(sessionId)
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
         if (!sessionId) {
           return

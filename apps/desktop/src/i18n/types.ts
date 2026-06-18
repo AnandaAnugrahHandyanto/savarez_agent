@@ -1019,6 +1019,42 @@ export interface Translations {
     exit: (code: number) => string
   }
 
+  goalBar: {
+    /** Aria label for the goal status strip. */
+    ariaLabel: string
+    /** State labels shown next to the dot indicator. */
+    states: Record<'active' | 'paused' | 'waiting' | 'completed' | 'failed', string>
+    /** Tooltip / label for the expand-details affordance. */
+    details: string
+    /** Next-step label prefix. */
+    nextStep: string
+    /** Pause action button. */
+    pause: string
+    /** Resume action button. */
+    resume: string
+    /** End goal action button. */
+    end: string
+    /** Short age label: "just now". */
+    justNow: string
+    /** Short age label: N minutes ago. */
+    minutesAgo: (n: number) => string
+  }
+
+  conversationMode: {
+    /** Guidance mode label shown on the toggle pill. */
+    guidance: string
+    /** Queue mode label shown on the toggle pill. */
+    queue: string
+    /** Tooltip explaining guidance mode. */
+    guidanceDesc: string
+    /** Tooltip explaining queue mode. */
+    queueDesc: string
+    /** Aria label for the mode toggle button. */
+    toggleAria: (current: string) => string
+    /** Small hint shown inside composer when queue mode is active. */
+    queueHint: string
+  }
+
   updates: {
     stages: Record<string, string>
     checking: string
