@@ -1213,8 +1213,49 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    model = _resolve_vision_model()
     return vision_analyze_tool(image_url, full_prompt, model)
+
+
+def _resolve_vision_model() -> Optional[str]:
+    """Resolve the vision model name with env > config precedence.
+
+    The env var ``AUXILIARY_VISION_MODEL`` is the override (highest
+    precedence) — when set, it wins. When unset, falls back to
+    ``~/.hermes/config.yaml``'s ``auxiliary.vision.model`` setting.
+
+    The config fallback is the fix for the Hermes Desktop (Electron)
+    build where the env var is captured at app launch and never
+    refreshed when the user edits the config — the running Electron
+    main process keeps using the baked-in env value. Reading
+    ``auxiliary.vision.model`` from config directly means config edits
+    take effect on the next vision call, not on the next app restart
+    (#48269).
+
+    Returns None when neither source is set (the default
+    ``call_llm`` resolver then falls through to its built-in default).
+    """
+    env_model = os.getenv("AUXILIARY_VISION_MODEL", "").strip()
+    if env_model:
+        return env_model
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    aux = cfg.get("auxiliary", {})
+    if not isinstance(aux, dict):
+        return None
+    vision_cfg = aux.get("vision", {})
+    if not isinstance(vision_cfg, dict):
+        return None
+    config_model = vision_cfg.get("model")
+    if not isinstance(config_model, str):
+        return None
+    config_model = config_model.strip()
+    return config_model or None
 
 
 registry.register(
@@ -1576,7 +1617,8 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "including visual content, motion, audio cues, text overlays, and scene "
         f"transitions. Then answer the following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    video_env = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip()
+    model = video_env or _resolve_vision_model()
     return video_analyze_tool(video_url, full_prompt, model)
 
 

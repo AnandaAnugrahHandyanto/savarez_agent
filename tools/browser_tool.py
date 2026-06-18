@@ -223,8 +223,35 @@ def _get_command_timeout() -> int:
 
 
 def _get_vision_model() -> Optional[str]:
-    """Model for browser_vision (screenshot analysis — multimodal)."""
-    return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    """Model for browser_vision (screenshot analysis — multimodal).
+
+    Env var ``AUXILIARY_VISION_MODEL`` wins (override). When unset,
+    falls back to ``~/.hermes/config.yaml``'s ``auxiliary.vision.model``
+    setting — important for the Hermes Desktop (Electron) build where
+    the env is captured at app launch and config edits don't propagate
+    to the running process (#48269).
+    """
+    env_model = os.getenv("AUXILIARY_VISION_MODEL", "").strip()
+    if env_model:
+        return env_model
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        cfg = _load_cfg()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    aux = cfg.get("auxiliary", {})
+    if not isinstance(aux, dict):
+        return None
+    vision_cfg = aux.get("vision", {})
+    if not isinstance(vision_cfg, dict):
+        return None
+    config_model = vision_cfg.get("model")
+    if not isinstance(config_model, str):
+        return None
+    config_model = config_model.strip()
+    return config_model or None
 
 
 def _get_extraction_model() -> Optional[str]:

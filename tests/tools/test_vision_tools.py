@@ -260,6 +260,112 @@ class TestHandleVisionAnalyze:
 
 
 # ---------------------------------------------------------------------------
+# Vision model resolution from config.yaml (#48269)
+# ---------------------------------------------------------------------------
+# In the Hermes Desktop (Electron) build the env var
+# ``AUXILIARY_VISION_MODEL`` is captured at app launch and never
+# refreshed. The fix is to read ``auxiliary.vision.model`` from
+# ``~/.hermes/config.yaml`` as a fallback when the env var is unset,
+# so a config edit takes effect on the next vision call rather than
+# the next app restart. The env var still wins (override semantics).
+
+
+class TestVisionModelResolution:
+    """``_resolve_vision_model`` env > config precedence (#48269)."""
+
+    def setup_method(self):
+        # Snapshot env so each test can mutate freely.
+        self._env_backup = os.environ.copy()
+
+    def teardown_method(self):
+        # Restore env exactly as the test started.
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+
+    def test_env_var_wins_over_config(self):
+        """When ``AUXILIARY_VISION_MODEL`` is set, it wins (override)."""
+        os.environ["AUXILIARY_VISION_MODEL"] = "env-model"
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"auxiliary": {"vision": {"model": "config-model"}}},
+        ):
+            from tools.vision_tools import _resolve_vision_model
+            assert _resolve_vision_model() == "env-model"
+
+    def test_config_fallback_when_env_unset(self):
+        """When env is unset and config has ``auxiliary.vision.model``,
+        the config value is used.
+        """
+        os.environ.pop("AUXILIARY_VISION_MODEL", None)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"auxiliary": {"vision": {"model": "gemma4:31b-cloud"}}},
+        ):
+            from tools.vision_tools import _resolve_vision_model
+            assert _resolve_vision_model() == "gemma4:31b-cloud"
+
+    def test_returns_none_when_neither_set(self):
+        """When neither env nor config has a model, returns None (the
+        ``call_llm`` router falls through to its built-in default).
+        """
+        os.environ.pop("AUXILIARY_VISION_MODEL", None)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"auxiliary": {"vision": {}}},
+        ):
+            from tools.vision_tools import _resolve_vision_model
+            assert _resolve_vision_model() is None
+
+    def test_config_load_failure_silently_returns_none(self):
+        """If ``load_config`` raises (corrupt config, missing file, etc.),
+        the resolver returns None rather than blowing up the vision call.
+        """
+        os.environ.pop("AUXILIARY_VISION_MODEL", None)
+        with patch(
+            "hermes_cli.config.load_config",
+            side_effect=RuntimeError("config corrupt"),
+        ):
+            from tools.vision_tools import _resolve_vision_model
+            assert _resolve_vision_model() is None
+
+    def test_empty_env_falls_back_to_config(self):
+        """Empty-string env var is treated as unset (matches the existing
+        ``os.getenv(..., '').strip() or None`` pattern at the original
+        call sites).
+        """
+        os.environ["AUXILIARY_VISION_MODEL"] = ""
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"auxiliary": {"vision": {"model": "config-model"}}},
+        ):
+            from tools.vision_tools import _resolve_vision_model
+            assert _resolve_vision_model() == "config-model"
+
+    def test_handle_vision_analyze_uses_config_fallback(self):
+        """End-to-end: ``_handle_vision_analyze`` resolves the model
+        from config when env is unset — the exact Hermes Desktop
+        Electron failure mode in #48269.
+        """
+        os.environ.pop("AUXILIARY_VISION_MODEL", None)
+        with (
+            patch(
+                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            ) as mock_tool,
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"auxiliary": {"vision": {"model": "gemma4:31b-cloud"}}},
+            ),
+        ):
+            mock_tool.return_value = json.dumps({"result": "ok"})
+            coro = _handle_vision_analyze(
+                {"image_url": "https://example.com/img.png", "question": "test"}
+            )
+            coro.close()
+            call_args = mock_tool.call_args
+            assert call_args[0][2] == "gemma4:31b-cloud"
+
+
+# ---------------------------------------------------------------------------
 # Error logging with exc_info — verify tracebacks are logged
 # ---------------------------------------------------------------------------
 
