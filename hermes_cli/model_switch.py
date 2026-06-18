@@ -1255,6 +1255,17 @@ def list_authenticated_providers(
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
 
+    def _pin_current_model(model_ids: list[str], *, is_current: bool) -> list[str]:
+        """Keep the active model selectable even when it is outside the
+        curated or discovered catalog for the active provider row."""
+        if not is_current or not current_model:
+            return model_ids
+        ordered = [current_model]
+        for mid in model_ids:
+            if mid and mid not in ordered:
+                ordered.append(mid)
+        return ordered
+
     def _record_builtin_endpoint(slug: str) -> None:
         """Record the effective base URL for a built-in provider row.
 
@@ -1425,17 +1436,23 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
-        total = len(model_ids)
-        top = model_ids[:max_models]
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
+        is_current_provider = (
+            slug == current_provider or mdev_id == current_provider
+        )
+        model_ids = _pin_current_model(
+            model_ids, is_current=is_current_provider
+        )
+        total = len(model_ids)
+        top = model_ids[:max_models]
 
         results.append({
             "slug": slug,
             "name": display_name,
-            "is_current": slug == current_provider or mdev_id == current_provider,
+            "is_current": is_current_provider,
             "is_user_defined": False,
             "models": top,
             "total_models": total,
@@ -1588,13 +1605,19 @@ def list_authenticated_providers(
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+        is_current_provider = (
+            hermes_slug == current_provider or pid == current_provider
+        )
+        model_ids = _pin_current_model(
+            model_ids, is_current=is_current_provider
+        )
         total = len(model_ids)
         top = model_ids[:max_models]
 
         results.append({
             "slug": hermes_slug,
             "name": get_label(hermes_slug),
-            "is_current": hermes_slug == current_provider or pid == current_provider,
+            "is_current": is_current_provider,
             "is_user_defined": False,
             "models": top,
             "total_models": total,
@@ -1663,13 +1686,17 @@ def list_authenticated_providers(
             _cp_model_ids = cached_provider_model_ids(_cp.slug)
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
+        is_current_provider = _cp.slug == current_provider
+        _cp_model_ids = _pin_current_model(
+            _cp_model_ids, is_current=is_current_provider
+        )
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 
         results.append({
             "slug": _cp.slug,
             "name": _cp.label,
-            "is_current": _cp.slug == current_provider,
+            "is_current": is_current_provider,
             "is_user_defined": False,
             "models": _cp_top,
             "total_models": _cp_total,
@@ -1764,10 +1791,14 @@ def list_authenticated_providers(
                 except Exception:
                     pass
 
+            is_current_provider = ep_name == current_provider
+            models_list = _pin_current_model(
+                models_list, is_current=is_current_provider
+            )
             results.append({
                 "slug": ep_name,
                 "name": display_name,
-                "is_current": ep_name == current_provider,
+                "is_current": is_current_provider,
                 "is_user_defined": True,
                 "models": models_list,
                 "total_models": len(models_list) if models_list else 0,
@@ -2011,15 +2042,19 @@ def list_authenticated_providers(
                         grp["total_models"] = len(live_models)
                 except Exception:
                     pass
+            is_current_provider = slug == current_provider or (
+                current_provider == "custom"
+                and bool(_current_base_url_norm)
+                and _grp_url_norm == _current_base_url_norm
+                and _current_base_url_group_count == 1
+            )
+            grp["models"] = _pin_current_model(
+                grp["models"], is_current=is_current_provider
+            )
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider or (
-                    current_provider == "custom"
-                    and bool(_current_base_url_norm)
-                    and _grp_url_norm == _current_base_url_norm
-                    and _current_base_url_group_count == 1
-                ),
+                "is_current": is_current_provider,
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),
