@@ -12822,7 +12822,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # rendering the first post-turn value (usually ``✓ 0s``) forever.
             # A low-rate refresh keeps the clock honest without reintroducing a
             # custom repaint thread or touching conversation state.
-            refresh_interval=1.0,
+            #
+            # In non-fullscreen mode the periodic redraw sends ANSI output to
+            # the terminal, which causes terminal emulators with "auto-scroll
+            # on output" (Xshell, iTerm2, Windows Terminal, etc.) to snap the
+            # viewport back to the bottom when the user has scrolled up to
+            # read history.  Disable the idle refresh in non-fullscreen mode;
+            # the clock will freeze after the turn completes but any user
+            # input (key press, paste) triggers a full repaint anyway.
+            refresh_interval=0,
             # Erase the live bottom chrome (status bar, input box, separator
             # rules) on exit instead of freezing a final copy into scrollback.
             # Without this, prompt_toolkit's render_as_done teardown repaints
