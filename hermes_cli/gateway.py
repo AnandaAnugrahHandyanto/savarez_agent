@@ -49,6 +49,9 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+_LAUNCHD_MAXFILES_SOFT = 4096
+_LAUNCHD_MAXFILES_HARD = 8192
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -3427,6 +3430,18 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{_LAUNCHD_MAXFILES_SOFT}</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{_LAUNCHD_MAXFILES_HARD}</integer>
+    </dict>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -3449,7 +3464,6 @@ def launchd_plist_is_current() -> bool:
     return _normalize_launchd_plist_for_comparison(
         installed
     ) == _normalize_launchd_plist_for_comparison(expected)
-
 
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
