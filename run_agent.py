@@ -1635,16 +1635,25 @@ class AIAgent:
                     persisted_count = None
                 if persisted_count is not None:
                     durable_prefix_len = min(persisted_count, len(messages))
-                    if history_items and len(history_items) >= len(messages) and durable_prefix_len < len(messages):
-                        logger.warning(
-                            "Session DB flush cursor ahead of persisted messages for %s "
-                            "(history_len=%s, persisted=%s, message_len=%s); "
-                            "resuming from durable prefix",
-                            self.session_id,
-                            len(history_items),
-                            persisted_count,
-                            len(messages),
-                        )
+                    if history_items and len(history_items) >= len(messages):
+                        if persisted_count >= len(messages):
+                            # repair_message_sequence can shrink a long persisted
+                            # history into fewer local message dicts before adding
+                            # this turn's new user/assistant tail. In that shape a
+                            # raw persisted row count no longer maps onto positions
+                            # in ``messages``; marking every local dict flushed would
+                            # drop the new turn. Fall back to identity-based writes.
+                            durable_prefix_len = 0
+                        elif durable_prefix_len < len(messages):
+                            logger.warning(
+                                "Session DB flush cursor ahead of persisted messages for %s "
+                                "(history_len=%s, persisted=%s, message_len=%s); "
+                                "resuming from durable prefix",
+                                self.session_id,
+                                len(history_items),
+                                persisted_count,
+                                len(messages),
+                            )
                     for msg in messages[:durable_prefix_len]:
                         flushed_ids.add(id(msg))
 
