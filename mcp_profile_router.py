@@ -20,7 +20,7 @@ import re
 import shlex
 import subprocess
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, NoReturn
 from uuid import uuid4
@@ -200,9 +200,10 @@ class TerminalExecutionPolicy:
 class TerminalSubprocessPlan:
     """Internal no-shell execution scaffold for future terminal_run support.
 
-    This object is deliberately not an executor: it contains the argv/cwd/env
-    that a future bounded subprocess runner would receive, but Phase 6 keeps
-    ``terminal_run`` non-executing and absent from public MCP registration.
+    This object is deliberately separate from the executor: it contains the
+    argv/cwd/env that the private direct runner receives only after fresh
+    context, route policy, no-shell parsing, and terminal.execution allowlist
+    checks. ``terminal_run`` remains absent from public MCP registration.
     """
 
     argv: tuple[str, ...]
@@ -797,8 +798,9 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
     "terminal_run": RouterToolMetadata(
         name="terminal_run",
         description=(
-            "Future terminal tool; disabled from default public MCP exposure. "
-            "Direct calls require fresh workspace context, classify commands without "
+            "Private terminal tool; disabled from default public MCP exposure. "
+            "Direct calls require fresh workspace context and explicit "
+            "terminal.execution allowlist, use sanitized no-shell subprocess "
             "execution, and block model/destructive/protected/deploy patterns."
         ),
         cost_class=COST_CLASS_NO_MODEL,
@@ -2450,11 +2452,138 @@ def _shape_terminal_subprocess_result(
             "root_exposed": False,
             "uses_shell": plan.uses_shell,
             "executes": plan.executes,
+            "execution_attempted": plan.executes,
+            "subprocess_run_allowed": plan.executes,
+            "subprocess_run_called": plan.executes,
             "argv_redacted": True,
             "env_values_exposed": False,
             "public_mcp_exposure": "disabled_pending_http_auth_config_review",
         },
     }
+
+
+def _terminal_public_cwd_label(public_cwd: str) -> str:
+    if public_cwd in {"", "."}:
+        return "<workspace>"
+    return f"<workspace>/{public_cwd}"
+
+
+def _terminal_output_redactions(
+    workspace: WorkspaceMetadata,
+    plan: TerminalSubprocessPlan,
+) -> list[tuple[str, str]]:
+    """Return private output redactions for host roots and env values."""
+
+    root = Path(workspace.root)
+    candidates: list[tuple[str, str]] = []
+    try:
+        candidates.append((str(plan.cwd.resolve()), _terminal_public_cwd_label(plan.public_cwd)))
+    except OSError:
+        candidates.append((str(plan.cwd), _terminal_public_cwd_label(plan.public_cwd)))
+    try:
+        candidates.append((str(root.resolve()), "<workspace>"))
+    except OSError:
+        candidates.append((str(root), "<workspace>"))
+    candidates.append((str(plan.cwd), _terminal_public_cwd_label(plan.public_cwd)))
+    candidates.append((str(root), "<workspace>"))
+    for value in plan.env.values():
+        if value:
+            candidates.append((value, "<redacted_env_value>"))
+
+    redactions: dict[str, str] = {}
+    for source, replacement in candidates:
+        # Never redact filesystem separators or empty strings globally.
+        if source and source != "/":
+            redactions.setdefault(source, replacement)
+    return sorted(redactions.items(), key=lambda item: len(item[0]), reverse=True)
+
+
+def _redact_terminal_output_stream(
+    value: str | bytes,
+    *,
+    workspace: WorkspaceMetadata,
+    plan: TerminalSubprocessPlan,
+    stream_name: str,
+) -> str:
+    text = _coerce_terminal_output_stream(value, stream_name)
+    for source, replacement in _terminal_output_redactions(workspace, plan):
+        text = text.replace(source, replacement)
+    return text
+
+
+def _run_terminal_subprocess_plan(
+    plan: TerminalSubprocessPlan,
+    *,
+    workspace: WorkspaceMetadata,
+) -> dict:
+    """Run one allowlisted no-shell command with sanitized env and output caps."""
+
+    if plan.uses_shell:
+        raise ProfileRouterError(
+            "terminal_shell_execution_not_allowed",
+            "terminal_run only supports shell=false subprocess execution",
+        )
+    executing_plan = replace(plan, executes=True)
+    try:
+        completed = subprocess.run(
+            list(plan.argv),
+            cwd=str(plan.cwd),
+            env=dict(plan.env),
+            text=True,
+            capture_output=True,
+            timeout=plan.timeout_seconds,
+            check=False,
+            shell=False,
+        )
+    except FileNotFoundError as exc:
+        raise ProfileRouterError(
+            "terminal_executable_not_found",
+            "allowlisted terminal executable is not available in the sanitized PATH",
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        stdout = _redact_terminal_output_stream(
+            exc.stdout or "",
+            workspace=workspace,
+            plan=plan,
+            stream_name="stdout",
+        )
+        stderr = _redact_terminal_output_stream(
+            exc.stderr or "",
+            workspace=workspace,
+            plan=plan,
+            stream_name="stderr",
+        )
+        return _shape_terminal_subprocess_result(
+            executing_plan,
+            returncode=None,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=True,
+        )
+    except OSError as exc:
+        raise ProfileRouterError(
+            "terminal_execution_failed",
+            "terminal command could not be started safely",
+        ) from exc
+
+    stdout = _redact_terminal_output_stream(
+        completed.stdout,
+        workspace=workspace,
+        plan=plan,
+        stream_name="stdout",
+    )
+    stderr = _redact_terminal_output_stream(
+        completed.stderr,
+        workspace=workspace,
+        plan=plan,
+        stream_name="stderr",
+    )
+    return _shape_terminal_subprocess_result(
+        executing_plan,
+        returncode=completed.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 def _terminal_shaped_result_contract(plan: TerminalSubprocessPlan) -> dict:
@@ -2527,10 +2656,9 @@ def _terminal_execution_readiness_review_gate(
 ) -> dict:
     """Private pre-executor review gate for future terminal execution.
 
-    This gate is deliberately non-enabling: it records the checks that must hold
-    before a later real executor can be considered, while keeping
-    ``subprocess.run`` disallowed in the current phase. It also avoids raw
-    command, argv, env-value, and host-root serialization.
+    This gate records the checks that must hold before the private direct runner
+    may use ``subprocess.run``. Public MCP exposure remains blocked, and raw
+    command, argv, env-value, and host-root serialization stay prohibited.
     """
 
     terminal_meta = metadata.get("terminal_run")
@@ -2579,9 +2707,10 @@ def _terminal_execution_readiness_review_gate(
         "gate": "terminal_execution_readiness_review",
         "scope": "private_non_executing_terminal_scaffold",
         "pre_executor_checks_passed": not failed_checks,
-        "current_phase_allows_subprocess_run": False,
-        "subprocess_run_allowed": False,
-        "real_executor_status": "blocked_pending_auth_public_exposure_review",
+        "current_phase_allows_subprocess_run": not failed_checks,
+        "subprocess_run_allowed": not failed_checks,
+        "public_mcp_subprocess_run_allowed": False,
+        "real_executor_status": "private_direct_runner_enabled_public_mcp_blocked",
         "checks": checks,
         "failed_checks": failed_checks,
         "fresh_context_enforced_before_gate": bool(fresh_context_validated),
@@ -2638,7 +2767,7 @@ def _terminal_execution_plan_audit(
 
     return {
         "available": plan_available,
-        "implementation_status": "pending_no_shell_subprocess_executor",
+        "implementation_status": "private_no_shell_subprocess_runner_available",
         "executes": False,
         "shell": False,
         "argv": _terminal_argv_shape(prepared_plan.argv) if prepared_plan else None,
@@ -2751,6 +2880,53 @@ def preflight_terminal_command(
             "public_mcp_exposure": "disabled_pending_http_auth_config_review",
         },
     }
+
+
+def _run_preflighted_terminal_command(
+    workspace_id: str,
+    command: str,
+    *,
+    preflight: Mapping[str, Any],
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Execute a command only after the sanitized preflight allows it."""
+
+    if preflight.get("blocked") or not preflight.get("execution_plan", {}).get("available"):
+        raise ProfileRouterError(
+            "terminal_execution_not_allowlisted",
+            "terminal_run requires a fresh-context allowlisted execution plan",
+        )
+    workspace, _route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    resolved_cwd, public_cwd = _resolve_terminal_working_directory(
+        workspace, str(preflight.get("working_directory") or ".")
+    )
+    timeout_seconds = _bounded_terminal_int(
+        preflight.get("timeout_seconds"),
+        "timeout",
+        default=30,
+        minimum=1,
+        maximum=MAX_TERMINAL_TIMEOUT_SECONDS,
+    )
+    max_output_chars = _bounded_terminal_int(
+        preflight.get("max_output_chars"),
+        "max_output_chars",
+        default=MAX_TERMINAL_OUTPUT_CHARS,
+        minimum=1,
+        maximum=MAX_TERMINAL_OUTPUT_CHARS,
+    )
+    plan = _prepare_terminal_subprocess_plan(
+        command,
+        resolved_cwd=resolved_cwd,
+        public_cwd=public_cwd,
+        timeout_seconds=timeout_seconds,
+        max_output_chars=max_output_chars,
+    )
+    return _run_terminal_subprocess_plan(plan, workspace=workspace)
 
 
 def diff_workspace(
@@ -3261,7 +3437,7 @@ def terminal_run(
     context_token: str | None = None,
     max_output_chars: int | None = MAX_TERMINAL_OUTPUT_CHARS,
 ) -> str:
-    """Disabled future wrapper: context-gated terminal command without execution."""
+    """Direct wrapper: run an allowlisted no-shell command after context gates."""
 
     try:
         classification = preflight_terminal_command(
@@ -3284,19 +3460,52 @@ def terminal_run(
                     "terminal_command": classification,
                 },
             )
+        if not classification["execution_plan"]["available"]:
+            return _tool_envelope(
+                "terminal_run",
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "tool_disabled",
+                        "message": (
+                            "terminal_run requires explicit terminal.execution "
+                            "allowlist policy before private direct execution"
+                        ),
+                    },
+                    "terminal_command": classification,
+                },
+            )
+
+        terminal_result = _run_preflighted_terminal_command(
+            workspace_id,
+            command,
+            preflight=classification,
+            context_token=context_token,
+        )
+        if terminal_result["status"] == "success":
+            return _tool_envelope(
+                "terminal_run",
+                {
+                    "ok": True,
+                    "terminal_command": classification,
+                    "terminal_result": terminal_result,
+                },
+            )
+        error_code = (
+            "terminal_command_timeout"
+            if terminal_result["status"] == "timeout"
+            else "terminal_command_failed"
+        )
         return _tool_envelope(
             "terminal_run",
             {
                 "ok": False,
                 "error": {
-                    "code": "tool_disabled",
-                    "message": (
-                        "terminal_run is disabled until explicit no-model policy, "
-                        "context, containment, output limits, audit, and focused tests "
-                        "are implemented"
-                    ),
+                    "code": error_code,
+                    "message": "allowlisted terminal command completed without success",
                 },
                 "terminal_command": classification,
+                "terminal_result": terminal_result,
             },
         )
     except ProfileRouterError as exc:

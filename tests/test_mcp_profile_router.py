@@ -302,6 +302,9 @@ def test_terminal_result_shape_bounds_streams_status_and_audit(tmp_path):
         "root_exposed": False,
         "uses_shell": False,
         "executes": False,
+        "execution_attempted": False,
+        "subprocess_run_allowed": False,
+        "subprocess_run_called": False,
         "argv_redacted": True,
         "env_values_exposed": False,
         "public_mcp_exposure": "disabled_pending_http_auth_config_review",
@@ -977,7 +980,7 @@ def test_terminal_run_preflight_requires_policy_and_workspace_relative_cwd(
     assert str(workspace_root) not in json.dumps(disabled)
 
 
-def test_terminal_run_reports_allowlist_policy_without_executing(
+def test_terminal_run_executes_allowlisted_commands_with_sanitized_output(
     hermes_home,
     tmp_path,
 ):
@@ -1010,8 +1013,7 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
     token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
 
     allowed = json.loads(terminal_run(workspace_id, "pwd", context_token=token))
-    assert allowed["ok"] is False
-    assert allowed["error"]["code"] == "tool_disabled"
+    assert allowed["ok"] is True
     allowed_preflight = allowed["terminal_command"]
     assert allowed_preflight["blocked"] is False
     assert allowed_preflight["decision"] == "disabled_pending_execution_implementation"
@@ -1028,7 +1030,7 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
     assert plan["available"] is True
     assert plan["executes"] is False
     assert plan["shell"] is False
-    assert plan["implementation_status"] == "pending_no_shell_subprocess_executor"
+    assert plan["implementation_status"] == "private_no_shell_subprocess_runner_available"
     assert plan["argv"] == {
         "shell": False,
         "argv_redacted": True,
@@ -1052,9 +1054,10 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
     assert readiness["gate"] == "terminal_execution_readiness_review"
     assert readiness["scope"] == "private_non_executing_terminal_scaffold"
     assert readiness["pre_executor_checks_passed"] is True
-    assert readiness["current_phase_allows_subprocess_run"] is False
-    assert readiness["subprocess_run_allowed"] is False
-    assert readiness["real_executor_status"] == "blocked_pending_auth_public_exposure_review"
+    assert readiness["current_phase_allows_subprocess_run"] is True
+    assert readiness["subprocess_run_allowed"] is True
+    assert readiness["public_mcp_subprocess_run_allowed"] is False
+    assert readiness["real_executor_status"] == "private_direct_runner_enabled_public_mcp_blocked"
     assert readiness["fresh_context_enforced_before_gate"] is True
     assert readiness["raw_command_exposed"] is False
     assert readiness["argv_values_exposed"] is False
@@ -1074,14 +1077,23 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
         "key_count": 6,
         "values_redacted": True,
     }
+    pwd_result = allowed["terminal_result"]
+    assert pwd_result["status"] == "success"
+    assert pwd_result["returncode"] == 0
+    assert pwd_result["stdout"]["text"].strip() == "<workspace>"
+    assert pwd_result["audit"]["executes"] is True
+    assert pwd_result["audit"]["execution_attempted"] is True
+    assert pwd_result["audit"]["subprocess_run_allowed"] is True
+    assert pwd_result["audit"]["subprocess_run_called"] is True
+    assert pwd_result["audit"]["uses_shell"] is False
     assert str(workspace_root) not in json.dumps(allowed)
     assert "pwd" not in json.dumps(allowed)
 
+    _git(workspace_root, "init")
     prefix_allowed = json.loads(
         terminal_run(workspace_id, "git status --short", context_token=token)
     )
-    assert prefix_allowed["ok"] is False
-    assert prefix_allowed["error"]["code"] == "tool_disabled"
+    assert prefix_allowed["ok"] is True
     assert prefix_allowed["terminal_command"]["execution_policy"][
         "allowlist_match_type"
     ] == "prefix"
@@ -1090,41 +1102,56 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
     assert prefix_plan["argv"]["argc"] == 3
     assert prefix_plan["argv"]["argument_count"] == 2
     assert prefix_plan["argv"]["option_count"] == 1
+    assert prefix_allowed["terminal_result"]["status"] == "success"
+    assert prefix_allowed["terminal_result"]["audit"]["executes"] is True
+    assert "AGENTS.md" in prefix_allowed["terminal_result"]["stdout"]["text"]
     assert "git status --short" not in json.dumps(prefix_allowed)
 
-    unlisted = json.loads(
-        terminal_run(workspace_id, "python -m pytest", context_token=token)
-    )
-    assert unlisted["ok"] is False
-    assert unlisted["error"]["code"] == "terminal_command_blocked"
-    assert unlisted["terminal_command"]["execution_plan"]["available"] is False
-    assert unlisted["terminal_command"]["execution_plan"]["argv"] is None
-    assert "terminal_command_not_allowlisted" in {
-        reason["code"] for reason in unlisted["terminal_command"]["reasons"]
+    blocked_commands = {
+        "python -m pytest": "terminal_command_not_allowlisted",
+        "pwd && git status": "terminal_shell_control_not_allowed",
+        "rm -rf tmp": "destructive_command",
+        "git push origin main": "protected_git_command",
+        "kubectl apply -f prod.yaml": "deploy_command",
     }
+    for command, expected_reason in blocked_commands.items():
+        blocked = json.loads(terminal_run(workspace_id, command, context_token=token))
+        assert blocked["ok"] is False
+        assert blocked["error"]["code"] == "terminal_command_blocked"
+        assert blocked["terminal_command"]["execution_plan"]["available"] is False
+        assert blocked["terminal_command"]["execution_plan"]["argv"] is None
+        assert expected_reason in {
+            reason["code"] for reason in blocked["terminal_command"]["reasons"]
+        }
+        assert "terminal_result" not in blocked
 
-    shell_control = json.loads(
-        terminal_run(workspace_id, "pwd && git status", context_token=token)
-    )
-    assert shell_control["ok"] is False
-    assert shell_control["error"]["code"] == "terminal_command_blocked"
-    assert "terminal_shell_control_not_allowed" in {
-        reason["code"] for reason in shell_control["terminal_command"]["reasons"]
-    }
 
-
-def test_terminal_executor_boundary_is_non_executing_and_not_public(
+def test_terminal_private_runner_executes_allowlisted_commands_but_not_public(
     hermes_home,
     monkeypatch,
     tmp_path,
 ):
     subprocess_calls = []
 
-    def _forbidden_subprocess_run(*args, **kwargs):
-        subprocess_calls.append((args, kwargs))
-        raise AssertionError("terminal_run must not call subprocess.run yet")
+    def _fake_subprocess_run(argv, **kwargs):
+        subprocess_calls.append((argv, kwargs))
+        assert argv == ["pwd"]
+        assert kwargs["cwd"] == str(workspace_root)
+        assert kwargs["env"] == _build_terminal_sanitized_env()
+        assert "OPENAI_API_KEY" not in kwargs["env"]
+        assert kwargs["text"] is True
+        assert kwargs["capture_output"] is True
+        assert kwargs["check"] is False
+        assert kwargs["shell"] is False
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=f"{workspace_root}\n",
+            stderr="",
+        )
 
-    monkeypatch.setattr(mcp_profile_router.subprocess, "run", _forbidden_subprocess_run)
+    monkeypatch.setenv("OPENAI_API_KEY", "should-not-leak")
+    monkeypatch.setattr(mcp_profile_router.subprocess, "run", _fake_subprocess_run)
     allowed_root = tmp_path / "allowed"
     workspace_root = allowed_root / "project"
     workspace_root.mkdir(parents=True)
@@ -1154,9 +1181,8 @@ def test_terminal_executor_boundary_is_non_executing_and_not_public(
     token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
 
     direct = json.loads(terminal_run(workspace_id, "pwd", context_token=token))
-    assert direct["ok"] is False
-    assert direct["error"]["code"] == "tool_disabled"
-    assert subprocess_calls == []
+    assert direct["ok"] is True
+    assert len(subprocess_calls) == 1
 
     command = direct["terminal_command"]
     assert command["decision"] == "disabled_pending_execution_implementation"
@@ -1198,13 +1224,32 @@ def test_terminal_executor_boundary_is_non_executing_and_not_public(
     }
     readiness = plan["execution_readiness_review"]
     assert readiness["pre_executor_checks_passed"] is True
-    assert readiness["current_phase_allows_subprocess_run"] is False
-    assert readiness["subprocess_run_allowed"] is False
+    assert readiness["current_phase_allows_subprocess_run"] is True
+    assert readiness["subprocess_run_allowed"] is True
+    assert readiness["public_mcp_subprocess_run_allowed"] is False
     assert readiness["checks"]["executor_boundary_non_executing"] is True
     assert readiness["checks"]["tool_metadata_no_model"] is True
     assert readiness["checks"]["public_mcp_absent_by_default"] is True
     assert readiness["checks"]["fresh_context_validated_upstream"] is True
     assert readiness["failed_checks"] == []
+
+    terminal_result = direct["terminal_result"]
+    assert terminal_result["status"] == "success"
+    assert terminal_result["returncode"] == 0
+    assert terminal_result["stdout"]["text"].strip() == "<workspace>"
+    assert terminal_result["audit"] == {
+        "tool": "terminal_run",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "executes": True,
+        "execution_attempted": True,
+        "subprocess_run_allowed": True,
+        "subprocess_run_called": True,
+        "argv_redacted": True,
+        "env_values_exposed": False,
+        "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+    }
 
     metadata = get_router_tool_metadata()["terminal_run"]
     assert metadata["enabled_by_default"] is False
@@ -1223,6 +1268,7 @@ def test_terminal_executor_boundary_is_non_executing_and_not_public(
     assert "pwd" not in dumped
     assert str(workspace_root) not in dumped
     assert "/usr/bin" not in dumped
+    assert "should-not-leak" not in dumped
 
 
 def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
