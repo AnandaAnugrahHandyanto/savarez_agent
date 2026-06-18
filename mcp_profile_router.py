@@ -17,6 +17,7 @@ import json
 import os
 import posixpath
 import re
+import subprocess
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -63,6 +64,8 @@ MAX_FILE_SEARCH_BYTES = 1_000_000
 MAX_SEARCH_LINE_CHARS = 500
 MAX_FILE_WRITE_CHARS = 200_000
 MAX_WRITE_DIFF_CHARS = 20_000
+MAX_WORKSPACE_DIFF_CHARS = 30_000
+MAX_WORKSPACE_DIFF_FILES = 100
 ALLOWED_SEARCH_OUTPUT_MODES = frozenset({"content", "files_only", "count"})
 MAX_CONTEXT_FILE_CHARS = 12_000
 MAX_CONTEXT_FILE_BYTES = 128_000
@@ -76,6 +79,7 @@ WORKSPACE_INSTRUCTION_FILES = (
     "SOUL.md",
 )
 FUNCIONES_TXT_FILENAME = "funciones.txt"
+PROTECTED_WORKSPACE_DIFF_DIRS = frozenset({".hermes"})
 
 
 class ProfileRouterError(ValueError):
@@ -590,6 +594,18 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         llm_calls=0,
         enabled_by_default=False,
         mutates_state=True,
+        requires_context=True,
+    ),
+    "workspace_diff": RouterToolMetadata(
+        name="workspace_diff",
+        description=(
+            "Direct Git diff/audit tool; disabled from default public MCP exposure "
+            "until HTTP/auth/config UX review and always requires fresh workspace context."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=False,
         requires_context=True,
     ),
     "terminal_run": RouterToolMetadata(
@@ -1640,6 +1656,225 @@ def write_workspace_file(
     )
 
 
+def _run_workspace_git(
+    workspace: WorkspaceMetadata,
+    args: list[str],
+    *,
+    timeout: int = 10,
+) -> subprocess.CompletedProcess[str]:
+    """Run a bounded, no-shell Git command inside a workspace root."""
+
+    try:
+        return subprocess.run(
+            ["git", "-C", workspace.root, *args],
+            cwd=workspace.root,
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+            },
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise ProfileRouterError("git_unavailable", "git executable is not available") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ProfileRouterError("git_timeout", "git command timed out") from exc
+    except OSError as exc:
+        raise ProfileRouterError("git_unavailable", "git command could not be started") from exc
+
+
+def _require_git_workspace(workspace: WorkspaceMetadata) -> None:
+    probe = _run_workspace_git(workspace, ["rev-parse", "--is-inside-work-tree"], timeout=5)
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        raise ProfileRouterError("not_a_git_workspace", "workspace_diff requires a Git workspace")
+
+
+def _git_output(workspace: WorkspaceMetadata, args: list[str], *, timeout: int = 10) -> str:
+    result = _run_workspace_git(workspace, args, timeout=timeout)
+    if result.returncode != 0:
+        command = " ".join(args[:2]) if args else "command"
+        raise ProfileRouterError("git_command_failed", f"git {command} failed")
+    return result.stdout
+
+
+def _split_nul_output(output: str) -> list[str]:
+    return [item for item in output.split("\0") if item]
+
+
+def _normalize_git_relative_path(path: str) -> str | None:
+    if not isinstance(path, str):
+        return None
+    raw = path.strip()
+    if not raw or raw.startswith("/"):
+        return None
+    normalized = posixpath.normpath(raw)
+    if normalized in {"", ".", ".."} or normalized.startswith("../"):
+        return None
+    return normalized
+
+
+def _workspace_diff_path_status(workspace: WorkspaceMetadata, rel_path: str) -> tuple[str | None, str | None]:
+    normalized = _normalize_git_relative_path(rel_path)
+    if normalized is None:
+        return None, "invalid_path"
+    if _is_secret_path(normalized):
+        return normalized, "secret_path_denied"
+    parts = [part for part in normalized.split("/") if part]
+    if parts and parts[0] in PROTECTED_WORKSPACE_DIFF_DIRS:
+        return normalized, "protected_local_metadata"
+    if parts and parts[-1] == FUNCIONES_TXT_FILENAME:
+        return normalized, "protected_local_metadata"
+
+    candidate = posixpath.normpath(posixpath.join(workspace.root, normalized))
+    if not _path_within_root(candidate, workspace.root):
+        return normalized, "path_outside_workspace"
+    candidate_path = Path(candidate)
+    if candidate_path.exists():
+        try:
+            resolve_workspace_path(workspace, normalized)
+        except ProfileRouterError as exc:
+            return normalized, exc.code
+    return normalized, None
+
+
+def _filter_workspace_diff_paths(
+    workspace: WorkspaceMetadata,
+    paths: Iterable[str],
+    *,
+    max_files: int,
+) -> tuple[list[str], list[dict], bool]:
+    safe: list[str] = []
+    skipped: list[dict] = []
+    seen: set[str] = set()
+    truncated = False
+    for path in paths:
+        normalized, reason = _workspace_diff_path_status(workspace, path)
+        public_path = normalized or str(path)
+        if reason is not None:
+            skipped.append({"path": public_path, "reason": reason})
+            continue
+        if normalized is None:
+            skipped.append({"path": public_path, "reason": "invalid_path"})
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if len(safe) >= max_files:
+            truncated = True
+            skipped.append({"path": normalized, "reason": "file_limit_exceeded"})
+            continue
+        safe.append(normalized)
+    return safe, skipped, truncated
+
+
+def _bounded_workspace_diff_text(diff_text: str) -> dict:
+    truncated = len(diff_text) > MAX_WORKSPACE_DIFF_CHARS
+    if truncated:
+        diff_text = diff_text[:MAX_WORKSPACE_DIFF_CHARS] + "\n... [diff truncated]\n"
+    return {
+        "unified": diff_text,
+        "truncated": truncated,
+        "max_chars": MAX_WORKSPACE_DIFF_CHARS,
+    }
+
+
+def _literal_git_pathspecs(paths: Iterable[str]) -> list[str]:
+    """Build Git literal pathspecs so odd filenames cannot expand matches."""
+
+    return [f":(literal){path}" for path in paths]
+
+
+def diff_workspace(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    max_files: int | None = MAX_WORKSPACE_DIFF_FILES,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Return a bounded, root-redacted Git diff/audit for an opened workspace."""
+
+    assert_default_tools_are_no_model()
+    selected_max_files = _bounded_int(
+        max_files,
+        "max_files",
+        default=MAX_WORKSPACE_DIFF_FILES,
+        minimum=1,
+        maximum=MAX_WORKSPACE_DIFF_FILES,
+    )
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _require_git_workspace(workspace)
+
+    head_probe = _run_workspace_git(workspace, ["rev-parse", "--verify", "HEAD"], timeout=5)
+    has_head = head_probe.returncode == 0
+    tracked_candidates: list[str] = []
+    if has_head:
+        tracked_candidates = _split_nul_output(
+            _git_output(
+                workspace,
+                ["diff", "--name-only", "-z", "--relative", "HEAD", "--", "."],
+            )
+        )
+    untracked_candidates = _split_nul_output(
+        _git_output(
+            workspace,
+            ["ls-files", "--others", "--exclude-standard", "-z", "--", "."],
+        )
+    )
+
+    tracked_files, skipped_tracked, tracked_truncated = _filter_workspace_diff_paths(
+        workspace,
+        tracked_candidates,
+        max_files=selected_max_files,
+    )
+    remaining_file_slots = max(0, selected_max_files - len(tracked_files))
+    untracked_files, skipped_untracked, untracked_truncated = _filter_workspace_diff_paths(
+        workspace,
+        untracked_candidates,
+        max_files=remaining_file_slots,
+    )
+
+    diff_text = ""
+    if has_head and tracked_files:
+        diff_text = _git_output(
+            workspace,
+            [
+                "diff",
+                "--no-ext-diff",
+                "--relative",
+                "HEAD",
+                "--",
+                *_literal_git_pathspecs(tracked_files),
+            ],
+        )
+
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "tracked_files": tracked_files,
+        "untracked_files": untracked_files,
+        "skipped": skipped_tracked + skipped_untracked,
+        "file_limit": selected_max_files,
+        "truncated_files": tracked_truncated or untracked_truncated,
+        "has_head": has_head,
+        "diff": _bounded_workspace_diff_text(diff_text),
+        "audit": {
+            "tool": "workspace_diff",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "uses_shell": False,
+            "git_read_only": True,
+            "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+        },
+    }
+
+
 def _safe_profile_summary(
     info: ProfileInfo,
     *,
@@ -2022,6 +2257,34 @@ def file_write(
         )
     except ProfileRouterError as exc:
         return _tool_error("file_write", exc)
+
+
+def workspace_diff(
+    workspace_id: str,
+    context_token: str | None = None,
+    max_files: int | None = MAX_WORKSPACE_DIFF_FILES,
+) -> str:
+    """Direct wrapper: return bounded Git diff/audit after fresh context.
+
+    This remains absent from default public MCP registration until the
+    write-surface HTTP/auth/config UX review is complete. It performs only
+    read-only Git subprocess calls and reports ``llm_calls=0``.
+    """
+
+    try:
+        return _tool_envelope(
+            "workspace_diff",
+            {
+                "ok": True,
+                "workspace_diff": diff_workspace(
+                    workspace_id,
+                    context_token=context_token,
+                    max_files=max_files,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_diff", exc)
 
 
 def terminal_run(

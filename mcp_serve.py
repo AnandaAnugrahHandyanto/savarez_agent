@@ -900,7 +900,7 @@ def create_profile_router_mcp_server():
             "workspace_instructions_get, workspace_context_status, "
             "workspace_get, workspace_close, file_read, and file_search. "
             "It does not expose "
-            "conversation messaging, write/patch, terminal, cron, or "
+            "conversation messaging, workspace_diff, write/patch, terminal, cron, or "
             "agent-loop execution tools."
         ),
     )

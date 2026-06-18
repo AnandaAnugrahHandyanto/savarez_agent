@@ -1,5 +1,6 @@
 import argparse
 import json
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,6 +29,7 @@ from mcp_profile_router import (
     terminal_run,
     workspace_close,
     workspace_context_status,
+    workspace_diff,
     workspace_get,
     workspace_instructions_get,
     workspace_open,
@@ -96,6 +98,18 @@ def _write_router_config(hermes_home, *, profiles=None, host_roots=None):
     return config
 
 
+def _git(repo, *args):
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:
+        pytest.skip(f"git executable unavailable: {exc}")
+
+
 def test_parse_profile_ref_requires_fully_qualified_ref():
     assert parse_profile_ref("local:main-bot").value == "local:main-bot"
     assert parse_profile_ref("LOCAL:Main-Bot").value == "local:main-bot"
@@ -121,7 +135,7 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "file_read",
         "file_search",
     }
-    disabled_power_tools = {"file_patch", "file_write", "terminal_run"}
+    disabled_power_tools = {"file_patch", "file_write", "workspace_diff", "terminal_run"}
     assert set(metadata) == public_tools | disabled_power_tools
 
     for name in public_tools:
@@ -137,8 +151,10 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         assert tool["cost_class"] == COST_CLASS_NO_MODEL
         assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is False
-        assert tool["mutates_state"] is True
         assert tool["requires_context"] is True
+    assert metadata["workspace_diff"]["mutates_state"] is False
+    for name in {"file_patch", "file_write", "terminal_run"}:
+        assert metadata[name]["mutates_state"] is True
 
     assert_default_tools_are_no_model()
 
@@ -690,6 +706,81 @@ def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
     assert outside_file.read_text(encoding="utf-8") == "leak\n"
 
 
+def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+    notes = workspace_root / "notes.md"
+    notes.write_text("alpha\n", encoding="utf-8")
+    funciones = workspace_root / "funciones.txt"
+    funciones.write_text("private deployment notes\n", encoding="utf-8")
+    plans_dir = workspace_root / ".hermes" / "plans"
+    plans_dir.mkdir(parents=True)
+    plan_state = plans_dir / "state.json"
+    plan_state.write_text("local plan state\n", encoding="utf-8")
+
+    _git(workspace_root, "init")
+    _git(workspace_root, "config", "user.email", "router-test@example.invalid")
+    _git(workspace_root, "config", "user.name", "Router Test")
+    _git(workspace_root, "add", "AGENTS.md", "notes.md", "funciones.txt", ".hermes/plans/state.json")
+    _git(workspace_root, "commit", "-m", "initial")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True, "write": True},
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    without_context = json.loads(workspace_diff(workspace_id))
+    assert without_context["ok"] is False
+    assert without_context["error"]["code"] == "context_not_loaded"
+    assert without_context["llm_calls"] == 0
+
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+    notes.write_text("beta\n", encoding="utf-8")
+    funciones.write_text("private deployment notes changed\n", encoding="utf-8")
+    plan_state.write_text("local plan state changed\n", encoding="utf-8")
+    (workspace_root / "new.txt").write_text("new file\n", encoding="utf-8")
+    (workspace_root / ".env").write_text("SECRET=should-not-leak\n", encoding="utf-8")
+
+    result = json.loads(workspace_diff(workspace_id, context_token=token))
+    assert result["ok"] is True
+    assert result["llm_calls"] == 0
+    diff = result["workspace_diff"]
+    assert diff["tracked_files"] == ["notes.md"]
+    assert diff["untracked_files"] == ["new.txt"]
+    skipped = {(item["path"], item["reason"]) for item in diff["skipped"]}
+    assert ("funciones.txt", "protected_local_metadata") in skipped
+    assert (".hermes/plans/state.json", "protected_local_metadata") in skipped
+    assert (".env", "secret_path_denied") in skipped
+    assert diff["audit"] == {
+        "tool": "workspace_diff",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "git_read_only": True,
+        "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+    }
+    assert "-alpha" in diff["diff"]["unified"]
+    assert "+beta" in diff["diff"]["unified"]
+    dumped = json.dumps(result)
+    assert str(workspace_root) not in dumped
+    assert "private deployment" not in dumped
+    assert "should-not-leak" not in dumped
+
+
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):
     result = json.loads(profiles_list())
     assert result["ok"] is True
@@ -821,6 +912,7 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
     assert "messages_send" not in tools
     assert "conversations_list" not in tools
     assert "terminal_run" not in tools
+    assert "workspace_diff" not in tools
     assert "file_write" not in tools
 
     listed = json.loads(tools["profiles_list"].fn())
