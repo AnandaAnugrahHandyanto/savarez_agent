@@ -1542,3 +1542,35 @@ def test_real_configurable_changes_still_reported_in_diff():
     assert ((new_enabled2 - current) & universe) == {"vision"}
 
 
+
+
+def test_agent_browser_post_setup_passes_ignore_scripts(monkeypatch, tmp_path):
+    """_run_post_setup('agent_browser') must use --ignore-scripts to prevent
+    agent-browser's postinstall from replacing the global npm symlink with a
+    local node_modules/ path that vanishes on the next hermes update.  #48521"""
+    from pathlib import Path
+    from hermes_cli import tools_config
+
+    # Make node_modules/agent-browser appear missing so the install path runs
+    fake_project = tmp_path / "hermes-agent"
+    monkeypatch.setattr(tools_config, "PROJECT_ROOT", fake_project)
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    _run_post_setup("agent_browser")
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert "--ignore-scripts" in cmd, (
+        f"--ignore-scripts must be passed to npm install to prevent "
+        f"agent-browser postinstall from overwriting global symlinks; "
+        f"got: {cmd}"
+    )
+    assert "--workspaces=false" in cmd
