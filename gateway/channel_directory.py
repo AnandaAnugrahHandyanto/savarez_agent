@@ -337,8 +337,6 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     """
     directory = load_directory()
     channels = directory.get("platforms", {}).get(platform_name, [])
-    if not channels:
-        return None
 
     # 0. Exact ID match — case-sensitive, no normalization. Lets callers pass
     # raw platform IDs (e.g. Slack "C0B0QV5434G") even when the format guard
@@ -370,6 +368,18 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     if len(matches) == 1:
         return matches[0]["id"]
 
+    # 4. Fallback: check session history for recently active contacts that
+    #    haven't been picked up by the cached directory yet (e.g. a brand-new
+    #    Discord DM where the session was created but the directory hasn't
+    #    refreshed).  Without this, send_message can fail with "Could not
+    #    resolve" even though the gateway already has an active session for
+    #    that contact.  See #48303.
+    for ch in _build_from_sessions(platform_name):
+        if _normalize_channel_query(ch["name"]) == query:
+            return ch["id"]
+        if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
+            return ch["id"]
+
     return None
 
 
@@ -377,6 +387,31 @@ def format_directory_for_display() -> str:
     """Format the channel directory as a human-readable list for the model."""
     directory = load_directory()
     platforms = directory.get("platforms", {})
+
+    # Merge in session-derived entries that the cached directory may not yet
+    # include (same fallback as resolve_channel_name above).  Without this,
+    # send_message(action="list") omits brand-new DM contacts.  See #48303.
+    # Iterate over all platforms that have sessions, not just those already
+    # in the directory — a brand-new DM platform may have no directory entry yet.
+    session_platforms = set()
+    sessions_path = get_hermes_home() / "sessions" / "sessions.json"
+    if sessions_path.exists():
+        try:
+            with open(sessions_path, encoding="utf-8") as f:
+                sessions_data = json.load(f)
+            for _key, session in sessions_data.items():
+                origin = session.get("origin") or {}
+                plat = origin.get("platform")
+                if plat:
+                    session_platforms.add(plat)
+        except Exception:
+            pass
+    for plat_name in session_platforms:
+        existing_ids = {ch.get("id") for ch in platforms.get(plat_name, [])}
+        for ch in _build_from_sessions(plat_name):
+            if ch.get("id") not in existing_ids:
+                platforms.setdefault(plat_name, []).append(ch)
+                existing_ids.add(ch.get("id"))
 
     if not any(platforms.values()):
         return "No messaging platforms connected or no channels discovered yet."

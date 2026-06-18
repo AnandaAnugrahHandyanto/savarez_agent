@@ -572,7 +572,127 @@ class TestChannelAliases:
                    return_value={
                        "whatsapp": "not-a-dict",
                        "telegram": None,
-                       "signal": {"+15551234567": 123},
+                       "signal": {"+155****4567": 123},
                    }):
             _apply_channel_aliases(platforms)  # should not raise
         assert platforms["whatsapp"][0]["name"] == "1"
+
+
+class TestResolveChannelNameSessionFallback:
+    """resolve_channel_name falls back to session data when the cached
+    directory does not yet include a newly created DM contact.  See #48303."""
+
+    def _write_sessions(self, tmp_path, sessions_data):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps(sessions_data))
+
+    def test_falls_back_to_session_for_new_discord_dm(self, tmp_path):
+        """A brand-new Discord DM that exists in sessions.json but not in the
+        cached directory should still resolve by display name."""
+        # Directory has no Discord entries
+        cache_file = _write_directory(tmp_path, {})
+        # But sessions.json has the new DM contact
+        self._write_sessions(tmp_path, {
+            "new_dm": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "987654321",
+                    "user_name": "NewUser#1234",
+                },
+                "chat_type": "dm",
+            }
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            assert resolve_channel_name("discord", "NewUser#1234") == "987654321"
+
+    def test_directory_takes_precedence_over_session_fallback(self, tmp_path):
+        """When the directory already has an entry, use it (don't duplicate
+        or override with session data)."""
+        cache_file = _write_directory(tmp_path, {
+            "discord": [
+                {"id": "111", "name": "Existing", "type": "dm"},
+            ]
+        })
+        self._write_sessions(tmp_path, {
+            "s1": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "999",
+                    "user_name": "Existing",
+                },
+            }
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            # Directory entry wins
+            assert resolve_channel_name("discord", "Existing") == "111"
+
+    def test_no_session_fallback_when_not_in_either(self, tmp_path):
+        """Returns None when the name is absent from both directory and sessions."""
+        cache_file = _write_directory(tmp_path, {})
+        self._write_sessions(tmp_path, {
+            "s1": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "555",
+                    "user_name": "Other",
+                },
+            }
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            assert resolve_channel_name("discord", "Nobody") is None
+
+
+class TestFormatDirectorySessionFallback:
+    """format_directory_for_display merges session-derived entries so
+    send_message(action='list') includes brand-new DM contacts.  See #48303."""
+
+    def _write_sessions(self, tmp_path, sessions_data):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps(sessions_data))
+
+    def test_lists_new_discord_dm_from_sessions(self, tmp_path):
+        """A Discord DM in sessions.json but not in the cached directory
+        should appear in the formatted list."""
+        cache_file = _write_directory(tmp_path, {})
+        self._write_sessions(tmp_path, {
+            "new_dm": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "987654321",
+                    "user_name": "NewUser#1234",
+                },
+                "chat_type": "dm",
+            }
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            result = format_directory_for_display()
+        assert "NewUser#1234" in result
+
+    def test_does_not_duplicate_directory_entries(self, tmp_path):
+        """If the directory already lists a contact, the session merge
+        must not add a duplicate."""
+        cache_file = _write_directory(tmp_path, {
+            "discord": [
+                {"id": "987654321", "name": "NewUser#1234", "type": "dm"},
+            ]
+        })
+        self._write_sessions(tmp_path, {
+            "new_dm": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "987654321",
+                    "user_name": "NewUser#1234",
+                },
+            }
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            result = format_directory_for_display()
+        # Count occurrences — should appear exactly once
+        assert result.count("NewUser#1234") == 1
