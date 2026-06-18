@@ -1271,6 +1271,158 @@ def test_terminal_private_runner_executes_allowlisted_commands_but_not_public(
     assert "should-not-leak" not in dumped
 
 
+def test_terminal_private_runner_shapes_failure_and_timeout_without_leaking_values(
+    hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    calls = []
+
+    def _fake_subprocess_run(argv, **kwargs):
+        calls.append((tuple(argv), kwargs))
+        assert kwargs["shell"] is False
+        assert kwargs["cwd"] == str(workspace_root)
+        assert kwargs["env"] == _build_terminal_sanitized_env()
+        assert "OPENAI_API_KEY" not in kwargs["env"]
+        if argv == ["python", "-c", "fail"]:
+            return subprocess.CompletedProcess(
+                argv,
+                7,
+                stdout=(
+                    f"root={workspace_root}\n"
+                    f"path={kwargs['env']['PATH']}\n"
+                    "ok-prefix\n"
+                ),
+                stderr=(
+                    f"cwd={workspace_root}\n"
+                    f"locale={kwargs['env']['LC_ALL']}\n"
+                    + "E" * 200
+                ),
+            )
+        if argv == ["python", "-c", "timeout"]:
+            raise subprocess.TimeoutExpired(
+                argv,
+                kwargs["timeout"],
+                output=f"partial={workspace_root}\n{kwargs['env']['PATH']}\n",
+                stderr=f"err={workspace_root}\n{kwargs['env']['TERM']}\n" + "T" * 200,
+            )
+        raise AssertionError(f"unexpected argv: {argv!r}")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "parent-secret-should-not-leak")
+    monkeypatch.setattr(mcp_profile_router.subprocess, "run", _fake_subprocess_run)
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "terminal": {
+                    "enabled": True,
+                    "execution": {
+                        "enabled": True,
+                        "allowed_commands": [
+                            "python -c fail",
+                            "python -c timeout",
+                        ],
+                    },
+                },
+            }
+        },
+    )
+
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    failed = json.loads(
+        terminal_run(
+            workspace_id,
+            "python -c fail",
+            context_token=token,
+            max_output_chars=90,
+        )
+    )
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "terminal_command_failed"
+    failed_result = failed["terminal_result"]
+    assert failed_result["status"] == "failed"
+    assert failed_result["returncode"] == 7
+    assert failed_result["timed_out"] is False
+    assert failed_result["output"]["max_output_chars"] == 90
+    assert failed_result["output"]["returned_chars"] <= 90
+    assert failed_result["output"]["truncated"] is True
+    assert failed_result["stdout"]["truncated"] is False
+    assert failed_result["stderr"]["truncated"] is True
+    assert "<workspace>" in failed_result["stdout"]["text"]
+    assert "<redacted_env_value>" in failed_result["stdout"]["text"]
+    assert "<workspace>" in failed_result["stderr"]["text"]
+    assert failed_result["audit"] == {
+        "tool": "terminal_run",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "executes": True,
+        "execution_attempted": True,
+        "subprocess_run_allowed": True,
+        "subprocess_run_called": True,
+        "argv_redacted": True,
+        "env_values_exposed": False,
+        "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+    }
+
+    timed_out = json.loads(
+        terminal_run(
+            workspace_id,
+            "python -c timeout",
+            context_token=token,
+            max_output_chars=70,
+        )
+    )
+    assert timed_out["ok"] is False
+    assert timed_out["error"]["code"] == "terminal_command_timeout"
+    timeout_result = timed_out["terminal_result"]
+    assert timeout_result["status"] == "timeout"
+    assert timeout_result["returncode"] is None
+    assert timeout_result["timed_out"] is True
+    assert timeout_result["output"]["max_output_chars"] == 70
+    assert timeout_result["output"]["returned_chars"] <= 70
+    assert timeout_result["output"]["truncated"] is True
+    assert "<workspace>" in timeout_result["stdout"]["text"]
+    assert "<redacted_env_value>" in timeout_result["stdout"]["text"]
+    assert "<workspace>" in timeout_result["stderr"]["text"]
+    assert timeout_result["audit"]["executes"] is True
+    assert timeout_result["audit"]["subprocess_run_allowed"] is True
+    assert timeout_result["audit"]["subprocess_run_called"] is True
+    assert len(calls) == 2
+
+    for payload, raw_command in (
+        (failed, "python -c fail"),
+        (timed_out, "python -c timeout"),
+    ):
+        dumped = json.dumps(payload)
+        assert raw_command not in dumped
+        assert str(workspace_root) not in dumped
+        assert "/usr/bin:/bin:/usr/sbin:/sbin" not in dumped
+        assert "C.UTF-8" not in dumped
+        assert "dumb" not in dumped
+        assert "parent-secret-should-not-leak" not in dumped
+        assert "OPENAI_API_KEY" not in dumped
+
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+    server = mcp_serve.create_profile_router_mcp_server()
+    assert "terminal_run" not in server._tool_manager._tools
+
+
 def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
     hermes_home,
     tmp_path,
