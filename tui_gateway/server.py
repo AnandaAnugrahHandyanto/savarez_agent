@@ -1721,7 +1721,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         f"{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]"
     )
-    entry = {"role": "system", "content": marker}
+    entry = {"role": "user", "content": marker}
 
     lock = session.get("history_lock")
     if lock is not None:
@@ -1736,7 +1736,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
         if db is not None:
-            db.append_message(session_id=session_key, role="system", content=marker)
+            db.append_message(session_id=session_key, role="user", content=marker)
             return
 
         _ensure_session_db_row(session)
