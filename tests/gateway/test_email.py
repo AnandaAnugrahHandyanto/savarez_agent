@@ -957,6 +957,40 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(results[0]["sender_addr"], "john@test.com")
         self.assertEqual(results[0]["sender_name"], "John Doe")
 
+    def test_fetch_uses_body_peek_to_preserve_unread(self):
+        """UID FETCH must use BODY.PEEK[] instead of RFC822 to avoid
+        implicitly setting the \\Seen flag on polled messages (#42997)."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+        fetch_calls = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                fetch_calls.append(args)
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        # Verify BODY.PEEK[] is used, not RFC822
+        self.assertTrue(len(fetch_calls) > 0, "Expected at least one fetch call")
+        fetch_arg = fetch_calls[0][-1]  # last positional arg is the fetch spec
+        self.assertIn("BODY.PEEK", fetch_arg, f"Expected BODY.PEEK but got: {fetch_arg}")
+        self.assertNotIn("RFC822", fetch_arg, "RFC822 must not be used (sets \\Seen flag)")
+
+
 
 class TestPollLoop(unittest.TestCase):
     """Test the async polling loop."""
