@@ -2175,6 +2175,8 @@ class GatewaySlashCommandsMixin:
 
         raw_args = event.get_command_args().strip()
         args = raw_args.split() if raw_args else []
+        if args and args[0].lower() == "show":
+            return self._handle_memory_show(event, args[1:])
         session_key = self._session_key_for_source(event.source)
         config_path = _hermes_home / "config.yaml"
 
@@ -2201,6 +2203,23 @@ class GatewaySlashCommandsMixin:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "
                    "reject <id>, approval <on|off>.")
         return out
+
+    def _handle_memory_show(self, event: "MessageEvent", target_args: list) -> str:
+        """Render the persistent-memory readout for /memory show on the gateway."""
+        from tools.memory_tool import MemoryStore, parse_memory_show_args
+        from tools.memory_format import format_memory_markdown
+
+        parsed = parse_memory_show_args(" ".join(target_args))
+        if "error" in parsed:
+            return parsed["error"]
+
+        try:
+            store = MemoryStore.from_config()
+            data = store.get_readout()
+        except Exception as exc:
+            return f"Couldn't read memory: {exc}"
+
+        return format_memory_markdown(data, parsed["target"])
 
     async def _handle_skills_command(self, event: MessageEvent) -> str:
         """Handle /skills on the gateway — pending skill-write review only.

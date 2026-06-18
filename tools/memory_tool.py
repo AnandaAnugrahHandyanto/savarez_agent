@@ -129,6 +129,24 @@ class MemoryStore:
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
+    @classmethod
+    def from_config(cls) -> "MemoryStore":
+        """Build a store using configured char limits from config.yaml.
+
+        Mirrors agent/agent_init.py so the /memory show readout reports the
+        same limits the agent enforces, instead of the bare-constructor
+        defaults. Falls back to defaults if config can't be read.
+        """
+        try:
+            from hermes_cli.config import load_config
+            mem_cfg = load_config().get("memory", {}) or {}
+        except Exception:
+            mem_cfg = {}
+        return cls(
+            memory_char_limit=mem_cfg.get("memory_char_limit", 2200),
+            user_char_limit=mem_cfg.get("user_char_limit", 1375),
+        )
+
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
 
@@ -167,6 +185,47 @@ class MemoryStore:
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
+        }
+
+    def get_readout(self) -> dict:
+        """Return current memory state for display by platform handlers.
+
+        Re-reads from disk to pick up writes from other sessions, then
+        returns a structured dict with entries, character counts, limits,
+        and percentages for both stores.
+
+        Returns:
+            {
+                "memory": {
+                    "entries": [...],
+                    "char_count": int,
+                    "char_limit": int,
+                    "pct": int,
+                },
+                "user": {
+                    "entries": [...],
+                    "char_count": int,
+                    "char_limit": int,
+                    "pct": int,
+                },
+            }
+        """
+        self.load_from_disk()
+
+        def _build(target: str, entries: list) -> dict:
+            count = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+            limit = self._char_limit(target)
+            pct = min(100, int((count / limit) * 100)) if limit > 0 else 0
+            return {
+                "entries": entries,
+                "char_count": count,
+                "char_limit": limit,
+                "pct": pct,
+            }
+
+        return {
+            "memory": _build("memory", self.memory_entries),
+            "user": _build("user", self.user_entries),
         }
 
     @staticmethod
@@ -661,6 +720,31 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
          "message": decision.message},
         ensure_ascii=False,
     )
+
+
+def parse_memory_show_args(args_str: str) -> dict:
+    """Parse the target for `/memory show [memory|user]`.
+
+    Called with the tokens that follow `show` (the `show` token itself is
+    consumed by the platform handler). Returns the selected target or an
+    error. The write-approval subcommands (pending/approve/reject/approval)
+    are handled separately by handle_pending_subcommand — this parser is
+    read-only and never claims those names.
+
+        ""        -> {"target": "all"}
+        "memory"  -> {"target": "memory"}
+        "user"    -> {"target": "user"}
+        other     -> {"error": str}
+    """
+    args = (args_str or "").strip().lower().split()
+
+    if not args:
+        return {"target": "all"}
+
+    if args[0] in ("memory", "user"):
+        return {"target": args[0]}
+
+    return {"error": f"Unknown target '{args[0]}'. Use: /memory show [memory|user]"}
 
 
 def memory_tool(
