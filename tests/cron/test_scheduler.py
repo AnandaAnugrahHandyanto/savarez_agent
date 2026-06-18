@@ -837,6 +837,113 @@ class TestDeliverResultWrapping:
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
 
 
+class TestSlackCronLiveAdapterThreadMetadata:
+    def _safe_media_path(self, tmp_path, monkeypatch, name, data=b"media"):
+        root = tmp_path / "media-cache"
+        media_file = root / name
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_bytes(data)
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (root,),
+        )
+        return media_file.resolve()
+
+    @staticmethod
+    def _complete_scheduled_coroutine(coro, _loop):
+        from concurrent.futures import Future
+
+        coro.close()
+        completed = Future()
+        send_result = MagicMock()
+        send_result.success = True
+        send_result.raw_response = None
+        completed.set_result(send_result)
+        return completed
+
+    def test_explicit_slack_channel_live_delivery_forces_top_level_for_text_and_media(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from gateway.config import Platform
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "photo.jpg")
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.send_image_file = AsyncMock()
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "slack-channel-job",
+            "deliver": "slack:C0B44PKUDNF",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=self._complete_scheduled_coroutine):
+            result = _deliver_result(
+                job,
+                f"Hello world\nMEDIA:{media_path}",
+                adapters={Platform.SLACK: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        expected_metadata = {"force_top_level": True}
+        adapter.send.assert_called_once_with(
+            "C0B44PKUDNF",
+            "Hello world",
+            metadata=expected_metadata,
+        )
+        adapter.send_image_file.assert_called_once()
+        assert adapter.send_image_file.call_args.kwargs["metadata"] == expected_metadata
+        assert "thread_id" not in adapter.send.call_args.kwargs["metadata"]
+
+    def test_explicit_slack_thread_live_delivery_preserves_thread_id_without_force_top_level(self):
+        from gateway.config import Platform
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "slack-thread-job",
+            "deliver": "slack:C1234567890:1779004845.013839",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=self._complete_scheduled_coroutine):
+            result = _deliver_result(
+                job,
+                "Hello thread",
+                adapters={Platform.SLACK: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        adapter.send.assert_called_once_with(
+            "C1234567890",
+            "Hello thread",
+            metadata={"thread_id": "1779004845.013839"},
+        )
+
+
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 

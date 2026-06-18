@@ -495,6 +495,35 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
     ) == "171.000"
 
 
+def test_force_top_level_metadata_skips_all_thread_sources():
+    adapter = _make_adapter()
+
+    result = adapter._resolve_thread_ts(
+        reply_to="171.500",
+        metadata={
+            "force_top_level": True,
+            "thread_id": "171.000",
+            "thread_ts": "171.001",
+        },
+    )
+
+    assert result is None
+
+
+def test_force_top_level_absent_or_false_preserves_thread_resolution():
+    adapter = _make_adapter()
+
+    assert adapter._resolve_thread_ts(
+        reply_to="171.500",
+        metadata={"thread_id": "171.000"},
+    ) == "171.000"
+    assert adapter._resolve_thread_ts(
+        reply_to="171.500",
+        metadata={"force_top_level": False, "thread_ts": "171.001"},
+    ) == "171.001"
+    assert adapter._resolve_thread_ts(reply_to="171.500", metadata={}) == "171.500"
+
+
 def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     from gateway.config import load_gateway_config
 

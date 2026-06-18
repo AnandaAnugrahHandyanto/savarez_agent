@@ -483,11 +483,14 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         except Exception:
             pass
 
-        return {
+        target = {
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
         }
+        if platform_key == "slack" and thread_id is None:
+            target["force_top_level"] = True
+        return target
 
     platform_name = deliver_value
     if origin and origin.get("platform") == platform_name:
@@ -757,7 +760,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = None
+            if thread_id:
+                send_metadata = {"thread_id": thread_id}
+            elif target.get("force_top_level"):
+                send_metadata = {"force_top_level": True}
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
