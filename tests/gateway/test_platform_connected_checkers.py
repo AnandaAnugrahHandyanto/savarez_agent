@@ -75,6 +75,7 @@ def test_checker_returns_true_when_configured(platform, checker, monkeypatch):
         mock_config.extra = {"address": "hermes@example.com"}
     elif platform == Platform.SMS:
         monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACtest")
+        monkeypatch.setenv("HERMES_SMS_DISABLED", "false")
         mock_config.extra = {}
     elif platform in {
         Platform.API_SERVER,
@@ -105,3 +106,16 @@ def test_checker_returns_true_when_configured(platform, checker, monkeypatch):
 
     result = checker(mock_config)
     assert result is True, f"{platform.value} checker should return True with valid-looking config"
+
+
+def test_sms_checker_respects_disabled_env(monkeypatch):
+    """Twilio credentials should not make SMS look connected when locally disabled."""
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACtest")
+    monkeypatch.setenv("HERMES_SMS_DISABLED", "true")
+    mock_config = MagicMock()
+    mock_config.extra = {}
+    mock_config.token = None
+    mock_config.api_key = None
+    mock_config.enabled = True
+
+    assert _PLATFORM_CONNECTED_CHECKERS[Platform.SMS](mock_config) is False

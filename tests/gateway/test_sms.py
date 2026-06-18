@@ -24,9 +24,10 @@ class TestSmsConfigLoading:
         from gateway.config import load_gateway_config
 
         env = {
+            "HERMES_SMS_DISABLED": "false",
             "TWILIO_ACCOUNT_SID": "ACtest123",
             "TWILIO_AUTH_TOKEN": "token_abc",
-            "TWILIO_PHONE_NUMBER": "+15551234567",
+            "TWILIO_PHONE_NUMBER": "+155****4567",
         }
         with patch.dict(os.environ, env, clear=False):
             config = load_gateway_config()
@@ -35,10 +36,27 @@ class TestSmsConfigLoading:
             assert pc.enabled is True
             assert pc.api_key == "token_abc"
 
+    def test_env_overrides_do_not_enable_sms_when_disabled(self):
+        from gateway.config import load_gateway_config
+
+        env = {
+            "HERMES_SMS_DISABLED": "true",
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_PHONE_NUMBER": "+155****4567",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert (
+                Platform.SMS not in config.platforms
+                or config.platforms[Platform.SMS].enabled is False
+            )
+
     def test_env_overrides_set_home_channel(self):
         from gateway.config import load_gateway_config
 
         env = {
+            "HERMES_SMS_DISABLED": "false",
             "TWILIO_ACCOUNT_SID": "ACtest123",
             "TWILIO_AUTH_TOKEN": "token_abc",
             "TWILIO_PHONE_NUMBER": "+15551234567",

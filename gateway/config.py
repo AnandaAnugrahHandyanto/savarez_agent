@@ -469,7 +469,10 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     ),
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
     Platform.EMAIL: lambda cfg: bool(cfg.extra.get("address")),
-    Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
+    Platform.SMS: lambda cfg: (
+        bool(os.getenv("TWILIO_ACCOUNT_SID"))
+        and not is_truthy_value(os.getenv("HERMES_SMS_DISABLED"), default=False)
+    ),
     Platform.API_SERVER: lambda cfg: True,
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(
@@ -1632,8 +1635,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # SMS (Twilio)
+    sms_disabled = is_truthy_value(os.getenv("HERMES_SMS_DISABLED"), default=False)
     twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    if twilio_sid:
+    if sms_disabled:
+        if Platform.SMS in config.platforms:
+            config.platforms[Platform.SMS].enabled = False
+    elif twilio_sid:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True

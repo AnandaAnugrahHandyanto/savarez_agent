@@ -2072,7 +2072,14 @@ def _normalize_empty_agent_response(
     Fix for #18765.
     """
     if response:
-        return response
+        raw_error = str(agent_result.get("error", "") or "").strip()
+        raw_error_variants = {raw_error, f"⚠️ {raw_error}"} if raw_error else set()
+        if not (
+            raw_error_variants
+            and response.strip() in raw_error_variants
+            and (agent_result.get("failed") or agent_result.get("partial"))
+        ):
+            return response
 
     if agent_result.get("failed"):
         error_detail = agent_result.get("error", "unknown error")
@@ -15327,7 +15334,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _stream_consumer is not None:
                 _stream_consumer.finish()
             
-            # Return final response, or a message if something went wrong
+            # Return the model-visible final response.  Do not synthesize
+            # `⚠️ {error}` here for partial/failed turns: the outer gateway
+            # normalizer has the full result dict and can convert those cases
+            # into user-facing recovery text.  Pre-wrapping the raw error here
+            # bypasses that normalizer and leaks internal provider messages such
+            # as "Codex response remained incomplete after 3 continuation
+            # attempts" directly into chat.
             final_response = result.get("final_response")
 
             # Extract actual token counts from the agent instance used for this run
@@ -15399,9 +15412,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
             if not final_response:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
-                    "final_response": error_msg,
+                    "final_response": "",
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "failed": result.get("failed", False),
