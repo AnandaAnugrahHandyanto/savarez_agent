@@ -1,47 +1,58 @@
 #!/usr/bin/env bash
 # ============================================================================
-# run.sh — Hermes Agent unified launcher
+# run.sh — Hermes Agent headless launcher (WebUI / CLI / gateway)
 # ============================================================================
-# Boots the Hermes Agent system with real-time logs streamed to the terminal.
+# Boots Hermes on a headless VPS with logs streamed live to the terminal.
 #
 #   Usage:
-#     ./run.sh up                 # auto-detect: desktop GUI > interactive CLI > gateway
-#     ./run.sh up --desktop       # force Electron desktop shell (needs a display)
-#     ./run.sh up --cli           # force the interactive terminal UI (needs a TTY)
-#     ./run.sh up --gateway       # force the headless messaging gateway service
-#     ./run.sh up --setup-only    # only provision the environment, then exit
-#     ./run.sh doctor             # report what the launcher detected, change nothing
+#     ./run.sh up                 # default: headless WebUI (hermes dashboard)
+#     ./run.sh up --public        # WebUI bound to 0.0.0.0 (reachable by IP) — see SECURITY
+#     ./run.sh up --port 9119      # override WebUI port (default 9119)
+#     ./run.sh up --cli           # interactive terminal UI (needs a TTY)
+#     ./run.sh up --gateway       # messaging gateway service (Telegram/Discord/…)
+#     ./run.sh up --setup-only    # provision the uv env, then exit
+#     ./run.sh status             # list running hermes dashboard processes
+#     ./run.sh down               # stop running hermes dashboard processes
+#     ./run.sh doctor             # print what the launcher detected, change nothing
 #     ./run.sh help
 #
-# Design notes (why this script looks the way it does):
-#   * The Python environment is managed by `uv` against ./pyproject.toml +
-#     ./uv.lock and lives in ./venv (same convention as setup-hermes.sh). There
-#     is no requirements.txt / main.py in this project.
-#   * The desktop GUI is an Electron shell (apps/desktop). It bootstraps its OWN
-#     Python backend, so we never start a separate backend for the GUI path.
-#   * On a headless VPS (no $DISPLAY) Electron cannot render, so we fall back to
-#     the interactive CLI (if attached to a TTY) or the gateway service.
-#   * Provisioning is idempotent: an existing venv / node_modules is reused and
-#     never rebuilt unless it is missing. Re-running `./run.sh up` is safe.
-#   * The chosen service runs in the FOREGROUND with logs tee'd live to the
-#     terminal and to ./logs — nothing is daemonized or silenced. A signal trap
-#     tears the whole process group down so no child is orphaned.
+# Architecture note (why there is NO custom web server here):
+#   The Electron desktop app was only ever a thin browser shell. It spawns the
+#   Python backend as `python -m hermes_cli.main dashboard --no-open --host
+#   127.0.0.1 --port 0`; that backend (hermes_cli/web_server.py) is a FastAPI +
+#   uvicorn server which builds the web/ frontend into hermes_cli/web_dist and
+#   serves the agent API + WebSocket + UI. Going headless therefore means
+#   running that SAME server directly and binding it to a network interface —
+#   no parallel server, no forked agent logic, no GUI process.
+#
+#   SECURITY: `hermes dashboard` refuses any non-loopback bind unless --insecure
+#   is passed, because a public bind disables the auth layer and exposes your
+#   API keys to anyone who can reach the port. `--public` opts into that. The
+#   safer production pattern is to keep the default 127.0.0.1 bind and reach it
+#   over an SSH tunnel  (ssh -L 9119:127.0.0.1:9119 user@vps)  or place it
+#   behind a TLS reverse proxy that enforces authentication.
+#
+# Idempotency: an existing ./venv and ./hermes_cli/web_dist are reused, never
+#   rebuilt unless missing. `status`/`down` use the backend's own process
+#   management. Re-running `./run.sh up` is safe.
 # ============================================================================
 
 set -Eeuo pipefail
 
-# --- Resolve project root so the script works from any CWD (idempotency) -----
+# --- Resolve project root so the script works from any CWD -------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# uv must not pick up config from a different user's HOME under sudo (see #21269).
-export UV_NO_CONFIG="${UV_NO_CONFIG:-1}"
+export UV_NO_CONFIG="${UV_NO_CONFIG:-1}"   # don't read uv config from a foreign HOME under sudo (#21269)
 
 VENV_DIR="$SCRIPT_DIR/venv"
+HERMES_BIN="$VENV_DIR/bin/hermes"
+WEB_DIST="$SCRIPT_DIR/hermes_cli/web_dist"
 LOG_DIR="$SCRIPT_DIR/logs"
 PYTHON_VERSION="3.11"
+DEFAULT_PORT=9119
 
-# --- Pretty, greppable logging ----------------------------------------------
+# --- Logging -----------------------------------------------------------------
 if [ -t 1 ]; then
   C_INFO=$'\033[0;36m'; C_OK=$'\033[0;32m'; C_WARN=$'\033[0;33m'
   C_ERR=$'\033[0;31m';  C_DIM=$'\033[0;90m'; C_OFF=$'\033[0m'
@@ -52,14 +63,12 @@ log()  { printf '%s[hermes-run]%s %s\n'  "$C_INFO" "$C_OFF" "$*"; }
 ok()   { printf '%s[hermes-run]%s %s\n'  "$C_OK"   "$C_OFF" "$*"; }
 warn() { printf '%s[hermes-run]%s %s\n'  "$C_WARN" "$C_OFF" "$*" >&2; }
 die()  { printf '%s[hermes-run] ERROR:%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
-
-# Report the failing line on any unexpected error (set -E makes this fire in fns).
 trap 'die "failed at line $LINENO (command: $BASH_COMMAND)"' ERR
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # ============================================================================
-# Environment provisioning (Python via uv, reused if already present)
+# Environment provisioning — uv only (no pip / requirements.txt), reused if present
 # ============================================================================
 
 resolve_uv() {
@@ -71,97 +80,60 @@ resolve_uv() {
 }
 
 ensure_python_env() {
-  # Fast path: a provisioned venv with the `hermes` console script already exists.
-  if [ -x "$VENV_DIR/bin/hermes" ]; then
+  if [ -x "$HERMES_BIN" ]; then
     ok "Python env present (venv/bin/hermes) — reusing, not reinstalling."
     return 0
   fi
 
-  log "No provisioned venv found — creating one (first run only)."
-
-  # Prefer the project's own setup script when available: it handles Termux,
-  # extras selection, locale data files and CLI symlinking correctly.
-  if [ -x "$SCRIPT_DIR/setup-hermes.sh" ]; then
-    log "Delegating provisioning to ./setup-hermes.sh ..."
-    # HERMES_SKIP_WIZARD keeps provisioning non-interactive; if the script does
-    # not honor it the wizard is still safe to skip with Ctrl-C and re-run up.
-    HERMES_SKIP_WIZARD=1 bash "$SCRIPT_DIR/setup-hermes.sh" </dev/null || \
-      warn "setup-hermes.sh exited non-zero; verifying the venv below."
-    [ -x "$VENV_DIR/bin/hermes" ] && { ok "Environment provisioned."; return 0; }
-    warn "setup-hermes.sh did not yield venv/bin/hermes — falling back to uv."
-  fi
-
-  # Fallback: provision directly with uv against the lockfile.
   local UV; UV="$(resolve_uv)" || die \
-    "Neither a venv nor 'uv' is available. Install uv (https://docs.astral.sh/uv/) or run ./setup-hermes.sh first."
+    "'uv' is not installed and no venv exists. Install uv (https://docs.astral.sh/uv/) \
+or run ./setup-hermes.sh, then retry."
 
+  log "Provisioning uv environment into ./venv (first run only; 1-5 min) ..."
   [ -d "$VENV_DIR" ] || "$UV" venv "$VENV_DIR" --python "$PYTHON_VERSION"
 
-  log "Installing dependencies (this can take 1-5 minutes on a fresh venv) ..."
+  # Hash-verified install straight from pyproject.toml + uv.lock.
   if ! UV_PROJECT_ENVIRONMENT="$VENV_DIR" "$UV" sync --extra all --locked; then
-    warn "Locked sync failed (stale lockfile?) — retrying with editable install."
-    "$UV" pip install --python "$VENV_DIR/bin/python" -e ".[all]" \
-      || "$UV" pip install --python "$VENV_DIR/bin/python" -e "."
+    warn "'uv sync --locked' failed (stale lockfile?) — retrying without --locked."
+    UV_PROJECT_ENVIRONMENT="$VENV_DIR" "$UV" sync --extra all
   fi
 
-  [ -x "$VENV_DIR/bin/hermes" ] || die "Provisioning finished but venv/bin/hermes is missing."
+  [ -x "$HERMES_BIN" ] || die "Provisioning finished but $HERMES_BIN is missing."
   ok "Environment provisioned."
-}
-
-ensure_node_modules() {
-  # Only needed for the desktop GUI path. npm workspaces require a root install
-  # before the desktop workspace can build (scripts/assert-root-install.cjs).
-  have node || die "Node.js >= 20 is required for the desktop GUI but was not found."
-  have npm  || die "npm is required for the desktop GUI but was not found."
-
-  if [ -d "$SCRIPT_DIR/node_modules" ] && [ -d "$SCRIPT_DIR/apps/desktop/node_modules" ]; then
-    ok "Node modules present — reusing, not reinstalling."
-    return 0
-  fi
-  log "Installing Node workspace dependencies (first run only) ..."
-  npm install
-  ok "Node dependencies installed."
 }
 
 # ============================================================================
 # Runtime helpers
 # ============================================================================
 
-# Warn (do not fail) if a port the desktop dev server wants is already taken.
-warn_if_port_busy() {
-  local port="$1" who=""
+# Warn (don't fail) if the chosen port is already bound.
+port_busy() {
+  local port="$1"
   if have lsof; then
-    who="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)"
+    [ -n "$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)" ]
   elif have ss; then
-    ss -ltn 2>/dev/null | grep -q ":$port[[:space:]]" && who="busy"
+    ss -ltn 2>/dev/null | grep -Eq "[:.]$port[[:space:]]"
+  else
+    return 1
   fi
-  [ -n "$who" ] && warn "Port $port is already in use (pid: ${who:-unknown}); the desktop dev server may fail to bind."
 }
 
-display_available() {
-  # A GUI is renderable if we have an X/Wayland display, or we're on macOS.
-  [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] || [ "$(uname -s)" = "Darwin" ]
-}
-
-# Foreground-exec a command with its own process group, tee logs live, and make
-# sure the whole group dies with us so there are no orphaned children.
+# Foreground-exec with its own process group; tee logs live; tear down the whole
+# group on Ctrl-C / TERM so no child is orphaned.
 run_foreground() {
   local name="$1"; shift
   mkdir -p "$LOG_DIR"
   local logfile="$LOG_DIR/${name}.log"
-  log "Launching '${name}' — streaming logs live to terminal and ${C_DIM}${logfile}${C_OFF}"
-  log "Press Ctrl-C to stop."
-
+  log "Streaming '${name}' logs to terminal and ${C_DIM}${logfile}${C_OFF} — Ctrl-C to stop."
   set -m
   "$@" > >(tee -a "$logfile") 2>&1 &
   local child=$!
-  # Forward termination to the whole child process group (negative pid).
   trap 'warn "Stopping ${name} ..."; kill -- -"$child" 2>/dev/null || kill "$child" 2>/dev/null || true' INT TERM
   local rc=0
   wait "$child" || rc=$?
   trap - INT TERM
   if [ "$rc" -ne 0 ]; then
-    warn "'${name}' exited with code ${rc}. Last lines: ${C_DIM}${logfile}${C_OFF}"
+    warn "'${name}' exited with code ${rc} (see ${logfile})."
     return "$rc"
   fi
   ok "'${name}' exited cleanly."
@@ -171,64 +143,82 @@ run_foreground() {
 # Service launchers
 # ============================================================================
 
-launch_desktop() {
-  ensure_node_modules
-  warn_if_port_busy 5174
-  if ! display_available; then
-    warn "No \$DISPLAY/\$WAYLAND_DISPLAY detected — Electron will likely fail to open a window."
-    warn "On a headless VPS, run under a virtual framebuffer, e.g.:  xvfb-run -a ./run.sh up --desktop"
-    warn "Or use a headless interface instead:  ./run.sh up --cli   |   ./run.sh up --gateway"
+launch_webui() {
+  local public="$1" port="$2"
+  local host="127.0.0.1"
+  local args=(dashboard --no-open --port "$port")
+
+  if [ "$public" -eq 1 ]; then
+    host="0.0.0.0"
+    args+=(--host "$host" --insecure)
+    warn "──────────────────────────────────────────────────────────────────────"
+    warn " SECURITY: --public binds 0.0.0.0 with --insecure. This DISABLES the"
+    warn " dashboard auth layer and exposes your configured API keys to anyone"
+    warn " who can reach this port. Only do this behind a firewall/VPN, or"
+    warn " prefer an SSH tunnel:  ssh -L ${port}:127.0.0.1:${port} user@<vps>"
+    warn "──────────────────────────────────────────────────────────────────────"
+  else
+    args+=(--host "$host")
   fi
-  # `npm run dev` (apps/desktop) starts vite renderer + electron; electron boots
-  # the Python backend itself, so this single foreground tree IS the full stack.
-  run_foreground "desktop" npm run dev --workspace apps/desktop
+
+  # Reuse a prebuilt frontend when present (VPS-friendly: no redundant rebuild,
+  # and no Node needed on restart). First run builds web_dist automatically.
+  if [ -f "$WEB_DIST/index.html" ]; then
+    args+=(--skip-build)
+    ok "Reusing prebuilt WebUI (hermes_cli/web_dist) — skipping frontend build."
+  else
+    if ! have node; then
+      warn "Node.js not found and hermes_cli/web_dist is absent — the first-run"
+      warn "frontend build needs Node >= 20. Install Node, or copy a prebuilt"
+      warn "web_dist into hermes_cli/ and re-run."
+    fi
+    log "First run: the WebUI frontend will be built into hermes_cli/web_dist."
+  fi
+
+  if port_busy "$port"; then
+    warn "Port ${port} is already in use. A dashboard may already be running:"
+    warn "  check: ./run.sh status     stop: ./run.sh down     other port: ./run.sh up --port <N>"
+  fi
+
+  log "WebUI will listen on ${C_OK}http://${host}:${port}${C_OFF}"
+  if [ "$public" -eq 1 ]; then
+    log "Reachable at ${C_OK}http://<VPS-PUBLIC-IP>:${port}${C_OFF} (substitute this host's public IP)."
+  else
+    log "Bound to loopback. From your laptop:  ssh -L ${port}:127.0.0.1:${port} user@<vps>  then open http://localhost:${port}"
+  fi
+
+  run_foreground "webui" "$HERMES_BIN" "${args[@]}"
 }
 
 launch_cli() {
-  [ -t 0 ] && [ -t 1 ] || die \
-    "The interactive CLI needs a TTY. Use './run.sh up --gateway' for a non-interactive/background context."
+  [ -t 0 ] && [ -t 1 ] || die "The interactive CLI needs a TTY. Use './run.sh up' (WebUI) or '--gateway' instead."
   log "Starting the Hermes interactive terminal UI."
-  # Interactive TUI: hand over the terminal directly (no tee — it owns the TTY).
-  exec "$VENV_DIR/bin/hermes"
+  exec "$HERMES_BIN"
 }
 
 launch_gateway() {
-  warn "Headless gateway mode assumes you have already run 'hermes setup' / 'hermes gateway setup'."
-  run_foreground "gateway" "$VENV_DIR/bin/hermes" gateway start
+  warn "Gateway mode assumes 'hermes gateway setup' has already configured a platform."
+  run_foreground "gateway" "$HERMES_BIN" gateway start
 }
 
 # ============================================================================
-# Mode selection
+# Diagnostics / process management (delegates to the backend's own commands)
 # ============================================================================
-
-choose_mode_auto() {
-  if display_available && have node && have npm; then
-    echo "desktop"
-  elif [ -t 0 ] && [ -t 1 ]; then
-    echo "cli"
-  else
-    echo "gateway"
-  fi
-}
 
 doctor() {
   log "Hermes launcher diagnostics:"
   printf '  %-22s %s\n' "project root"     "$SCRIPT_DIR"
   printf '  %-22s %s\n' "os"               "$(uname -srm 2>/dev/null || echo unknown)"
-  printf '  %-22s %s\n' "venv/bin/hermes"  "$([ -x "$VENV_DIR/bin/hermes" ] && echo present || echo MISSING)"
+  printf '  %-22s %s\n' "venv/bin/hermes"  "$([ -x "$HERMES_BIN" ] && echo present || echo MISSING)"
   printf '  %-22s %s\n' "uv"               "$(resolve_uv 2>/dev/null || echo 'not found')"
-  printf '  %-22s %s\n' "node"             "$(have node && node --version || echo 'not found')"
-  printf '  %-22s %s\n' "npm"              "$(have npm && npm --version || echo 'not found')"
-  printf '  %-22s %s\n' "DISPLAY"          "${DISPLAY:-<unset>}"
-  printf '  %-22s %s\n' "WAYLAND_DISPLAY"  "${WAYLAND_DISPLAY:-<unset>}"
-  printf '  %-22s %s\n' "display usable"   "$(display_available && echo yes || echo 'no (headless)')"
+  printf '  %-22s %s\n' "node (web build)" "$(have node && node --version || echo 'not found')"
+  printf '  %-22s %s\n' "web_dist (prebuilt)" "$([ -f "$WEB_DIST/index.html" ] && echo present || echo 'absent (built on first run)')"
+  printf '  %-22s %s\n' "default WebUI port" "$DEFAULT_PORT"
+  printf '  %-22s %s\n' "port $DEFAULT_PORT in use" "$(port_busy "$DEFAULT_PORT" && echo yes || echo no)"
   printf '  %-22s %s\n' "stdin/stdout TTY" "$([ -t 0 ] && [ -t 1 ] && echo yes || echo no)"
-  printf '  %-22s %s\n' "auto mode -> "    "$(choose_mode_auto)"
 }
 
-usage() {
-  sed -n '5,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-}
+usage() { sed -n '5,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # ============================================================================
 # Entry point
@@ -238,10 +228,11 @@ main() {
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
     up)
-      local mode="auto" setup_only=0
+      local mode="webui" public=0 setup_only=0 port="${HERMES_WEB_PORT:-$DEFAULT_PORT}"
       while [ $# -gt 0 ]; do
         case "$1" in
-          --desktop)    mode="desktop" ;;
+          --public)     public=1 ;;
+          --port)       shift; [ $# -gt 0 ] || die "--port needs a value"; port="$1" ;;
           --cli)        mode="cli" ;;
           --gateway)    mode="gateway" ;;
           --setup-only) setup_only=1 ;;
@@ -251,19 +242,20 @@ main() {
       done
 
       ensure_python_env
-      if [ "$setup_only" -eq 1 ]; then ok "Setup complete (--setup-only); not launching."; return 0; fi
+      [ "$setup_only" -eq 1 ] && { ok "Setup complete (--setup-only); not launching."; return 0; }
 
-      [ "$mode" = "auto" ] && mode="$(choose_mode_auto)"
-      log "Selected run mode: ${C_OK}${mode}${C_OFF}"
+      log "Run mode: ${C_OK}${mode}${C_OFF}"
       case "$mode" in
-        desktop) launch_desktop ;;
+        webui)   launch_webui "$public" "$port" ;;
         cli)     launch_cli ;;
         gateway) launch_gateway ;;
       esac
       ;;
-    doctor)        doctor ;;
+    status) ensure_python_env >/dev/null; "$HERMES_BIN" dashboard --status ;;
+    down)   ensure_python_env >/dev/null; "$HERMES_BIN" dashboard --stop ;;
+    doctor) doctor ;;
     help|-h|--help) usage ;;
-    *) die "Unknown command: '$cmd'. Try: ./run.sh up   |   ./run.sh doctor   |   ./run.sh help" ;;
+    *) die "Unknown command: '$cmd'. Try: ./run.sh up | status | down | doctor | help" ;;
   esac
 }
 
