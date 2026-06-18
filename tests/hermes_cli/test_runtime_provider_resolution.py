@@ -2775,3 +2775,67 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+def test_openrouter_key_from_dotenv_used_when_not_in_environ(monkeypatch):
+    """OPENROUTER_API_KEY from ~/.hermes/.env should be found at runtime.
+
+    Regression test for #42130: hermes auth stores keys in .env but
+    _resolve_openrouter_runtime used os.getenv() which only checks process
+    environment, not the .env file. Users who configured OpenRouter via
+    'hermes auth add' got 401 because the key was never read.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # Simulate key stored in ~/.hermes/.env (not in os.environ)
+    monkeypatch.setattr(
+        rp, "get_env_value",
+        lambda key: "sk-or-dotenv-key" if key == "OPENROUTER_API_KEY" else None,
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "sk-or-dotenv-key"
+
+
+def test_openai_key_from_dotenv_used_as_fallback_for_openrouter(monkeypatch):
+    """OPENAI_API_KEY from .env should work as fallback for OpenRouter."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # Only OPENAI_API_KEY in .env, no OPENROUTER_API_KEY
+    monkeypatch.setattr(
+        rp, "get_env_value",
+        lambda key: "sk-openai-dotenv" if key == "OPENAI_API_KEY" else None,
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "sk-openai-dotenv"
+
+
+def test_openrouter_key_from_dotenv_does_not_leak_to_custom_endpoint(monkeypatch):
+    """OPENROUTER_API_KEY from .env must NOT leak to non-OpenRouter custom endpoints."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"base_url": "http://localhost:8080/v1"})
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # Key is in .env but endpoint is localhost — must not be used
+    monkeypatch.setattr(
+        rp, "get_env_value",
+        lambda key: "sk-or-should-not-leak" if key == "OPENROUTER_API_KEY" else None,
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    # Should use "no-key-required" since it's a local endpoint with no key
+    assert resolved["api_key"] == "no-key-required"
