@@ -3651,6 +3651,11 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 
     registered_names = _register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
+    # A successful discovery/reconnect is an unambiguous health signal. Clear
+    # any prior circuit-breaker state so manual /reload-mcp can recover a
+    # server that was temporarily poisoned by stale config or transient backend
+    # failures instead of leaving the live session in "unreachable" mode.
+    _reset_server_error(name)
 
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(
