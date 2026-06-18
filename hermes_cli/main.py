@@ -11608,6 +11608,13 @@ def main():
     build_model_parser(subparsers, cmd_model=cmd_model)
 
     # =========================================================================
+    # 1password command — secure credential management
+    # =========================================================================
+    from hermes_cli.onepassword_cmd import register_1password_parser
+
+    register_1password_parser(subparsers)
+
+    # =========================================================================
     # fallback command — manage the fallback provider chain
     # =========================================================================
     from hermes_cli.fallback_cmd import cmd_fallback
