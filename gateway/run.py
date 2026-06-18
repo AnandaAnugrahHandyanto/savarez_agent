@@ -5215,16 +5215,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
-        # Initialize and connect each configured platform
+
+        # Phase 1: Create adapters and set up handlers (sync, fast).
+        # Phase 2: Connect all adapters concurrently (async, parallel).
+        # This avoids the serial penalty where Telegram's 8s blocks Weixin's 0.01s.
+        _adapter_queue: list[tuple[Platform, PlatformConfig, Any]] = []
+
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
                 continue
             enabled_platform_count += 1
-            
+
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
                 _pval = platform.value
                 _builtin_names = {m.value for m in Platform.__members__.values()}
                 if _pval not in _builtin_names:
@@ -5236,16 +5239,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     logger.warning("No adapter available for %s", _pval)
                 continue
-            
-            # Set up message + fatal error handlers
+
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
-            
-            # Try to connect
+            _adapter_queue.append((platform, platform_config, adapter))
+
+        # Connect all adapters concurrently.
+        async def _connect_one(platform, platform_config, adapter):
             logger.info("Connecting to %s...", platform.value)
             self._update_platform_runtime_status(
                 platform.value,
@@ -5258,7 +5262,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
-                    connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="connected",
@@ -5266,16 +5269,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         error_message=None,
                     )
                     logger.info("✓ %s connected", platform.value)
+                    return ("ok", platform, adapter, None)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
-                    # Defensive cleanup: a failed connect() may have
-                    # allocated resources (aiohttp.ClientSession, poll
-                    # tasks, bridge subprocesses) before giving up.
-                    # Without this call, those resources are orphaned
-                    # and Python logs "Unclosed client session" at
-                    # process exit. Adapter disconnect() implementations
-                    # are expected to be idempotent and tolerate
-                    # partial-init state.
                     await self._safe_adapter_disconnect(adapter, platform)
                     if adapter.has_fatal_error:
                         self._update_platform_runtime_status(
@@ -5284,21 +5280,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             error_code=adapter.fatal_error_code,
                             error_message=adapter.fatal_error_message,
                         )
-                        target = (
-                            startup_retryable_errors
-                            if adapter.fatal_error_retryable
-                            else startup_nonretryable_errors
-                        )
-                        target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
-                        )
-                        # Queue for reconnection if the error is retryable
-                        if adapter.fatal_error_retryable:
-                            self._failed_platforms[platform] = {
-                                "config": platform_config,
-                                "attempts": 1,
-                                "next_retry": time.monotonic() + 30,
-                            }
+                        return ("fatal" if not adapter.fatal_error_retryable else "retryable",
+                                platform, adapter, adapter.fatal_error_message)
                     else:
                         self._update_platform_runtime_status(
                             platform.value,
@@ -5306,20 +5289,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             error_code=None,
                             error_message="failed to connect",
                         )
-                        startup_retryable_errors.append(
-                            f"{platform.value}: failed to connect"
-                        )
-                        # No fatal error info means likely a transient issue — queue for retry
-                        self._failed_platforms[platform] = {
-                            "config": platform_config,
-                            "attempts": 1,
-                            "next_retry": time.monotonic() + 30,
-                        }
+                        return ("retryable", platform, adapter, "failed to connect")
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
-                # Same defensive cleanup path for exceptions — an adapter
-                # that raised mid-connect may still have a live
-                # aiohttp.ClientSession or child subprocess.
                 await self._safe_adapter_disconnect(adapter, platform)
                 self._update_platform_runtime_status(
                     platform.value,
@@ -5327,13 +5299,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     error_code=None,
                     error_message=str(e),
                 )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
-                # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
-                    "config": platform_config,
-                    "attempts": 1,
-                    "next_retry": time.monotonic() + 30,
-                }
+                return ("retryable", platform, adapter, str(e))
+
+        if _adapter_queue:
+            results = await asyncio.gather(
+                *[_connect_one(p, pc, a) for p, pc, a in _adapter_queue],
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error("Adapter connect task raised: %s", result)
+                    continue
+                status, platform, adapter, err_msg = result
+                if status == "ok":
+                    connected_count += 1
+                elif status == "fatal":
+                    startup_nonretryable_errors.append(f"{platform.value}: {err_msg}")
+                else:
+                    startup_retryable_errors.append(f"{platform.value}: {err_msg}")
+                    self._failed_platforms[platform] = {
+                        "config": next(pc for p, pc, _ in _adapter_queue if p == platform),
+                        "attempts": 1,
+                        "next_retry": time.monotonic() + 30,
+                    }
         
         if connected_count == 0:
             if startup_nonretryable_errors:
@@ -5432,7 +5420,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # before sending restart/startup lifecycle messages. In practice this
         # helps Discord thread deliveries right after reconnect.
         if connected_count > 0:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.2)
 
         # Notify the chat that initiated /restart that the gateway is back.
         planned_restart_notification_pending = _planned_restart_notification_pending()
