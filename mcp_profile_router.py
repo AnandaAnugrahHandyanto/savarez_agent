@@ -70,6 +70,23 @@ MAX_WORKSPACE_DIFF_FILES = 100
 MAX_TERMINAL_COMMAND_CHARS = 4_000
 MAX_TERMINAL_TIMEOUT_SECONDS = 30
 MAX_TERMINAL_OUTPUT_CHARS = 60_000
+TERMINAL_SANITIZED_ENV_ALLOWED_KEYS = (
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+)
+TERMINAL_SANITIZED_ENV_BLOCKED_MARKERS = (
+    "API_KEY",
+    "AUTH",
+    "CREDENTIAL",
+    "KEY",
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
+)
 ALLOWED_SEARCH_OUTPUT_MODES = frozenset({"content", "files_only", "count"})
 MAX_CONTEXT_FILE_CHARS = 12_000
 MAX_CONTEXT_FILE_BYTES = 128_000
@@ -2216,6 +2233,76 @@ def _evaluate_terminal_execution_policy(
     }
 
 
+def _terminal_argv_shape(tokens: Iterable[str]) -> dict:
+    argv = list(tokens)
+    return {
+        "shell": False,
+        "argv_redacted": True,
+        "argc": len(argv),
+        "argument_count": max(len(argv) - 1, 0),
+        "option_count": sum(1 for token in argv[1:] if token.startswith("-")),
+        "path_like_token_count": sum(1 for token in argv if "/" in token),
+        "assignment_prefix_count": sum(
+            1
+            for token in argv
+            if "=" in token and not token.startswith("-") and token.split("=", 1)[0]
+        ),
+    }
+
+
+def _terminal_sanitized_env_policy() -> dict:
+    return {
+        "mode": "sanitized_minimal",
+        "inherits_parent_env": False,
+        "values_redacted": True,
+        "allowed_keys": list(TERMINAL_SANITIZED_ENV_ALLOWED_KEYS),
+        "blocked_name_markers": list(TERMINAL_SANITIZED_ENV_BLOCKED_MARKERS),
+        "explicit_env_overrides_allowed": False,
+    }
+
+
+def _terminal_execution_plan_audit(
+    command: str,
+    *,
+    classification: Mapping[str, Any],
+    execution_policy: Mapping[str, Any],
+    public_cwd: str,
+    timeout_seconds: int,
+    max_output_chars: int,
+) -> dict:
+    """Return a redacted, non-executing argv/env plan for allowlisted commands."""
+
+    plan_available = bool(
+        not classification.get("blocked", False)
+        and execution_policy.get("enabled", False)
+        and execution_policy.get("allowlist_match", False)
+    )
+    argv_shape = None
+    if plan_available:
+        argv_shape = _terminal_argv_shape(
+            _terminal_non_control_tokens(_shell_command_tokens(command.strip()))
+        )
+
+    return {
+        "available": plan_available,
+        "implementation_status": "pending_no_shell_subprocess_executor",
+        "executes": False,
+        "shell": False,
+        "argv": argv_shape,
+        "argv_redacted": True,
+        "env_policy": _terminal_sanitized_env_policy(),
+        "cwd": {
+            "workspace_relative": public_cwd,
+            "root_exposed": False,
+            "resolved_host_path_exposed": False,
+        },
+        "limits": {
+            "timeout_seconds": timeout_seconds,
+            "max_output_chars": max_output_chars,
+        },
+    }
+
+
 def preflight_terminal_command(
     workspace_id: str,
     command: str,
@@ -2273,6 +2360,14 @@ def preflight_terminal_command(
             "decision": "disabled_pending_execution_implementation",
             "risk_level": "low_allowlisted_unexecuted",
         }
+    execution_plan = _terminal_execution_plan_audit(
+        command,
+        classification=classification,
+        execution_policy=execution_policy,
+        public_cwd=public_cwd,
+        timeout_seconds=timeout_seconds,
+        max_output_chars=capped_output_chars,
+    )
     return {
         **classification,
         "working_directory": public_cwd,
@@ -2285,6 +2380,7 @@ def preflight_terminal_command(
             "protected_branches": list(route_policy.protected_branches),
         },
         "execution_policy": execution_policy,
+        "execution_plan": execution_plan,
         "audit": {
             "tool": "terminal_run",
             "llm_calls": 0,
@@ -2293,6 +2389,7 @@ def preflight_terminal_command(
             "executes": False,
             "execution_policy_enabled": execution_policy["enabled"],
             "allowlist_match": execution_policy["allowlist_match"],
+            "execution_plan_available": execution_plan["available"],
             "no_shell_compatible": classification["no_shell_compatible"],
             "public_mcp_exposure": "disabled_pending_http_auth_config_review",
         },

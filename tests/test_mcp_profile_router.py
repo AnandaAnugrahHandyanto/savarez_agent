@@ -750,9 +750,12 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
         "executes": False,
         "execution_policy_enabled": False,
         "allowlist_match": False,
+        "execution_plan_available": False,
         "no_shell_compatible": True,
         "public_mcp_exposure": "disabled_pending_http_auth_config_review",
     }
+    assert terminal_disabled["terminal_command"]["execution_plan"]["available"] is False
+    assert terminal_disabled["terminal_command"]["execution_plan"]["argv"] is None
     assert terminal_disabled["llm_calls"] == 0
     assert not (workspace_root / "SHOULD_NOT_EXIST").exists()
 
@@ -894,8 +897,34 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
     assert allowed_preflight["audit"]["executes"] is False
     assert allowed_preflight["audit"]["execution_policy_enabled"] is True
     assert allowed_preflight["audit"]["allowlist_match"] is True
+    assert allowed_preflight["audit"]["execution_plan_available"] is True
     assert allowed_preflight["audit"]["no_shell_compatible"] is True
+    plan = allowed_preflight["execution_plan"]
+    assert plan["available"] is True
+    assert plan["executes"] is False
+    assert plan["shell"] is False
+    assert plan["implementation_status"] == "pending_no_shell_subprocess_executor"
+    assert plan["argv"] == {
+        "shell": False,
+        "argv_redacted": True,
+        "argc": 1,
+        "argument_count": 0,
+        "option_count": 0,
+        "path_like_token_count": 0,
+        "assignment_prefix_count": 0,
+    }
+    assert plan["env_policy"]["inherits_parent_env"] is False
+    assert plan["env_policy"]["values_redacted"] is True
+    assert "PATH" in plan["env_policy"]["allowed_keys"]
+    assert "OPENAI_API_KEY" not in plan["env_policy"]["allowed_keys"]
+    assert plan["cwd"] == {
+        "workspace_relative": ".",
+        "root_exposed": False,
+        "resolved_host_path_exposed": False,
+    }
+    assert plan["limits"]["timeout_seconds"] == 30
     assert str(workspace_root) not in json.dumps(allowed)
+    assert "pwd" not in json.dumps(allowed)
 
     prefix_allowed = json.loads(
         terminal_run(workspace_id, "git status --short", context_token=token)
@@ -905,12 +934,20 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
     assert prefix_allowed["terminal_command"]["execution_policy"][
         "allowlist_match_type"
     ] == "prefix"
+    prefix_plan = prefix_allowed["terminal_command"]["execution_plan"]
+    assert prefix_plan["available"] is True
+    assert prefix_plan["argv"]["argc"] == 3
+    assert prefix_plan["argv"]["argument_count"] == 2
+    assert prefix_plan["argv"]["option_count"] == 1
+    assert "git status --short" not in json.dumps(prefix_allowed)
 
     unlisted = json.loads(
         terminal_run(workspace_id, "python -m pytest", context_token=token)
     )
     assert unlisted["ok"] is False
     assert unlisted["error"]["code"] == "terminal_command_blocked"
+    assert unlisted["terminal_command"]["execution_plan"]["available"] is False
+    assert unlisted["terminal_command"]["execution_plan"]["argv"] is None
     assert "terminal_command_not_allowlisted" in {
         reason["code"] for reason in unlisted["terminal_command"]["reasons"]
     }
