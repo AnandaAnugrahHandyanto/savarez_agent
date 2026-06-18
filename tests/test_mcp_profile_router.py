@@ -8,6 +8,8 @@ import pytest
 from mcp_profile_router import (
     COST_CLASS_CALLS_HERMES_AGENT_MODEL,
     COST_CLASS_NO_MODEL,
+    MAX_TERMINAL_OUTPUT_CHARS,
+    MAX_TERMINAL_TIMEOUT_SECONDS,
     PROFILE_ROUTER_TOOL_GROUP,
     ProfileRouterError,
     RouterToolMetadata,
@@ -677,6 +679,8 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
         terminal_run(
             workspace_id,
             "git status --short",
+            timeout=MAX_TERMINAL_TIMEOUT_SECONDS + 20,
+            max_output_chars=MAX_TERMINAL_OUTPUT_CHARS + 20_000,
             context_token=fresh_token,
         )
     )
@@ -684,8 +688,111 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     assert terminal_disabled["error"]["code"] == "tool_disabled"
     assert terminal_disabled["terminal_command"]["blocked"] is False
     assert terminal_disabled["terminal_command"]["decision"] == "disabled_pending_execution_policy"
+    assert terminal_disabled["terminal_command"]["working_directory"] == "."
+    assert terminal_disabled["terminal_command"]["timeout_seconds"] == MAX_TERMINAL_TIMEOUT_SECONDS
+    assert terminal_disabled["terminal_command"]["max_output_chars"] == MAX_TERMINAL_OUTPUT_CHARS
+    assert terminal_disabled["terminal_command"]["audit"] == {
+        "tool": "terminal_run",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "executes": False,
+        "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+    }
     assert terminal_disabled["llm_calls"] == 0
     assert not (workspace_root / "SHOULD_NOT_EXIST").exists()
+
+
+def test_terminal_run_preflight_requires_policy_and_workspace_relative_cwd(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    subdir = workspace_root / "subdir"
+    subdir.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+    (workspace_root / "notes.md").write_text("notes\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    denied_by_policy = json.loads(
+        terminal_run(workspace_id, "git status --short", context_token=token)
+    )
+    assert denied_by_policy["ok"] is False
+    assert denied_by_policy["error"]["code"] == "terminal_not_allowed"
+    assert "terminal_command" not in denied_by_policy
+    assert denied_by_policy["llm_calls"] == 0
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "terminal": {"enabled": True},
+            }
+        },
+    )
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    outside_cwd = json.loads(
+        terminal_run(
+            workspace_id,
+            "pwd",
+            working_directory="../outside",
+            context_token=token,
+        )
+    )
+    assert outside_cwd["ok"] is False
+    assert outside_cwd["error"]["code"] == "path_outside_workspace"
+
+    file_cwd = json.loads(
+        terminal_run(
+            workspace_id,
+            "pwd",
+            working_directory="notes.md",
+            context_token=token,
+        )
+    )
+    assert file_cwd["ok"] is False
+    assert file_cwd["error"]["code"] == "working_directory_not_directory"
+
+    disabled = json.loads(
+        terminal_run(
+            workspace_id,
+            "pwd",
+            timeout=MAX_TERMINAL_TIMEOUT_SECONDS + 999,
+            working_directory="subdir",
+            max_output_chars=MAX_TERMINAL_OUTPUT_CHARS + 999,
+            context_token=token,
+        )
+    )
+    assert disabled["ok"] is False
+    assert disabled["error"]["code"] == "tool_disabled"
+    preflight = disabled["terminal_command"]
+    assert preflight["blocked"] is False
+    assert preflight["working_directory"] == "subdir"
+    assert preflight["timeout_seconds"] == MAX_TERMINAL_TIMEOUT_SECONDS
+    assert preflight["max_output_chars"] == MAX_TERMINAL_OUTPUT_CHARS
+    assert preflight["policy"]["terminal_allowed"] is True
+    assert preflight["audit"]["root_exposed"] is False
+    assert str(workspace_root) not in json.dumps(disabled)
 
 
 def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(

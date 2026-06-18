@@ -68,6 +68,8 @@ MAX_WRITE_DIFF_CHARS = 20_000
 MAX_WORKSPACE_DIFF_CHARS = 30_000
 MAX_WORKSPACE_DIFF_FILES = 100
 MAX_TERMINAL_COMMAND_CHARS = 4_000
+MAX_TERMINAL_TIMEOUT_SECONDS = 30
+MAX_TERMINAL_OUTPUT_CHARS = 60_000
 ALLOWED_SEARCH_OUTPUT_MODES = frozenset({"content", "files_only", "count"})
 MAX_CONTEXT_FILE_CHARS = 12_000
 MAX_CONTEXT_FILE_BYTES = 128_000
@@ -1543,6 +1545,69 @@ def _require_workspace_write_access(
     return workspace
 
 
+def _require_workspace_terminal_access(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> tuple[WorkspaceMetadata, ProfileRoutePolicy]:
+    """Require fresh context and explicit terminal policy before preflight."""
+
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _ref, route_policy, _router_policy = _require_local_profile_policy(workspace.profile_ref)
+    if not route_policy.allow_terminal:
+        raise ProfileRouterError(
+            "terminal_not_allowed",
+            f"Terminal access is disabled by profile_router policy: {workspace.profile_ref}",
+        )
+    return workspace, route_policy
+
+
+def _bounded_terminal_int(
+    value: int | None,
+    field: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProfileRouterError("invalid_terminal_option", f"{field} must be an integer")
+    if value < minimum:
+        raise ProfileRouterError(
+            "invalid_terminal_option", f"{field} must be >= {minimum}"
+        )
+    return min(value, maximum)
+
+
+def _workspace_public_relative_path(workspace: WorkspaceMetadata, resolved_path: Path) -> str:
+    try:
+        relative = resolved_path.relative_to(Path(workspace.root))
+    except ValueError as exc:
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root") from exc
+    public_path = relative.as_posix()
+    return public_path if public_path else "."
+
+
+def _resolve_terminal_working_directory(
+    workspace: WorkspaceMetadata,
+    working_directory: str,
+) -> tuple[Path, str]:
+    resolved = Path(resolve_workspace_path(workspace, working_directory, require_exists=True))
+    if not resolved.is_dir():
+        raise ProfileRouterError(
+            "working_directory_not_directory",
+            "terminal working_directory must be an existing workspace-relative directory",
+        )
+    return resolved, _workspace_public_relative_path(workspace, resolved)
+
+
 def _read_patchable_text(path: Path, public_path: str) -> str:
     _ensure_text_file(path)
     try:
@@ -1970,6 +2035,64 @@ def classify_terminal_command(command: str) -> dict:
         "decision": "blocked" if blocked else "disabled_pending_execution_policy",
         "risk_level": "blocked" if blocked else "low_unexecuted",
         "reasons": reasons,
+    }
+
+
+def preflight_terminal_command(
+    workspace_id: str,
+    command: str,
+    *,
+    timeout: int | None = 30,
+    working_directory: str = ".",
+    max_output_chars: int | None = MAX_TERMINAL_OUTPUT_CHARS,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Validate terminal policy/containment/caps without executing anything."""
+
+    assert_default_tools_are_no_model()
+    workspace, route_policy = _require_workspace_terminal_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    timeout_seconds = _bounded_terminal_int(
+        timeout,
+        "timeout",
+        default=30,
+        minimum=1,
+        maximum=MAX_TERMINAL_TIMEOUT_SECONDS,
+    )
+    capped_output_chars = _bounded_terminal_int(
+        max_output_chars,
+        "max_output_chars",
+        default=MAX_TERMINAL_OUTPUT_CHARS,
+        minimum=1,
+        maximum=MAX_TERMINAL_OUTPUT_CHARS,
+    )
+    _resolved_cwd, public_cwd = _resolve_terminal_working_directory(
+        workspace, working_directory
+    )
+    classification = classify_terminal_command(command)
+    return {
+        **classification,
+        "working_directory": public_cwd,
+        "timeout_seconds": timeout_seconds,
+        "max_output_chars": capped_output_chars,
+        "policy": {
+            "terminal_allowed": route_policy.allow_terminal,
+            "git_push_allowed": route_policy.allow_git_push,
+            "deploy_allowed": route_policy.allow_deploy,
+            "protected_branches": list(route_policy.protected_branches),
+        },
+        "audit": {
+            "tool": "terminal_run",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "uses_shell": False,
+            "executes": False,
+            "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+        },
     }
 
 
@@ -2479,12 +2602,19 @@ def terminal_run(
     timeout: int = 30,
     working_directory: str = ".",
     context_token: str | None = None,
+    max_output_chars: int | None = MAX_TERMINAL_OUTPUT_CHARS,
 ) -> str:
     """Disabled future wrapper: context-gated terminal command without execution."""
 
     try:
-        require_fresh_workspace_context(workspace_id, context_token=context_token)
-        classification = classify_terminal_command(command)
+        classification = preflight_terminal_command(
+            workspace_id,
+            command,
+            timeout=timeout,
+            working_directory=working_directory,
+            max_output_chars=max_output_chars,
+            context_token=context_token,
+        )
         if classification["blocked"]:
             return _tool_envelope(
                 "terminal_run",
