@@ -2907,7 +2907,7 @@ class TestVisionAutoSkipsKimiCoding:
             "agent.auxiliary_client.resolve_provider_client", rpc_mock,
         )
 
-        def fake_strict(provider, model=None):
+        def fake_strict(provider, model=None, explicit_api_key=None):
             if provider == "openrouter":
                 return fake_or_client, "google/gemini-3-flash-preview"
             if provider == "nous":
@@ -2943,7 +2943,7 @@ class TestVisionAutoSkipsKimiCoding:
         )
         monkeypatch.setattr(
             "agent.auxiliary_client._resolve_strict_vision_backend",
-            lambda p, m=None: (fake_or_client, "gemini")
+            lambda p, m=None, explicit_api_key=None: (fake_or_client, "gemini")
             if p == "openrouter"
             else (None, None),
         )
