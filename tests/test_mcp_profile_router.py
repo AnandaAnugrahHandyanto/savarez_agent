@@ -17,12 +17,16 @@ from mcp_profile_router import (
     get_router_tool_metadata,
     load_profile_router_policy,
     parse_profile_ref,
+    profile_context_get,
     profile_get,
     profile_health,
     profiles_list,
+    require_fresh_workspace_context,
     resolve_workspace_path,
     workspace_close,
+    workspace_context_status,
     workspace_get,
+    workspace_instructions_get,
     workspace_open,
 )
 
@@ -105,7 +109,10 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "profiles_list",
         "profile_get",
         "profile_health",
+        "profile_context_get",
         "workspace_open",
+        "workspace_instructions_get",
+        "workspace_context_status",
         "workspace_get",
         "workspace_close",
         "file_read",
@@ -319,6 +326,11 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     assert workspace["profile_ref"] == "local:main-bot"
     assert workspace["read_only"] is True
     assert "root" not in workspace
+    assert opened["context"] == {
+        "required_before_powerful_tools": True,
+        "state": "not_loaded",
+        "next_tool": "workspace_instructions_get",
+    }
 
     read_result = json.loads(file_read(workspace["workspace_id"], "notes.md", offset=2, limit=1))
     assert read_result["ok"] is True
@@ -411,6 +423,97 @@ def test_workspace_get_and_close_inspect_and_cleanup_registry(hermes_home, tmp_p
     assert missing_close["ok"] is False
     assert missing_close["error"]["code"] == "workspace_not_found"
     assert missing_close["llm_calls"] == 0
+
+
+def test_profile_context_get_loads_bounded_soul_and_policy_without_secrets(
+    hermes_home,
+):
+    profile_dir = hermes_home / "profiles" / "main-bot"
+    profile_dir.joinpath("SOUL.md").write_text(
+        "# Main Bot\nUse Spanish.\nOPENAI_API_KEY=super-secret-value\n",
+        encoding="utf-8",
+    )
+    profile_dir.joinpath(".env").write_text("SHOULD_NOT_LEAK=1\n", encoding="utf-8")
+    _write_router_config(hermes_home)
+
+    result = json.loads(profile_context_get("local:main-bot"))
+    assert result["ok"] is True
+    assert result["llm_calls"] == 0
+    context = result["context"]
+    assert context["profile_ref"] == "local:main-bot"
+    assert context["policy"]["allowed_roots"] == [str(hermes_home)]
+    assert context["profile_instructions"][0]["path"] == "SOUL.md"
+    assert "Use Spanish" in context["profile_instructions"][0]["excerpt"]
+    dumped = json.dumps(context)
+    assert "super-secret-value" not in dumped
+    assert "SHOULD_NOT_LEAK" not in dumped
+    assert context["secret_handling"]["funciones_txt_content_excluded"] is True
+
+
+def test_workspace_context_hydration_tracks_instruction_staleness_and_blocks_powerful_tools(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    agents = workspace_root / "AGENTS.md"
+    agents.write_text("# Agents\nFollow project policy.\n", encoding="utf-8")
+    (workspace_root / "funciones.txt").write_text(
+        "private deployment notes that must not be returned\n",
+        encoding="utf-8",
+    )
+    (hermes_home / "profiles" / "main-bot" / "SOUL.md").write_text(
+        "# Profile\nProfile policy text.\n",
+        encoding="utf-8",
+    )
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    pre_status = json.loads(workspace_context_status(workspace_id))
+    assert pre_status["ok"] is True
+    assert pre_status["context_status"]["state"] == "not_loaded"
+    with pytest.raises(ProfileRouterError, match="Workspace context must be loaded"):
+        require_fresh_workspace_context(workspace_id)
+
+    hydrated = json.loads(workspace_instructions_get(workspace_id))
+    assert hydrated["ok"] is True
+    assert hydrated["llm_calls"] == 0
+    context = hydrated["context"]
+    token = context["context_token"]
+    assert context["workspace_instructions"][0]["path"] == "AGENTS.md"
+    assert "Follow project policy" in context["workspace_instructions"][0]["excerpt"]
+    assert context["funciones_txt"] == {
+        "path": "funciones.txt",
+        "exists": True,
+        "content_included": False,
+        "git_policy": "never_stage_commit_push_or_include_in_pr",
+        "status": "excluded_from_context_bundle",
+    }
+    assert "private deployment notes" not in json.dumps(context)
+    assert require_fresh_workspace_context(workspace_id, context_token=token).workspace_id == workspace_id
+
+    loaded_status = json.loads(workspace_context_status(workspace_id))
+    assert loaded_status["context_status"]["state"] == "loaded"
+
+    agents.write_text("# Agents\nChanged policy.\n", encoding="utf-8")
+    stale_status = json.loads(workspace_context_status(workspace_id))
+    assert stale_status["context_status"]["state"] == "stale"
+    with pytest.raises(ProfileRouterError, match="Workspace context is stale"):
+        require_fresh_workspace_context(workspace_id, context_token=token)
 
 
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):
@@ -532,7 +635,10 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         "profiles_list",
         "profile_get",
         "profile_health",
+        "profile_context_get",
         "workspace_open",
+        "workspace_instructions_get",
+        "workspace_context_status",
         "workspace_get",
         "workspace_close",
         "file_read",

@@ -878,11 +878,14 @@ def create_profile_router_mcp_server():
         assert_default_tools_are_no_model,
         file_read as _file_read,
         file_search as _file_search,
+        profile_context_get as _profile_context_get,
         profile_get as _profile_get,
         profile_health as _profile_health,
         profiles_list as _profiles_list,
         workspace_close as _workspace_close,
+        workspace_context_status as _workspace_context_status,
         workspace_get as _workspace_get,
+        workspace_instructions_get as _workspace_instructions_get,
         workspace_open as _workspace_open,
     )
 
@@ -891,10 +894,12 @@ def create_profile_router_mcp_server():
         "hermes-profile-router",
         instructions=(
             "Hermes Agent no-model profile router. This surface exposes only "
-            "read-only profile inventory and policy-gated read-only workspace "
-            "tools: profiles_list, profile_get, profile_health, "
-            "workspace_open, workspace_get, workspace_close, file_read, "
-            "and file_search. It does not expose "
+            "read-only profile inventory, context-hydration, and policy-gated "
+            "read-only workspace tools: profiles_list, profile_get, "
+            "profile_health, profile_context_get, workspace_open, "
+            "workspace_instructions_get, workspace_context_status, "
+            "workspace_get, workspace_close, file_read, and file_search. "
+            "It does not expose "
             "conversation messaging, write/patch, terminal, cron, or "
             "agent-loop execution tools."
         ),
@@ -916,9 +921,24 @@ def create_profile_router_mcp_server():
         return _profile_health(profile_ref)
 
     @mcp.tool()
+    def profile_context_get(profile_ref: str) -> str:
+        """Load bounded profile SOUL/policy context without invoking any model."""
+        return _profile_context_get(profile_ref=profile_ref)
+
+    @mcp.tool()
     def workspace_open(profile_ref: str, root: str, mode: str = "checkout") -> str:
         """Open a read-only, policy-gated workspace and return an opaque ID."""
         return _workspace_open(profile_ref=profile_ref, root=root, mode=mode)
+
+    @mcp.tool()
+    def workspace_instructions_get(workspace_id: str) -> str:
+        """Hydrate workspace AGENTS/project instructions and return a context token."""
+        return _workspace_instructions_get(workspace_id=workspace_id)
+
+    @mcp.tool()
+    def workspace_context_status(workspace_id: str) -> str:
+        """Report whether hydrated workspace context is loaded or stale."""
+        return _workspace_context_status(workspace_id=workspace_id)
 
     @mcp.tool()
     def workspace_get(workspace_id: str) -> str:

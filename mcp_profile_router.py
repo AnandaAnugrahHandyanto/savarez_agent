@@ -11,6 +11,7 @@ metadata here rather than exposing arbitrary Hermes tools by default.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import posixpath
@@ -23,6 +24,7 @@ from uuid import uuid4
 
 from hermes_cli.profiles import (
     ProfileInfo,
+    get_profile_dir,
     list_profiles as _list_local_profile_infos,
     normalize_profile_name,
     validate_profile_name,
@@ -59,6 +61,18 @@ MAX_FILE_SEARCH_RESULTS = 50
 MAX_FILE_SEARCH_BYTES = 1_000_000
 MAX_SEARCH_LINE_CHARS = 500
 ALLOWED_SEARCH_OUTPUT_MODES = frozenset({"content", "files_only", "count"})
+MAX_CONTEXT_FILE_CHARS = 12_000
+MAX_CONTEXT_FILE_BYTES = 128_000
+MAX_CONTEXT_HASH_BYTES = 1_000_000
+PROFILE_CONTEXT_FILES = ("SOUL.md",)
+WORKSPACE_INSTRUCTION_FILES = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    "DESIGN.md",
+    "SOUL.md",
+)
+FUNCIONES_TXT_FILENAME = "funciones.txt"
 
 
 class ProfileRouterError(ValueError):
@@ -502,6 +516,24 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
     ),
+    "profile_context_get": RouterToolMetadata(
+        name="profile_context_get",
+        description="Load bounded no-model profile SOUL/policy context for a profile.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+    ),
+    "workspace_instructions_get": RouterToolMetadata(
+        name="workspace_instructions_get",
+        description="Hydrate bounded workspace instructions and return a context token.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+    ),
+    "workspace_context_status": RouterToolMetadata(
+        name="workspace_context_status",
+        description="Report whether an opened workspace context is loaded or stale.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+    ),
     "workspace_open": RouterToolMetadata(
         name="workspace_open",
         description="Open a policy-gated read-only local workspace with an opaque ID.",
@@ -580,6 +612,15 @@ class WorkspaceMetadata:
 
     def to_public_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class WorkspaceContextSnapshot:
+    """Server-side record proving workspace instructions were hydrated."""
+
+    workspace_id: str
+    context_token: str
+    hashes: Mapping[str, str]
 
 
 def _local_profile_exists(profile: str) -> bool:
@@ -709,6 +750,7 @@ class WorkspaceRegistry:
 
     def __init__(self) -> None:
         self._workspaces: dict[str, WorkspaceMetadata] = {}
+        self._contexts: dict[str, WorkspaceContextSnapshot] = {}
 
     def open(
         self,
@@ -734,7 +776,28 @@ class WorkspaceRegistry:
     def close(self, workspace_id: str) -> WorkspaceMetadata:
         workspace = self.get(workspace_id)
         del self._workspaces[workspace.workspace_id]
+        self._contexts.pop(workspace.workspace_id, None)
         return workspace
+
+    def record_context(
+        self,
+        workspace_id: str,
+        *,
+        context_token: str,
+        hashes: Mapping[str, str],
+    ) -> WorkspaceContextSnapshot:
+        workspace = self.get(workspace_id)
+        snapshot = WorkspaceContextSnapshot(
+            workspace_id=workspace.workspace_id,
+            context_token=context_token,
+            hashes=dict(hashes),
+        )
+        self._contexts[workspace.workspace_id] = snapshot
+        return snapshot
+
+    def get_context(self, workspace_id: str) -> WorkspaceContextSnapshot | None:
+        workspace = self.get(workspace_id)
+        return self._contexts.get(workspace.workspace_id)
 
 
 DEFAULT_WORKSPACE_REGISTRY = WorkspaceRegistry()
@@ -758,6 +821,288 @@ def _public_workspace_dict(workspace: WorkspaceMetadata) -> dict:
         "cost_class": workspace.cost_class,
         "llm_calls": workspace.llm_calls,
     }
+
+
+def _stable_json_hash(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _hash_file(path: Path) -> tuple[str, bool]:
+    """Hash a context file without returning its full contents."""
+
+    digest = hashlib.sha256()
+    total = 0
+    truncated = False
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_CONTEXT_HASH_BYTES:
+                    digest.update(chunk[: max(0, len(chunk) - (total - MAX_CONTEXT_HASH_BYTES))])
+                    truncated = True
+                    break
+                digest.update(chunk)
+    except OSError as exc:
+        raise ProfileRouterError("context_file_not_readable", f"Context file is not readable: {path.name}") from exc
+    return digest.hexdigest(), truncated
+
+
+def _redact_context_excerpt(text: str) -> str:
+    """Best-effort secret redaction for bounded instruction excerpts."""
+
+    redacted = re.sub(
+        r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*=\s*[^\s]+",
+        r"\1=[REDACTED]",
+        text,
+    )
+    redacted = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", redacted)
+    redacted = re.sub(r"\b(?:sk|pk|xox[baprs])-[-A-Za-z0-9_]{12,}\b", "[REDACTED_TOKEN]", redacted)
+    return redacted
+
+
+def _read_context_file(path: Path, public_path: str) -> dict:
+    """Read bounded, sanitized context-file metadata and excerpt."""
+
+    _ensure_not_secret_path(str(path))
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ProfileRouterError("context_file_not_readable", f"Context file is not accessible: {public_path}") from exc
+    if not path.is_file():
+        raise ProfileRouterError("context_file_not_readable", f"Context path is not a file: {public_path}")
+
+    sha256, hash_truncated = _hash_file(path)
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_CONTEXT_FILE_BYTES + 1)
+    except OSError as exc:
+        raise ProfileRouterError("context_file_not_readable", f"Context file is not readable: {public_path}") from exc
+    if b"\x00" in raw[:4096]:
+        raise ProfileRouterError("binary_file_not_supported", f"Context file is binary: {public_path}")
+
+    truncated = len(raw) > MAX_CONTEXT_FILE_BYTES or len(raw.decode("utf-8", errors="replace")) > MAX_CONTEXT_FILE_CHARS
+    text = raw[:MAX_CONTEXT_FILE_BYTES].decode("utf-8", errors="replace")[:MAX_CONTEXT_FILE_CHARS]
+    return {
+        "path": public_path,
+        "sha256": sha256,
+        "hash_truncated": hash_truncated,
+        "size_bytes": stat.st_size,
+        "truncated": truncated,
+        "excerpt": _redact_context_excerpt(text),
+    }
+
+
+def _require_local_profile_policy(profile_ref: str) -> tuple[ProfileRef, ProfileRoutePolicy, ProfileRouterPolicy]:
+    ref = parse_profile_ref(profile_ref)
+    if ref.host != LOCAL_HOST:
+        raise ProfileRouterError(
+            "unsupported_host",
+            f"Only local profiles are supported by this skeleton, got: {ref.host}",
+        )
+    if not _local_profile_exists(ref.profile):
+        raise ProfileRouterError("profile_not_found", f"Profile not found: {ref.value}")
+    router_policy = load_profile_router_policy()
+    route_policy = router_policy.get_profile_policy(ref)
+    return ref, route_policy, router_policy
+
+
+def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: ProfileRouterPolicy) -> dict:
+    return {
+        "enabled": router_policy.is_profile_exposed(route_policy),
+        "allowed_roots": list(route_policy.allowed_roots),
+        "allowed_tool_groups": list(route_policy.allowed_tool_groups),
+        "capabilities": {
+            "filesystem_read": route_policy.allow_filesystem_read,
+            "filesystem_write": route_policy.allow_filesystem_write,
+            "terminal": route_policy.allow_terminal,
+            "messaging": route_policy.allow_messaging,
+            "cron": route_policy.allow_cron,
+            "git_push": route_policy.allow_git_push,
+            "deploy": route_policy.allow_deploy,
+        },
+        "messaging_recipients_configured": bool(route_policy.messaging_allowed_recipients),
+        "protected_branches": list(route_policy.protected_branches),
+        "model_policy": {
+            "allow_model_tools": route_policy.allow_model_tools,
+            "allowed_cost_classes": list(route_policy.allowed_cost_classes),
+            "default_public_cost_classes": sorted(NO_MODEL_DEFAULT_COST_CLASSES),
+        },
+    }
+
+
+def build_profile_context(profile_ref: str) -> dict:
+    """Build bounded profile policy/SOUL context without invoking a model."""
+
+    assert_default_tools_are_no_model()
+    ref, route_policy, router_policy = _require_local_profile_policy(profile_ref)
+    profile_dir = get_profile_dir(ref.profile).resolve()
+    policy_context = _public_policy_context(route_policy, router_policy)
+
+    files: list[dict] = []
+    for filename in PROFILE_CONTEXT_FILES:
+        candidate = profile_dir / filename
+        if not candidate.exists():
+            continue
+        resolved = candidate.resolve(strict=True)
+        if not _path_is_relative_to(resolved, profile_dir):
+            raise ProfileRouterError("symlink_traversal_denied", f"Profile context file escapes profile root: {filename}")
+        files.append(_read_context_file(resolved, filename))
+
+    hashes = {f"profile:{item['path']}": item["sha256"] for item in files}
+    hashes["profile:policy"] = _stable_json_hash(policy_context)
+    context_token = _stable_json_hash(hashes)
+    return {
+        "profile_ref": ref.value,
+        "host": ref.host,
+        "profile": ref.profile,
+        "context_token": context_token,
+        "context_hashes": hashes,
+        "policy": policy_context,
+        "profile_instructions": files,
+        "instruction_hierarchy": [
+            "router_security_policy",
+            "profile_SOUL_and_profile_router_policy",
+            "workspace_AGENTS_and_project_instructions",
+            "untrusted_file_or_web_content",
+        ],
+        "secret_handling": {
+            "secret_files_excluded": [".env", "auth.json", ".ssh", "mcp_tokens"],
+            "funciones_txt_content_excluded": True,
+        },
+    }
+
+
+def _workspace_instruction_snapshots(workspace: WorkspaceMetadata) -> list[dict]:
+    files: list[dict] = []
+    for filename in WORKSPACE_INSTRUCTION_FILES:
+        candidate = Path(workspace.root) / filename
+        if not candidate.exists():
+            continue
+        resolved = Path(resolve_workspace_path(workspace, filename))
+        files.append(_read_context_file(resolved, filename))
+    return files
+
+
+def _workspace_funciones_metadata(workspace: WorkspaceMetadata) -> dict:
+    metadata = {
+        "path": FUNCIONES_TXT_FILENAME,
+        "exists": False,
+        "content_included": False,
+        "git_policy": "never_stage_commit_push_or_include_in_pr",
+    }
+    candidate = Path(workspace.root) / FUNCIONES_TXT_FILENAME
+    if not candidate.exists():
+        return metadata
+    try:
+        resolve_workspace_path(workspace, FUNCIONES_TXT_FILENAME)
+    except ProfileRouterError as exc:
+        metadata["exists"] = True
+        metadata["status"] = exc.code
+        return metadata
+    metadata["exists"] = True
+    metadata["status"] = "excluded_from_context_bundle"
+    return metadata
+
+
+def build_workspace_context(workspace_id: str, *, registry: WorkspaceRegistry | None = None) -> dict:
+    """Build bounded workspace instructions and profile context for ChatGPT."""
+
+    assert_default_tools_are_no_model()
+    workspace = (registry or DEFAULT_WORKSPACE_REGISTRY).get(workspace_id)
+    profile_context = build_profile_context(workspace.profile_ref)
+    workspace_files = _workspace_instruction_snapshots(workspace)
+    hashes = dict(profile_context["context_hashes"])
+    hashes.update({f"workspace:{item['path']}": item["sha256"] for item in workspace_files})
+    funciones = _workspace_funciones_metadata(workspace)
+    hashes["workspace:funciones_txt_exists"] = str(bool(funciones["exists"])).lower()
+    context_token = _stable_json_hash(hashes)
+    return {
+        "workspace_id": workspace.workspace_id,
+        "workspace": _public_workspace_dict(workspace),
+        "context_token": context_token,
+        "context_hashes": hashes,
+        "context_loaded": True,
+        "profile_context": profile_context,
+        "workspace_instructions": workspace_files,
+        "funciones_txt": funciones,
+        "enforcement": {
+            "powerful_tools_require_fresh_context": True,
+            "fail_closed_errors": ["context_not_loaded", "context_stale"],
+            "custom_gpt_instructions_are_not_enforcement": True,
+        },
+    }
+
+
+def hydrate_workspace_context(workspace_id: str, *, registry: WorkspaceRegistry | None = None) -> dict:
+    """Build and record current workspace context for future powerful tools."""
+
+    selected_registry = registry or DEFAULT_WORKSPACE_REGISTRY
+    context = build_workspace_context(workspace_id, registry=selected_registry)
+    selected_registry.record_context(
+        workspace_id,
+        context_token=context["context_token"],
+        hashes=context["context_hashes"],
+    )
+    return context
+
+
+def get_workspace_context_status(workspace_id: str, *, registry: WorkspaceRegistry | None = None) -> dict:
+    """Return context freshness for an opened workspace."""
+
+    selected_registry = registry or DEFAULT_WORKSPACE_REGISTRY
+    workspace = selected_registry.get(workspace_id)
+    snapshot = selected_registry.get_context(workspace_id)
+    if snapshot is None:
+        return {
+            "workspace_id": workspace.workspace_id,
+            "context_loaded": False,
+            "state": "not_loaded",
+            "context_required": True,
+            "next_tool": "workspace_instructions_get",
+        }
+
+    current = build_workspace_context(workspace_id, registry=selected_registry)
+    stale = current["context_token"] != snapshot.context_token
+    return {
+        "workspace_id": workspace.workspace_id,
+        "context_loaded": True,
+        "state": "stale" if stale else "loaded",
+        "context_required": stale,
+        "context_token": snapshot.context_token,
+        "current_context_token": current["context_token"],
+    }
+
+
+def require_fresh_workspace_context(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> WorkspaceMetadata:
+    """Fail closed unless workspace context was hydrated and is still fresh."""
+
+    selected_registry = registry or DEFAULT_WORKSPACE_REGISTRY
+    status = get_workspace_context_status(workspace_id, registry=selected_registry)
+    if not status["context_loaded"]:
+        raise ProfileRouterError(
+            "context_not_loaded",
+            "Workspace context must be loaded with workspace_instructions_get before powerful tools",
+        )
+    if status["state"] != "loaded":
+        raise ProfileRouterError(
+            "context_stale",
+            "Workspace context is stale; refresh with workspace_instructions_get before powerful tools",
+        )
+    if context_token is not None and context_token != status["context_token"]:
+        raise ProfileRouterError(
+            "context_stale",
+            "Provided context_token does not match the loaded workspace context",
+        )
+    return selected_registry.get(workspace_id)
 
 
 def _bounded_int(
@@ -1218,10 +1563,54 @@ def workspace_open(profile_ref: str, root: str, mode: str = "checkout") -> str:
         workspace = open_workspace(profile_ref, root, mode=mode)
         return _tool_envelope(
             "workspace_open",
-            {"ok": True, "workspace": _public_workspace_dict(workspace)},
+            {
+                "ok": True,
+                "workspace": _public_workspace_dict(workspace),
+                "context": {
+                    "required_before_powerful_tools": True,
+                    "state": "not_loaded",
+                    "next_tool": "workspace_instructions_get",
+                },
+            },
         )
     except ProfileRouterError as exc:
         return _tool_error("workspace_open", exc)
+
+
+def profile_context_get(profile_ref: str) -> str:
+    """MCP-ready wrapper: load profile SOUL/policy context with no LLM calls."""
+
+    try:
+        return _tool_envelope(
+            "profile_context_get",
+            {"ok": True, "context": build_profile_context(profile_ref)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("profile_context_get", exc)
+
+
+def workspace_instructions_get(workspace_id: str) -> str:
+    """MCP-ready wrapper: hydrate workspace instructions and record freshness."""
+
+    try:
+        return _tool_envelope(
+            "workspace_instructions_get",
+            {"ok": True, "context": hydrate_workspace_context(workspace_id)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_instructions_get", exc)
+
+
+def workspace_context_status(workspace_id: str) -> str:
+    """MCP-ready wrapper: report whether workspace context is loaded/stale."""
+
+    try:
+        return _tool_envelope(
+            "workspace_context_status",
+            {"ok": True, "context_status": get_workspace_context_status(workspace_id)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_context_status", exc)
 
 
 def workspace_get(workspace_id: str) -> str:
