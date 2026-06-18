@@ -639,6 +639,17 @@ def compress_context(
     except Exception:
         pass
 
+    # The next model request must get a chance to refresh external,
+    # repo-backed state before reasoning from this compressed summary.
+    # The marker is consumed once by the turn prologue; disabled/unconfigured
+    # hooks clear it without running anything.
+    try:
+        from agent.post_compression_refresh import mark_post_compression_refresh_pending
+
+        mark_post_compression_refresh_pending(agent)
+    except Exception:
+        logger.debug("post-compression refresh marker failed", exc_info=True)
+
     logger.info(
         "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
         agent.session_id or "none", _pre_msg_count, len(compressed),

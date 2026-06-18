@@ -1269,6 +1269,29 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "posthook": {
+            "enabled": False,       # One-shot hook after compression, before the next LLM call.
+            "command": "",          # Read-only command whose stdout/stderr are injected as fresh context.
+            "cwd": "",              # Optional working directory for command execution.
+            "timeout": 10,          # Seconds; failures/timeouts are visible but fail-soft.
+            "max_output_chars": 4000,
+            "shell": False,         # Shell hooks are blocked unless command execution explicitly allows them.
+            "allowed_commands": [],  # Exact extra read-only commands; Agent Mesh read-only preflight is built in.
+            "allowlist": [],         # Backward-compatible alias for allowed_commands.
+        },
+        "post_compress": {
+            "enabled": True,        # Session-local deferred notification inbox drained after compression.
+            "default_action": "dismiss",  # Unknown sources dismiss visibly instead of auto-reading.
+            "max_items": 1,
+            "max_total_output_chars": 4000,
+            "sources": {
+                "compression.posthook": {
+                    "enabled": True,
+                    "default_action": "read",  # Compatibility shim for compression.posthook users.
+                    "read_capability": "agent_mesh.concierge_preflight",
+                },
+            },
+        },
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
