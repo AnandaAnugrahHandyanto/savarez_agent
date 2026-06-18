@@ -2336,6 +2336,20 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        # Mechanically enforce the no-dash rule (gated per-profile by
+        # HERMES_TELEGRAM_STRIP_DASHES): the persona forbids em dashes and
+        # hyphens, but models still slip, so strip them from outgoing text.
+        if os.getenv("HERMES_TELEGRAM_STRIP_DASHES", "").strip().lower() in ("1", "true", "yes", "on"):
+            _d = content
+            _d = re.sub(r"\s*[\u2014\u2013\u2012\u2015\u2212]\s*", ", ", _d)
+            _d = re.sub(r"\s+[\u2010\u2011-]\s+", ", ", _d)
+            _d = _d.replace("\u2010", " ").replace("\u2011", " ").replace("-", " ")
+            _d = re.sub(r"[ \t]{2,}", " ", _d)
+            _d = re.sub(r"\s+([,.;:!?])", r"\1", _d)
+            _d = re.sub(r"(,\s*){2,}", ", ", _d)
+            _d = re.sub(r"^[\s,]+", "", _d)
+            content = _d
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
