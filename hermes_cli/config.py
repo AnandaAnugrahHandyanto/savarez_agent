@@ -2632,6 +2632,16 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Optional user-managed pricing overrides for /usage and insights.
+    "pricing": {
+        "custom_overrides": {
+            "enabled": False,
+            "currency": "USD",
+            "active_plans": {},
+            "providers": [],
+        },
+    },
+
     # Paste collapse thresholds (TUI + CLI).
     #
     # paste_collapse_threshold (default 5)

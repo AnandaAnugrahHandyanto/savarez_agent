@@ -3236,6 +3236,12 @@ class GatewaySlashCommandsMixin:
                 if cost_result.amount_usd is not None:
                     prefix = "~" if cost_result.status == "estimated" else ""
                     lines.append(t("gateway.usage.label_cost", prefix=prefix, amount=f"{float(cost_result.amount_usd):.4f}"))
+                    if cost_result.source in {"user_override", "custom_contract"}:
+                        source_label = {
+                            "user_override": "custom override",
+                            "custom_contract": "custom contract",
+                        }.get(cost_result.source, cost_result.source)
+                        lines.append(t("gateway.usage.label_cost_source", source=source_label))
                 elif cost_result.status == "included":
                     lines.append(t("gateway.usage.label_cost_included"))
             except Exception:
