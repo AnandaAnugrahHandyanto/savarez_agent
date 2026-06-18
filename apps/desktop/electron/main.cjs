@@ -46,6 +46,7 @@ const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
+const { rebuiltMacAppCandidates } = require('./desktop-update-paths.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -2028,10 +2029,7 @@ async function applyUpdatesPosixInApp() {
     return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
   }
 
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
+  const rebuiltApp = rebuiltMacAppCandidates(updateRoot).find(directoryExists)
   const targetApp = runningAppBundle()
 
   // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
