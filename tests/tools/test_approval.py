@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
+from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
     _smart_approve,
@@ -368,6 +369,12 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
+    def test_tee_absolute_home_bashrc(self):
+        bashrc = Path.home() / ".bashrc"
+        dangerous, key, desc = detect_dangerous_command(f"echo x | tee {bashrc}")
+        assert dangerous is True
+        assert key is not None
+
     def test_tee_custom_hermes_home_env(self):
         dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
         assert dangerous is True
@@ -387,6 +394,139 @@ class TestTeePattern:
         dangerous, key, desc = detect_dangerous_command("echo hello | tee output.log")
         assert dangerous is False
         assert key is None
+
+
+class TestHermesConfigWriteProtection:
+    """Terminal-side pairing for the file_tools write_file/patch deny on
+    ~/.hermes/config.yaml (#14639). config.yaml IS the security policy
+    (approvals.mode/yolo live there, mtime-keyed cache reloads mid-session),
+    so a write_file deny without terminal-side coverage is unpaired theater.
+    These pin every terminal write idiom against the config file."""
+
+    def test_redirect_overwrite(self):
+        dangerous, key, desc = detect_dangerous_command("echo 'approvals:' > ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert key is not None
+
+    def test_append(self):
+        dangerous, key, desc = detect_dangerous_command("echo '  mode: off' >> ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_tee(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_cp_over_config(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil.yaml ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_sed_in_place(self):
+        # The gap the pairing closes: sed -i mutates the file directly,
+        # bypassing the redirection/tee patterns.
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/manual/off/' ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_sed_in_place_long_flag(self):
+        dangerous, key, desc = detect_dangerous_command("sed --in-place 's/manual/off/' ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_sed_in_place_absolute_hermes_home_config(self):
+        config_path = get_hermes_home() / "config.yaml"
+        dangerous, key, desc = detect_dangerous_command(
+            f"sed -i 's/manual/off/' {config_path}"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_sed_in_place_absolute_hermes_home_env(self):
+        env_path = get_hermes_home() / ".env"
+        dangerous, key, desc = detect_dangerous_command(
+            f"sed -i 's/API_KEY=.*/API_KEY=x/' {env_path}"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_custom_hermes_home(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/config.yaml")
+        assert dangerous is True
+
+    def test_perl_in_place_config(self):
+        # perl -i performs the same in-place mutation as sed -i but was not
+        # caught by the -e/-c pattern (which targets code evaluation).
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "perl" in desc.lower()
+
+    def test_perl_in_place_absolute_hermes_home_config(self):
+        config_path = get_hermes_home() / "config.yaml"
+        dangerous, key, desc = detect_dangerous_command(
+            f"perl -i -pe 's/approvals.mode: on/approvals.mode: off/' {config_path}"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "perl" in desc.lower()
+
+    def test_ruby_in_place_config(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "ruby -i -pe 'gsub(/manual/, \"off\")' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_ruby_in_place_absolute_hermes_home_env(self):
+        env_path = get_hermes_home() / ".env"
+        dangerous, key, desc = detect_dangerous_command(
+            f"ruby -i -pe 'gsub(/API_KEY=.*/, \"API_KEY=x\")' {env_path}"
+        )
+        assert dangerous is True
+
+    def test_regular_absolute_config_path_still_uses_project_rule(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "sed -i 's/a/b/' /srv/app/config.yaml"
+        )
+        assert dangerous is False
+
+    def test_perl_in_place_env(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/SECRET=old/SECRET=new/' ~/.hermes/.env"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_separate_flag_token(self):
+        # The -i flag does not have to be the first token. `perl -p -i -e`
+        # splits the in-place flag out as its own token after -p; the pattern
+        # must catch it the same as `perl -i -pe`.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -p -i -e 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_backup_suffix(self):
+        # `perl -i.bak` keeps a backup but still mutates the file in place.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i.bak -pe 's/x/y/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_eval_no_inplace_safe(self):
+        # `perl -e` with no -i flag is code evaluation, not file mutation —
+        # the perl/ruby -i pattern must not fire on it.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -wne 'print' ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
+
+    def test_read_is_safe(self):
+        # Reading config is not a write — must not trip.
+        dangerous, key, desc = detect_dangerous_command("cat ~/.hermes/config.yaml")
+        assert dangerous is False
+
+    def test_normal_yaml_write_safe(self):
+        # A non-Hermes config.yaml in a project dir is handled by the project
+        # patterns, but a plain temp write must not false-positive.
+        dangerous, key, desc = detect_dangerous_command("echo data > /tmp/scratch.txt")
+        assert dangerous is False
 
 
 class TestFindExecFullPathRm:
@@ -426,10 +566,36 @@ class TestSensitiveRedirectPattern:
         assert dangerous is True
         assert key is not None
 
+    def test_append_to_absolute_home_ssh_authorized_keys(self):
+        authorized_keys = Path.home() / ".ssh" / "authorized_keys"
+        dangerous, key, desc = detect_dangerous_command(f"cat key >> {authorized_keys}")
+        assert dangerous is True
+        assert key is not None
+
     def test_append_to_tilde_ssh_authorized_keys(self):
         dangerous, key, desc = detect_dangerous_command("cat key >> ~/.ssh/authorized_keys")
         assert dangerous is True
         assert key is not None
+
+    def test_redirect_to_absolute_home_bashrc(self):
+        bashrc = Path.home() / ".bashrc"
+        dangerous, key, desc = detect_dangerous_command(f"echo 'alias ll=\"ls -la\"' > {bashrc}")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_home_set_after_import(self, monkeypatch, tmp_path):
+        late_home = tmp_path / "late-home"
+        late_home.mkdir()
+        monkeypatch.setenv("HOME", str(late_home))
+
+        dangerous, key, desc = detect_dangerous_command(f"echo x > {late_home}/.bashrc")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_other_absolute_home_bashrc_is_not_current_user_sensitive(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > /tmp/not-current-home/.bashrc")
+        assert dangerous is False
+        assert key is None
 
     def test_redirect_to_safe_tmp_file(self):
         dangerous, key, desc = detect_dangerous_command("echo hello > /tmp/output.txt")
@@ -497,6 +663,79 @@ class TestProjectSensitiveCopyPattern:
         assert dangerous is False
         assert key is None
         assert desc is None
+
+
+class TestSensitiveCopyMovePattern:
+    """cp/mv/install OVERWRITING ~/.ssh/*, credential files (~/.netrc etc.),
+    shell rc files, or ~/.hermes/config.yaml/.env must require approval — the
+    tee/redirection forms were already gated (#14639 family / commit 4e9d886d),
+    but cp/mv/install on these targets was an unpaired half-door (key implant /
+    shell-rc command injection slipped through auto-approve)."""
+
+    def test_cp_to_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil ~/.ssh/authorized_keys")
+        assert dangerous is True
+        assert key is not None
+
+    def test_mv_to_ssh_private_key(self):
+        dangerous, key, desc = detect_dangerous_command("mv /tmp/k ~/.ssh/id_rsa")
+        assert dangerous is True
+
+    def test_install_to_netrc(self):
+        dangerous, key, desc = detect_dangerous_command("install -m600 /tmp/c ~/.netrc")
+        assert dangerous is True
+
+    def test_cp_to_bashrc(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/e ~/.bashrc")
+        assert dangerous is True
+
+    def test_cp_to_hermes_config(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil.yaml ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_cp_from_ssh_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp ~/.ssh/config /tmp/x")
+        assert dangerous is False
+
+    def test_cp_unrelated_files_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp a.txt b.txt")
+        assert dangerous is False
+
+
+class TestSensitiveInPlaceEditPattern:
+    """Detect in-place edits to user startup and credential files."""
+
+    def test_sed_in_place_bashrc(self):
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' ~/.bashrc")
+        assert dangerous is True
+        assert key is not None
+
+    def test_sed_long_in_place_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "sed --in-place 's/key/newkey/' ~/.ssh/authorized_keys"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_perl_in_place_netrc(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/pass/pass2/' ~/.netrc"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_ruby_in_place_absolute_home_zshrc(self):
+        zshrc = Path.home() / ".zshrc"
+        dangerous, key, desc = detect_dangerous_command(
+            f"ruby -i -pe 'gsub(/a/, \"b\")' {zshrc}"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_sed_in_place_regular_file_safe(self):
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' notes.txt")
+        assert dangerous is False
+        assert key is None
 
 
 class TestProjectSensitiveTeePattern:
@@ -1344,11 +1583,16 @@ class TestApprovalTimeoutIsNotConsent:
 
         self._saved_env = {
             k: os.environ.get(k)
-            for k in ("HERMES_GATEWAY_SESSION", "HERMES_YOLO_MODE",
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_YOLO_MODE",
                       "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
         }
         os.environ.pop("HERMES_YOLO_MODE", None)
         os.environ.pop("HERMES_INTERACTIVE", None)
+        # HERMES_CRON_SESSION takes priority over HERMES_GATEWAY_SESSION in
+        # _is_gateway_approval_context(); a leaked value from a parent cron
+        # process would force the cron path and break these gateway tests.
+        os.environ.pop("HERMES_CRON_SESSION", None)
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
 
@@ -1489,7 +1733,7 @@ class TestGatewayTirithScannerBypassHardening:
             k: os.environ.get(k)
             for k in ("HERMES_GATEWAY_SESSION", "HERMES_YOLO_MODE",
                       "HERMES_SESSION_KEY", "HERMES_INTERACTIVE",
-                      "HERMES_EXEC_ASK")
+                      "HERMES_EXEC_ASK", "HERMES_CRON_SESSION")
         }
         for key in self._saved_env:
             os.environ.pop(key, None)
@@ -1582,6 +1826,22 @@ class TestGatewayTirithScannerBypassHardening:
         assert result["approved"] is True
         assert "Security scan" in notified[0]["description"]
 
+    def test_gateway_permanent_command_allowlist_still_prompts_for_tirith_findings(self, monkeypatch):
+        from tools import approval as mod
+        from tools import tirith_security
+
+        monkeypatch.setattr(
+            tirith_security, "check_command_security",
+            lambda command: self._tirith_warn_result(),
+        )
+        mod.load_permanent({"echo safe"})
+
+        result, notified = self._run_gateway_guard_and_resolve(mod, "echo safe")
+
+        assert result["approved"] is True
+        assert "Security scan" in notified[0]["description"]
+        assert notified[0]["pattern_keys"] == ["tirith:pipe-to-interpreter"]
+
     def test_gateway_yolo_still_skips_regex_only_dangerous_prompt(self, monkeypatch):
         from tools import approval as mod
         from tools import tirith_security
@@ -1592,6 +1852,33 @@ class TestGatewayTirithScannerBypassHardening:
             lambda command: {"action": "allow", "findings": [], "summary": ""},
         )
         mod.enable_session_yolo(self.SESSION_KEY)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        token = mod.set_current_session_key(self.SESSION_KEY)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+        try:
+            result = mod.check_all_command_guards("rm -rf .git", "local")
+        finally:
+            os.environ.pop("HERMES_GATEWAY_SESSION", None)
+            os.environ.pop("HERMES_SESSION_KEY", None)
+            mod.reset_current_session_key(token)
+            mod.unregister_gateway_notify(self.SESSION_KEY)
+
+        assert result["approved"] is True
+        assert notified == []
+
+    def test_gateway_permanent_command_allowlist_skips_regex_only_dangerous_prompt(self, monkeypatch):
+        from tools import approval as mod
+        from tools import tirith_security
+
+        monkeypatch.setattr(
+            tirith_security,
+            "check_command_security",
+            lambda command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        mod.load_permanent({"rm -rf .git"})
         notified = []
         mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
 
