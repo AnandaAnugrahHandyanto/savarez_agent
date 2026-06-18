@@ -14,7 +14,9 @@ import json
 import posixpath
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Iterable, Mapping
+from uuid import uuid4
 
 from hermes_cli.profiles import (
     ProfileInfo,
@@ -39,6 +41,15 @@ PROFILE_ROUTER_CONFIG_KEY = "profile_router"
 PROFILE_ROUTER_TOOL_GROUP = "profile_router"
 DEFAULT_PROTECTED_BRANCHES = ("main", "master", "develop", "production")
 DEFAULT_ALLOWED_COST_CLASSES = (COST_CLASS_NO_MODEL,)
+SECRET_PATH_NAMES = frozenset(
+    {
+        ".ssh",
+        "auth.json",
+        "mcp_tokens",
+        "mcp_tokens.json",
+    }
+)
+SECRET_PATH_PREFIXES = (".env.",)
 
 
 class ProfileRouterError(ValueError):
@@ -210,6 +221,55 @@ def _path_within_root(path: str, root: str) -> bool:
     return normalized_path == normalized_root or normalized_path.startswith(
         normalized_root.rstrip("/") + "/"
     )
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _normalize_absolute_host_path(path: str, field: str) -> str:
+    if not isinstance(path, str):
+        raise ProfileRouterError("invalid_path", f"{field} must be a string")
+    text = path.strip()
+    if not text:
+        raise ProfileRouterError("invalid_path", f"{field} is required")
+    if not text.startswith("/"):
+        raise ProfileRouterError(
+            "invalid_path", f"{field} must be an absolute host-local path"
+        )
+    return posixpath.normpath(text)
+
+
+def _is_secret_path(path: str) -> bool:
+    normalized = posixpath.normpath(path)
+    parts = [part.lower() for part in normalized.split("/") if part]
+    for part in parts:
+        if part == ".env" or part in SECRET_PATH_NAMES:
+            return True
+        if any(part.startswith(prefix) for prefix in SECRET_PATH_PREFIXES):
+            return True
+    return False
+
+
+def _ensure_not_secret_path(path: str) -> None:
+    if _is_secret_path(path):
+        raise ProfileRouterError(
+            "secret_path_denied",
+            "Path is blocked by the profile-router secret denylist",
+        )
+
+
+def _resolve_existing_local_path(path: str, field: str) -> Path:
+    try:
+        return Path(path).resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ProfileRouterError("path_not_found", f"{field} not found: {path}") from exc
+    except OSError as exc:
+        raise ProfileRouterError("invalid_path", f"{field} is not accessible: {path}") from exc
 
 
 def _parse_host_policy(host_name: str, raw_policy: Any) -> HostRoutePolicy:
@@ -458,6 +518,146 @@ def assert_default_tools_are_no_model(
             "unsafe_default_tool_exposure",
             "Default profile-router tools must be no-model: " + ", ".join(sorted(unsafe)),
         )
+
+
+@dataclass(frozen=True)
+class WorkspaceMetadata:
+    """Server-side metadata for one opened profile-router workspace.
+
+    Workspace IDs are opaque to MCP clients.  The root is kept in server-side
+    metadata and every future file/search/write/terminal path must resolve
+    through this object before touching the filesystem.
+    """
+
+    workspace_id: str
+    profile_ref: str
+    host: str
+    profile: str
+    root: str
+    mode: str = "checkout"
+    read_only: bool = True
+    cost_class: str = COST_CLASS_NO_MODEL
+    llm_calls: int = 0
+
+    def to_public_dict(self) -> dict:
+        return asdict(self)
+
+
+def _local_profile_exists(profile: str) -> bool:
+    return any(info.name == profile for info in _list_local_profile_infos())
+
+
+def _resolve_allowed_local_roots(allowed_roots: Iterable[str]) -> list[Path]:
+    resolved: list[Path] = []
+    for allowed_root in allowed_roots:
+        _ensure_not_secret_path(allowed_root)
+        resolved.append(_resolve_existing_local_path(allowed_root, "allowed root"))
+    return resolved
+
+
+def create_workspace_metadata(
+    profile_ref: str,
+    root: str,
+    *,
+    mode: str = "checkout",
+    workspace_id: str | None = None,
+    policy: ProfileRouterPolicy | None = None,
+) -> WorkspaceMetadata:
+    """Validate a local read workspace and return opaque no-model metadata.
+
+    This helper intentionally does not expose an MCP tool yet.  It is the common
+    safety gate future ``workspace_open``, ``file_read``, and ``file_search``
+    handlers must use before resolving paths.
+    """
+
+    assert_default_tools_are_no_model()
+    if mode not in {"checkout", "worktree", "read_only"}:
+        raise ProfileRouterError("invalid_workspace_mode", f"Unsupported workspace mode: {mode}")
+
+    ref = parse_profile_ref(profile_ref)
+    if ref.host != LOCAL_HOST:
+        raise ProfileRouterError(
+            "unsupported_host",
+            f"Only local workspaces are supported by this skeleton, got: {ref.host}",
+        )
+    if not _local_profile_exists(ref.profile):
+        raise ProfileRouterError("profile_not_found", f"Profile not found: {ref.value}")
+
+    router_policy = policy or load_profile_router_policy()
+    route_policy = router_policy.get_profile_policy(ref)
+    if not route_policy.allow_filesystem_read:
+        raise ProfileRouterError(
+            "filesystem_read_not_allowed",
+            f"Filesystem read is disabled by profile_router policy: {ref.value}",
+        )
+
+    normalized_root = _normalize_absolute_host_path(root, "workspace root")
+    _ensure_not_secret_path(normalized_root)
+    if not any(_path_within_root(normalized_root, allowed_root) for allowed_root in route_policy.allowed_roots):
+        raise ProfileRouterError(
+            "workspace_root_not_allowed",
+            f"Workspace root is outside allowed roots for {ref.value}",
+        )
+
+    resolved_root = _resolve_existing_local_path(normalized_root, "workspace root")
+    allowed_roots = _resolve_allowed_local_roots(route_policy.allowed_roots)
+    if not any(_path_is_relative_to(resolved_root, allowed_root) for allowed_root in allowed_roots):
+        raise ProfileRouterError(
+            "symlink_traversal_denied",
+            f"Resolved workspace root escapes allowed roots for {ref.value}",
+        )
+
+    return WorkspaceMetadata(
+        workspace_id=workspace_id or f"ws_{uuid4().hex}",
+        profile_ref=ref.value,
+        host=ref.host,
+        profile=ref.profile,
+        root=str(resolved_root),
+        mode=mode,
+        read_only=True,
+    )
+
+
+def resolve_workspace_path(
+    workspace: WorkspaceMetadata,
+    path: str,
+    *,
+    require_exists: bool = True,
+) -> str:
+    """Resolve a client path inside a workspace and reject escapes/secrets."""
+
+    if not isinstance(workspace, WorkspaceMetadata):
+        raise ProfileRouterError("invalid_workspace", "workspace metadata is required")
+    if workspace.host != LOCAL_HOST:
+        raise ProfileRouterError(
+            "unsupported_host",
+            f"Only local workspace paths are supported by this skeleton, got: {workspace.host}",
+        )
+    if not isinstance(path, str):
+        raise ProfileRouterError("invalid_path", "path must be a string")
+
+    raw_path = path.strip() or "."
+    if raw_path.startswith("/"):
+        raise ProfileRouterError("absolute_path_not_allowed", "path must be workspace-relative")
+
+    normalized_candidate = posixpath.normpath(posixpath.join(workspace.root, raw_path))
+    if not _path_within_root(normalized_candidate, workspace.root):
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+    _ensure_not_secret_path(normalized_candidate)
+
+    resolved_root = _resolve_existing_local_path(workspace.root, "workspace root")
+    if require_exists:
+        resolved_candidate = _resolve_existing_local_path(normalized_candidate, "workspace path")
+    else:
+        resolved_parent = _resolve_existing_local_path(
+            posixpath.dirname(normalized_candidate), "workspace path parent"
+        )
+        resolved_candidate = resolved_parent / posixpath.basename(normalized_candidate)
+
+    if not _path_is_relative_to(resolved_candidate, resolved_root):
+        raise ProfileRouterError("symlink_traversal_denied", "path escapes workspace root")
+    _ensure_not_secret_path(str(resolved_candidate))
+    return str(resolved_candidate)
 
 
 def _safe_profile_summary(

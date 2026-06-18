@@ -11,12 +11,14 @@ from mcp_profile_router import (
     ProfileRouterError,
     RouterToolMetadata,
     assert_default_tools_are_no_model,
+    create_workspace_metadata,
     get_router_tool_metadata,
     load_profile_router_policy,
     parse_profile_ref,
     profile_get,
     profile_health,
     profiles_list,
+    resolve_workspace_path,
 )
 
 
@@ -167,6 +169,108 @@ def test_profile_router_policy_rejects_invalid_hosts_and_outside_roots(tmp_path)
                 }
             }
         )
+
+
+def test_workspace_metadata_requires_explicit_filesystem_read_policy(hermes_home):
+    _write_router_config(hermes_home)
+
+    with pytest.raises(ProfileRouterError, match="Filesystem read is disabled"):
+        create_workspace_metadata(
+            "local:main-bot",
+            str(hermes_home),
+            workspace_id="ws_denied",
+        )
+
+
+def test_workspace_metadata_resolves_paths_and_blocks_secrets_and_escapes(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    safe_file = workspace_root / "notes.txt"
+    safe_file.write_text("safe\n", encoding="utf-8")
+    (workspace_root / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    (workspace_root / ".ssh").mkdir()
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+
+    workspace = create_workspace_metadata(
+        "local:main-bot",
+        str(workspace_root),
+        workspace_id="ws_test",
+    )
+    assert workspace.to_public_dict() == {
+        "workspace_id": "ws_test",
+        "profile_ref": "local:main-bot",
+        "host": "local",
+        "profile": "main-bot",
+        "root": str(workspace_root.resolve()),
+        "mode": "checkout",
+        "read_only": True,
+        "cost_class": COST_CLASS_NO_MODEL,
+        "llm_calls": 0,
+    }
+    assert resolve_workspace_path(workspace, "notes.txt") == str(safe_file.resolve())
+    assert resolve_workspace_path(workspace, "new.txt", require_exists=False) == str(
+        workspace_root.resolve() / "new.txt"
+    )
+
+    with pytest.raises(ProfileRouterError, match="workspace-relative"):
+        resolve_workspace_path(workspace, str(safe_file))
+    with pytest.raises(ProfileRouterError, match="escapes workspace root"):
+        resolve_workspace_path(workspace, "../outside/file.txt", require_exists=False)
+    for secret_path in (".env", ".env.local", ".ssh/id_rsa", "auth.json", "mcp_tokens"):
+        with pytest.raises(ProfileRouterError, match="secret denylist"):
+            resolve_workspace_path(workspace, secret_path, require_exists=False)
+    with pytest.raises(ProfileRouterError, match="outside allowed roots"):
+        create_workspace_metadata("local:main-bot", str(outside_root))
+    with pytest.raises(ProfileRouterError, match="secret denylist"):
+        create_workspace_metadata("local:main-bot", str(workspace_root / ".ssh"))
+
+
+def test_resolve_workspace_path_rejects_symlink_traversal(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    outside_file = outside_root / "leak.txt"
+    outside_file.write_text("leak\n", encoding="utf-8")
+    link = workspace_root / "link"
+    try:
+        link.symlink_to(outside_file)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+    workspace = create_workspace_metadata("local:main-bot", str(workspace_root))
+
+    with pytest.raises(ProfileRouterError, match="path escapes workspace root"):
+        resolve_workspace_path(workspace, "link")
 
 
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):
