@@ -131,6 +131,8 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+    # OpenRouter wraps downstream rate-limits without proper 429 status
+    "provider returned error",
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
