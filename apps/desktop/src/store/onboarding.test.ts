@@ -335,6 +335,53 @@ describe('saveOnboardingLocalEndpoint', () => {
     expect($desktopOnboarding.get().configured).toBe(true)
   })
 
+  it('persists the /v1 base_url the probe resolved when the user pasted the bare root (Ollama)', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // User pasted Ollama's bare root; the backend probe falls back to the
+        // /v1 surface and reports the base_url that actually advertised models.
+        return {
+          ok: true,
+          reachable: true,
+          message: '',
+          models: ['llama3.2'],
+          base_url: 'http://127.0.0.1:11434/v1'
+        }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'llama3.2', base_url: 'http://127.0.0.1:11434/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:11434', '', {
+      requestGateway: readyGateway()
+    })
+
+    expect(result.ok).toBe(true)
+
+    // The probe is called with the raw root the user typed…
+    const probe = calls.find(c => c.path === '/api/providers/validate')
+    expect(probe?.body).toMatchObject({ key: 'OPENAI_BASE_URL', value: 'http://127.0.0.1:11434' })
+
+    // …but the resolved /v1 URL is what gets persisted, so the runtime can reach it.
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'llama3.2',
+      base_url: 'http://127.0.0.1:11434/v1'
+    })
+  })
+
   it('forwards the API key to the probe and persists it for auth-gated endpoints', async () => {
     const calls: { body?: unknown; path: string }[] = []
 

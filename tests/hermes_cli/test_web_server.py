@@ -256,6 +256,121 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["can_update_hermes"] is False
 
+    def test_validate_openai_base_url_falls_back_to_v1_for_bare_root(self, monkeypatch):
+        """A user who pastes a local root (e.g. Ollama's http://host:11434) must
+        still enumerate models: the probe falls back to the OpenAI-compat /v1
+        surface and reports the base_url that actually worked, so the saved
+        endpoint is reachable at runtime instead of hard-failing 'no models'."""
+        import httpx
+
+        seen = []
+
+        class FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def get(self, url, headers=None):
+                seen.append(url)
+                # Ollama serves models only under /v1; the bare root 404s.
+                if url.endswith("/v1/models"):
+                    return httpx.Response(
+                        200, json={"data": [{"id": "llama3.2"}]},
+                        request=httpx.Request("GET", url),
+                    )
+                return httpx.Response(
+                    404, json={"error": "not found"},
+                    request=httpx.Request("GET", url),
+                )
+
+        monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
+
+        resp = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "http://127.0.0.1:11434", "api_key": ""},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["reachable"] is True
+        assert data["models"] == ["llama3.2"]
+        # Reports the working /v1 surface so the caller persists a reachable URL.
+        assert data["base_url"] == "http://127.0.0.1:11434/v1"
+        # Tried the bare root first, then the /v1 fallback.
+        assert seen == [
+            "http://127.0.0.1:11434/models",
+            "http://127.0.0.1:11434/v1/models",
+        ]
+
+    def test_validate_openai_base_url_reachable_but_no_models(self, monkeypatch):
+        """An endpoint that is up but advertises no models on any surface stays a
+        soft block (ok+reachable, empty models) so the GUI shows 'start a model',
+        not a misleading 'could not reach'."""
+        import httpx
+
+        class FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def get(self, url, headers=None):
+                # Up on every surface, but no models loaded.
+                return httpx.Response(
+                    200, json={"data": []}, request=httpx.Request("GET", url)
+                )
+
+        monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
+
+        resp = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "http://127.0.0.1:11434", "api_key": ""},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["reachable"] is True
+        assert data["models"] == []
+
+    def test_validate_openai_base_url_unreachable(self, monkeypatch):
+        """A genuinely unreachable endpoint reports reachable=False so offline
+        users get the 'could not reach' message, not a 'no models' block."""
+        import httpx
+
+        class FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def get(self, url, headers=None):
+                raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
+
+        resp = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "http://127.0.0.1:11434", "api_key": ""},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["reachable"] is False
+        assert "Could not reach" in data["message"]
+
     def test_dashboard_update_capability_detects_generic_container(self, monkeypatch):
         import hermes_constants
         import hermes_cli.web_server as web_server
