@@ -347,6 +347,38 @@ class TestGetOrCreateResumePending:
         # Flag is NOT cleared on read — only on successful turn completion.
         assert second.resume_pending is True
 
+    def test_existing_session_refreshes_origin_message_id(self, tmp_path):
+        """The persisted origin must track the latest triggering message id."""
+        store = _make_store(tmp_path)
+        source = _make_source()
+        source.message_id = "first-message"
+        first = store.get_or_create_session(source)
+
+        later_source = _make_source()
+        later_source.message_id = "latest-message"
+        second = store.get_or_create_session(later_source)
+
+        assert second.session_id == first.session_id
+        assert second.origin is not None
+        assert second.origin.message_id == "latest-message"
+
+    def test_resume_pending_refreshes_origin_message_id_before_return(self, tmp_path):
+        """The resume_pending early-return path must not keep a stale anchor."""
+        store = _make_store(tmp_path)
+        source = _make_source()
+        source.message_id = "first-message"
+        first = store.get_or_create_session(source)
+        store.mark_resume_pending(first.session_key)
+
+        later_source = _make_source()
+        later_source.message_id = "latest-message"
+        second = store.get_or_create_session(later_source)
+
+        assert second.session_id == first.session_id
+        assert second.resume_pending is True
+        assert second.origin is not None
+        assert second.origin.message_id == "latest-message"
+
     def test_suspended_still_creates_new_session(self, tmp_path):
         """Regression guard — suspended must still force a clean slate."""
         store = _make_store(tmp_path)
@@ -956,6 +988,7 @@ async def test_startup_auto_resume_uses_last_user_message_id_as_reply_anchor():
     event = adapter.handle_message.await_args.args[0]
     assert event.internal is True
     assert event.message_id == "fresh-user-anchor"
+    assert event.reply_to_message_id == "fresh-user-anchor"
     assert event.source.message_id == "fresh-user-anchor"
 
 
@@ -995,6 +1028,7 @@ async def test_startup_auto_resume_clears_stale_origin_reply_anchor_when_no_user
     assert scheduled == 1
     event = adapter.handle_message.await_args.args[0]
     assert event.message_id is None
+    assert event.reply_to_message_id is None
     assert event.source.message_id is None
 
 

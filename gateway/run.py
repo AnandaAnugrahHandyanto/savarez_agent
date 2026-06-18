@@ -5101,6 +5101,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 message_id=resume_message_id,
+                reply_to_message_id=resume_message_id,
                 internal=True,
             )
             task = asyncio.create_task(
