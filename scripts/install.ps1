@@ -3101,7 +3101,7 @@ function Main {
 # structured JSON error frame instead of a bare exception.
 
 try {
-    if ($Ensure -ne "") {
+    if ($PSBoundParameters.ContainsKey('Ensure')) {
         if ($PSBoundParameters.ContainsKey("Stage")) {
             Write-Err "Cannot use -Ensure and -Stage simultaneously"
             exit 1
