@@ -719,37 +719,25 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
-    from gateway.platforms.slack import SlackAdapter
 
-    # Telegram adapter import is optional (requires python-telegram-bot)
-    try:
-        from gateway.platforms.telegram import TelegramAdapter
-        _telegram_available = True
-    except ImportError:
-        _telegram_available = False
-
-    # Feishu adapter import is optional (requires lark-oapi)
-    try:
-        from gateway.platforms.feishu import FeishuAdapter
-        _feishu_available = True
-    except ImportError:
-        _feishu_available = False
+    # Keep this tool path lightweight: do not import heavy gateway adapters just
+    # to read their class constants.  Importing discord.py in short-lived send
+    # tool tests creates event-loop/socket ResourceWarnings on interpreter GC.
+    _MAX_LENGTHS = {
+        Platform.TELEGRAM: 4096,
+        Platform.DISCORD: 2000,
+        Platform.SLACK: 39000,
+        Platform.FEISHU: 8000,
+    }
 
     if platform == Platform.SLACK and message:
         try:
+            from gateway.platforms.slack import SlackAdapter
             slack_adapter = SlackAdapter.__new__(SlackAdapter)
             message = slack_adapter.format_message(message)
+            _MAX_LENGTHS[Platform.SLACK] = SlackAdapter.MAX_MESSAGE_LENGTH
         except Exception:
             logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
-
-    # Platform message length limits (from adapter class attributes for
-    # built-in platforms; from PlatformEntry.max_message_length for plugins).
-    _MAX_LENGTHS = {
-        Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
-        Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
-    }
-    if _feishu_available:
-        _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
 
     # Check plugin registry for max_message_length
     if platform not in _MAX_LENGTHS:

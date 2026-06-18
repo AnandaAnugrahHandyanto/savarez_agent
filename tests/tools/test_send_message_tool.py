@@ -18,12 +18,26 @@ _HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not 
 
 @pytest.fixture(autouse=True)
 def _reset_signal_scheduler():
-    """Drop the process-wide attachment scheduler so each test gets a
-    fresh token bucket."""
+    """Drop process-wide async state so each test starts and ends cleanly."""
     from gateway.platforms.signal_rate_limit import _reset_scheduler
+
+    def _close_default_loop_if_idle():
+        # Some optional platform/test imports can create a default event loop
+        # without owning its shutdown.  Do not call get_event_loop() here: on
+        # some Python versions that creates the very loop we are trying to
+        # avoid leaking.
+        policy = asyncio.get_event_loop_policy()
+        local = getattr(policy, "_local", None)
+        loop = getattr(local, "_loop", None) if local is not None else None
+        if loop is not None and not loop.is_closed() and not loop.is_running():
+            loop.close()
+            policy.set_event_loop(None)
+
     _reset_scheduler()
+    _close_default_loop_if_idle()
     yield
     _reset_scheduler()
+    _close_default_loop_if_idle()
 
 from gateway.config import Platform
 from tools.send_message_tool import (
@@ -210,28 +224,38 @@ class TestSendMessageTool:
         config, _telegram_cfg = _make_config()
         config.get_home_channel = lambda _platform: home
 
-        with patch.dict(
-            os.environ,
-            {
-                "HERMES_CRON_AUTO_DELIVER_PLATFORM": "telegram",
-                "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "-1001",
-            },
-            clear=False,
-        ), \
-             patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
-            result = json.loads(
-                send_message_tool(
-                    {
-                        "action": "send",
-                        "target": "telegram",
-                        "message": "hello",
-                    }
+        from gateway.session_context import _VAR_MAP
+
+        cron_tokens = [
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set("telegram"),
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set("-1001"),
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(""),
+        ]
+        try:
+            with patch("gateway.config.load_gateway_config", return_value=config), \
+                 patch("tools.interrupt.is_interrupted", return_value=False), \
+                 patch("model_tools._run_async", side_effect=_run_async_immediately), \
+                 patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+                 patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+                result = json.loads(
+                    send_message_tool(
+                        {
+                            "action": "send",
+                            "target": "telegram",
+                            "message": "hello",
+                        }
+                    )
                 )
-            )
+        finally:
+            for var_name, token in zip(
+                (
+                    "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+                    "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+                    "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+                ),
+                cron_tokens,
+            ):
+                _VAR_MAP[var_name].reset(token)
 
         assert result["success"] is True
         assert result["skipped"] is True
@@ -1713,7 +1737,7 @@ class TestSendMatrixUrlEncoding:
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             from tools.send_message_tool import _send_matrix
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _send_matrix(
                     "test_token",
                     {"homeserver": "https://matrix.example.org"},
