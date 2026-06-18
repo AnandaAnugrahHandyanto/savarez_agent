@@ -779,19 +779,33 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    parents = list(parents)
+    # Guard against the orchestrator-reroute deadlock. A dispatcher-spawned
+    # worker that lists its OWN task id among ``parents`` is expressing the
+    # auto-decompose idiom "this is sub-work; I wake when it completes" — NOT
+    # "this child is blocked until I finish". Taken literally the latter
+    # permanently deadlocks: the child waits for the parent to reach 'done',
+    # while the parent (the orchestrator card) is parked 'blocked' / re-
+    # dispatched waiting on that very child. Neither can advance. So we strip
+    # the self-edge from the child's BLOCKING parents and re-link it inverted
+    # after creation, so the spawning task wakes *after* the child — mirroring
+    # ``decompose_triage_task`` ("the root is a child of every leaf"). See the
+    # regression in tests/tools/test_kanban_tools.py.
+    self_tid = os.environ.get("HERMES_KANBAN_TASK")
+    wake_after_self = bool(self_tid) and self_tid in parents
+    if wake_after_self:
+        parents = [p for p in parents if p != self_tid]
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
         try:
             # Inherit the spawning worker's own task workspace when the
             # caller didn't specify one (see resolution note above).
-            if _inherit_workspace:
-                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
-                if _self_tid:
-                    _self_task = kb.get_task(conn, _self_tid)
-                    if _self_task is not None and _self_task.workspace_kind:
-                        workspace_kind = _self_task.workspace_kind
-                        workspace_path = _self_task.workspace_path
+            if _inherit_workspace and self_tid:
+                _self_task = kb.get_task(conn, self_tid)
+                if _self_task is not None and _self_task.workspace_kind:
+                    workspace_kind = _self_task.workspace_kind
+                    workspace_path = _self_task.workspace_path
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -817,11 +831,32 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
             )
+            inverted_note = None
+            if wake_after_self and self_tid:
+                # Link the new child as a PARENT of the spawning task, so the
+                # spawner promotes (wakes) only once this child reaches a
+                # terminal state. link_tasks() enforces the cycle guard; a
+                # brand-new child can't already be an ancestor of self_tid, so
+                # this can never close a cycle.
+                try:
+                    kb.link_tasks(conn, parent_id=new_tid, child_id=self_tid)
+                    inverted_note = (
+                        f"{self_tid} now depends on {new_tid} (your task wakes "
+                        f"after this child completes); the child was NOT blocked "
+                        f"on {self_tid} to avoid a reroute deadlock"
+                    )
+                except ValueError as link_exc:
+                    inverted_note = (
+                        f"could not invert self-dependency on {self_tid}: {link_exc}"
+                    )
             new_task = kb.get_task(conn, new_tid)
-            return _ok(
-                task_id=new_tid,
-                status=new_task.status if new_task else None,
-            )
+            fields = {
+                "task_id": new_tid,
+                "status": new_task.status if new_task else None,
+            }
+            if inverted_note:
+                fields["note"] = inverted_note
+            return _ok(**fields)
         finally:
             conn.close()
     except ValueError as e:

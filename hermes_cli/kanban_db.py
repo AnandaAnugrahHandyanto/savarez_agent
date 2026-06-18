@@ -2262,6 +2262,16 @@ def create_task(
                     ),
                 )
                 for pid in parents:
+                    # Defense-in-depth: never insert a dependency edge that
+                    # would close a cycle. A freshly-created task has no
+                    # descendants yet so this can't trip today, but it keeps
+                    # the create path at parity with link_tasks() (which
+                    # already guards) so no future caller can introduce a
+                    # cyclic / self-deadlocking graph through create_task.
+                    if _would_cycle(conn, pid, task_id):
+                        raise ValueError(
+                            f"linking {pid} -> {task_id} would create a cycle"
+                        )
                     conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
