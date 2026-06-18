@@ -19,7 +19,7 @@ import re
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, NoReturn
 from uuid import uuid4
 
 from hermes_cli.profiles import (
@@ -454,6 +454,7 @@ class RouterToolMetadata:
     llm_calls: int
     enabled_by_default: bool = True
     mutates_state: bool = False
+    requires_context: bool = False
     tool_group: str = "profile_router"
 
 
@@ -563,6 +564,42 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         description="Search text files through an opened read-only workspace.",
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
+    ),
+    "file_patch": RouterToolMetadata(
+        name="file_patch",
+        description=(
+            "Future write tool; disabled until write policy/tests exist and always "
+            "requires fresh workspace context before execution."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "file_write": RouterToolMetadata(
+        name="file_write",
+        description=(
+            "Future write tool; disabled until write policy/tests exist and always "
+            "requires fresh workspace context before execution."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
+    ),
+    "terminal_run": RouterToolMetadata(
+        name="terminal_run",
+        description=(
+            "Future terminal tool; disabled until command policy/tests exist and "
+            "always requires fresh workspace context before execution."
+        ),
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+        enabled_by_default=False,
+        mutates_state=True,
+        requires_context=True,
     ),
 }
 
@@ -1510,6 +1547,30 @@ def _tool_error(tool_name: str, exc: ProfileRouterError) -> str:
     )
 
 
+def _reject_disabled_powerful_tool_after_context(
+    tool_name: str,
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+) -> NoReturn:
+    """Require fresh context before rejecting a not-yet-exposed powerful tool.
+
+    The profile router deliberately keeps write/patch/terminal execution disabled
+    in the public MCP surface. These direct wrappers still enforce the Phase 4.5
+    ordering contract now: stale or missing SOUL/AGENTS context fails closed
+    before any future implementation could touch the filesystem or terminal.
+    """
+
+    require_fresh_workspace_context(workspace_id, context_token=context_token)
+    raise ProfileRouterError(
+        "tool_disabled",
+        (
+            f"{tool_name} is disabled until explicit no-model policy, context, "
+            "containment, audit, and focused tests are implemented"
+        ),
+    )
+
+
 def profiles_list(active_only: bool = True) -> str:
     """MCP-ready wrapper: list local profiles without invoking any model."""
 
@@ -1695,3 +1756,60 @@ def file_search(
         )
     except ProfileRouterError as exc:
         return _tool_error("file_search", exc)
+
+
+def file_patch(
+    workspace_id: str,
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+    context_token: str | None = None,
+) -> str:
+    """Disabled future wrapper: context-gated patch without execution."""
+
+    try:
+        _reject_disabled_powerful_tool_after_context(
+            "file_patch",
+            workspace_id,
+            context_token=context_token,
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("file_patch", exc)
+
+
+def file_write(
+    workspace_id: str,
+    path: str,
+    content: str,
+    context_token: str | None = None,
+) -> str:
+    """Disabled future wrapper: context-gated write without execution."""
+
+    try:
+        _reject_disabled_powerful_tool_after_context(
+            "file_write",
+            workspace_id,
+            context_token=context_token,
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("file_write", exc)
+
+
+def terminal_run(
+    workspace_id: str,
+    command: str,
+    timeout: int = 30,
+    working_directory: str = ".",
+    context_token: str | None = None,
+) -> str:
+    """Disabled future wrapper: context-gated terminal command without execution."""
+
+    try:
+        _reject_disabled_powerful_tool_after_context(
+            "terminal_run",
+            workspace_id,
+            context_token=context_token,
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("terminal_run", exc)

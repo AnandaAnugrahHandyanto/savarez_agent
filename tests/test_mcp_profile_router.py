@@ -12,8 +12,10 @@ from mcp_profile_router import (
     RouterToolMetadata,
     assert_default_tools_are_no_model,
     create_workspace_metadata,
+    file_patch,
     file_read,
     file_search,
+    file_write,
     get_router_tool_metadata,
     load_profile_router_policy,
     parse_profile_ref,
@@ -23,6 +25,7 @@ from mcp_profile_router import (
     profiles_list,
     require_fresh_workspace_context,
     resolve_workspace_path,
+    terminal_run,
     workspace_close,
     workspace_context_status,
     workspace_get,
@@ -105,7 +108,7 @@ def test_parse_profile_ref_requires_fully_qualified_ref():
 
 def test_router_tool_metadata_is_explicitly_no_model_by_default():
     metadata = get_router_tool_metadata()
-    assert set(metadata) == {
+    public_tools = {
         "profiles_list",
         "profile_get",
         "profile_health",
@@ -118,11 +121,24 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "file_read",
         "file_search",
     }
-    for tool in metadata.values():
+    disabled_power_tools = {"file_patch", "file_write", "terminal_run"}
+    assert set(metadata) == public_tools | disabled_power_tools
+
+    for name in public_tools:
+        tool = metadata[name]
         assert tool["cost_class"] == COST_CLASS_NO_MODEL
         assert tool["llm_calls"] == 0
         assert tool["enabled_by_default"] is True
         assert tool["mutates_state"] is False
+        assert tool["requires_context"] is False
+
+    for name in disabled_power_tools:
+        tool = metadata[name]
+        assert tool["cost_class"] == COST_CLASS_NO_MODEL
+        assert tool["llm_calls"] == 0
+        assert tool["enabled_by_default"] is False
+        assert tool["mutates_state"] is True
+        assert tool["requires_context"] is True
 
     assert_default_tools_are_no_model()
 
@@ -514,6 +530,75 @@ def test_workspace_context_hydration_tracks_instruction_staleness_and_blocks_pow
     assert stale_status["context_status"]["state"] == "stale"
     with pytest.raises(ProfileRouterError, match="Workspace context is stale"):
         require_fresh_workspace_context(workspace_id, context_token=token)
+
+
+def test_disabled_powerful_tool_wrappers_require_fresh_context_before_rejecting(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    agents = workspace_root / "AGENTS.md"
+    agents.write_text("# Agents\nInitial policy.\n", encoding="utf-8")
+    notes = workspace_root / "notes.md"
+    notes.write_text("alpha\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True, "write": True},
+                "terminal": {"enabled": True},
+            }
+        },
+    )
+
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    patch_without_context = json.loads(
+        file_patch(workspace_id, "notes.md", "alpha", "beta")
+    )
+    assert patch_without_context["ok"] is False
+    assert patch_without_context["error"]["code"] == "context_not_loaded"
+    assert patch_without_context["llm_calls"] == 0
+
+    hydrated = json.loads(workspace_instructions_get(workspace_id))
+    stale_token = hydrated["context"]["context_token"]
+    agents.write_text("# Agents\nChanged policy.\n", encoding="utf-8")
+
+    write_with_stale_context = json.loads(
+        file_write(workspace_id, "notes.md", "beta\n", context_token=stale_token)
+    )
+    assert write_with_stale_context["ok"] is False
+    assert write_with_stale_context["error"]["code"] == "context_stale"
+    assert notes.read_text(encoding="utf-8") == "alpha\n"
+
+    refreshed = json.loads(workspace_instructions_get(workspace_id))
+    fresh_token = refreshed["context"]["context_token"]
+    write_disabled = json.loads(
+        file_write(workspace_id, "notes.md", "beta\n", context_token=fresh_token)
+    )
+    assert write_disabled["ok"] is False
+    assert write_disabled["error"]["code"] == "tool_disabled"
+    assert write_disabled["llm_calls"] == 0
+    assert notes.read_text(encoding="utf-8") == "alpha\n"
+
+    terminal_disabled = json.loads(
+        terminal_run(
+            workspace_id,
+            "touch SHOULD_NOT_EXIST",
+            context_token=fresh_token,
+        )
+    )
+    assert terminal_disabled["ok"] is False
+    assert terminal_disabled["error"]["code"] == "tool_disabled"
+    assert terminal_disabled["llm_calls"] == 0
+    assert not (workspace_root / "SHOULD_NOT_EXIST").exists()
 
 
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):
