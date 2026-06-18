@@ -510,6 +510,9 @@ def compress_context(
         try:
             # Propagate title to the new session with auto-numbering
             old_title = agent._session_db.get_session_title(agent.session_id)
+            # Inherit the parent session's cwd so continuation sessions
+            # preserve workspace grouping in the TUI/desktop (#42228).
+            old_cwd = agent._session_db.get_session_cwd(agent.session_id)
             # Trigger memory extraction on the old session before it rotates.
             agent.commit_memory_session(messages)
             agent._session_db.end_session(agent.session_id, "compression")
@@ -545,6 +548,7 @@ def compress_context(
                 model=agent.model,
                 model_config=agent._session_init_model_config,
                 parent_session_id=old_session_id,
+                cwd=old_cwd,
             )
             agent._session_db_created = True
             # Auto-number the title for the continuation session
