@@ -34,7 +34,7 @@ def mirror_to_session(
     Append a delivery-mirror message to the target session's transcript.
 
     Finds the gateway session that matches the given platform + chat_id,
-    then writes a mirror entry to both the JSONL transcript and SQLite DB.
+    then writes a mirror entry to the SQLite session database.
 
     Returns True if mirrored successfully, False if no matching session or error.
     All errors are caught -- this is never fatal.
