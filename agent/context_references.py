@@ -420,8 +420,14 @@ def _remove_reference_tokens(message: str, refs: list[ContextReference]) -> str:
         cursor = ref.end
     pieces.append(message[cursor:])
     text = "".join(pieces)
-    text = re.sub(r"\s{2,}", " ", text)
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    # Only collapse horizontal whitespace (spaces/tabs), not newlines.
+    # Using \s would match \n and destroy paragraph breaks.
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
+    # Clean per-line: strip trailing/leading horizontal whitespace.
+    text = "\n".join(line.strip() for line in text.split("\n"))
+    # Collapse 3+ consecutive newlines down to 2 (paragraph break).
+    text = re.sub(r"(\n[ \t]*){3,}", "\n\n", text)
     return text.strip()
 
 

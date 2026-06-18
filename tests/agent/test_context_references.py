@@ -353,3 +353,62 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+
+# --- _remove_reference_tokens: paragraph preservation (issue #48484) ---
+
+
+def test_remove_reference_tokens_preserves_paragraph_breaks():
+    """Removing @file tokens must not collapse blank lines."""
+    from agent.context_references import _remove_reference_tokens, parse_context_references
+
+    msg = (
+        "Please refactor the auth module.\n\n"
+        "@file:auth.py\n\n"
+        "Make these changes:\n1. Add logging\n2. Handle timeouts\n\n"
+        "Keep the public API stable."
+    )
+    refs = parse_context_references(msg)
+    result = _remove_reference_tokens(msg, refs)
+
+    # Paragraph breaks (double newline) must survive.
+    assert "\n\n" in result
+    parts = result.split("\n\n")
+    assert len(parts) == 3
+    assert parts[0] == "Please refactor the auth module."
+    assert parts[1] == "Make these changes:\n1. Add logging\n2. Handle timeouts"
+    assert parts[2] == "Keep the public API stable."
+
+
+def test_remove_reference_tokens_collapses_excess_blank_lines():
+    """Three or more consecutive blank lines collapse to one blank line."""
+    from agent.context_references import _remove_reference_tokens, parse_context_references
+
+    msg = "Hello\n\n\n\n\nWorld"
+    refs = parse_context_references(msg)
+    result = _remove_reference_tokens(msg, refs)
+
+    assert result == "Hello\n\nWorld"
+
+
+def test_remove_reference_tokens_still_collapses_horizontal_whitespace():
+    """Runs of spaces/tabs within a line still collapse to a single space."""
+    from agent.context_references import _remove_reference_tokens, parse_context_references
+
+    msg = "Hello   world\t\tthere"
+    refs = parse_context_references(msg)
+    result = _remove_reference_tokens(msg, refs)
+
+    assert result == "Hello world there"
+
+
+def test_remove_reference_tokens_punctuation_cleanup():
+    """Space before punctuation is still stripped."""
+    from agent.context_references import _remove_reference_tokens, parse_context_references
+
+    msg = "Hello , world !"
+    refs = parse_context_references(msg)
+    result = _remove_reference_tokens(msg, refs)
+
+    assert result == "Hello, world!"
