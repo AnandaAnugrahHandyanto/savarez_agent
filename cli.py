@@ -3305,6 +3305,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pending_edit_snapshots = {}
         self._last_input_mode_recovery = 0.0
         self._input_mode_recovery_notice_shown = False
+        # Post-hoc reasoning reveal — captured on every turn, even when
+        # show_reasoning is off.  /reasoning reveal prints this.
+        self._last_reasoning = ""
         
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
@@ -7061,6 +7064,76 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _handle_apikey_command(self, cmd_original: str) -> None:
+        """Handle /apikey — hot-swap the API key for the current provider.
+
+        Usage:
+            /apikey                  — show current provider/model and masked key
+            /apikey <key>            — hotswap key for the current provider
+            /apikey --save <key>     — hotswap and persist to ~/.hermes/.env
+            /apikey --reload         — reload .env and rebuild the client
+        """
+        from hermes_cli.apikey_switch import (
+            apply_api_key_switch,
+            format_apikey_status,
+            parse_apikey_args,
+            resolve_current_key,
+            resolve_provider_key_env,
+        )
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        args, errors = parse_apikey_args(raw_args)
+        if errors:
+            for err in errors:
+                _cprint(f"  ✗ {err}")
+            return
+
+        provider = getattr(self, "provider", "") or ""
+        model = getattr(self, "model", "") or ""
+
+        if args.reload:
+            from hermes_cli.config import reload_env
+
+            reload_env()
+            new_key = resolve_current_key(provider)
+            if not new_key:
+                key_env = resolve_provider_key_env(provider)
+                _cprint(f"  No key found in {key_env}")
+                return
+            # Fall through to apply the reloaded key.
+        else:
+            new_key = args.key
+
+        # No key and not a reload: just show status.
+        if not new_key:
+            current_key = getattr(self, "api_key", "") or resolve_current_key(provider)
+            _cprint(f"  {format_apikey_status(provider, model, current_key)}")
+            return
+
+        result = apply_api_key_switch(
+            agent=getattr(self, "agent", None),
+            provider=provider,
+            model=model,
+            api_key=new_key,
+            save_to_env=args.save,
+        )
+
+        if not result.success:
+            _cprint(f"  ✗ {result.message}")
+            return
+
+        # Update CLI runtime state so the next turn doesn't revert the swap.
+        self.api_key = new_key
+        self._explicit_api_key = new_key
+        if getattr(self, "agent", None) is not None:
+            self.requested_provider = provider
+
+        _cprint(f"  ✓ API key hotswapped for {result.provider}")
+        if result.saved_to_env:
+            _cprint(f"    Saved to {result.key_env}")
+        _cprint(f"    Model: {result.model or '(unknown)'}")
+
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
 
@@ -7426,6 +7499,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "apikey":
+            self._handle_apikey_command(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
@@ -10501,6 +10576,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     else:
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
+
+            # Capture reasoning for post-hoc reveal (/reasoning reveal)
+            # even when show_reasoning is off or already shown live.
+            _reasoning_for_reveal = result.get("last_reasoning") if result else None
+            if _reasoning_for_reveal:
+                self._last_reasoning = _reasoning_for_reveal
+                if not self.show_reasoning:
+                    lines = _reasoning_for_reveal.count("\n") + 1
+                    chars = len(_reasoning_for_reveal)
+                    _cprint(f"  {_DIM}━━ Thinking: {lines} lines, {chars} chars — /reasoning reveal ━━{_RST}")
+            else:
+                self._last_reasoning = ""
 
             if response and not response_previewed:
                 # Use skin engine for label/color with fallback
