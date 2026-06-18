@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
@@ -8,6 +9,7 @@ import { useI18n } from '@/i18n'
 import {
   Activity,
   AlertCircle,
+  ChevronDown,
   Clock,
   Command,
   Hash,
@@ -17,6 +19,7 @@ import {
   Zap,
   ZapFilled
 } from '@/lib/icons'
+import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -27,11 +30,16 @@ import {
   $activeSessionId,
   $busy,
   $connection,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
   $currentUsage,
   $sessionStartedAt,
   $turnStartedAt,
   $workingSessionIds,
   $yoloActive,
+  setModelPickerOpen,
   setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
@@ -57,6 +65,7 @@ interface StatusbarItemsOptions {
   gatewayLogLines: readonly string[]
   gatewayState: string
   inferenceStatus: RuntimeReadinessResult | null
+  modelMenuContent?: ReactNode
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
   freshDraftReady: boolean
@@ -74,6 +83,7 @@ export function useStatusbarItems({
   gatewayLogLines,
   gatewayState,
   inferenceStatus,
+  modelMenuContent,
   openAgents,
   openCommandCenterSection,
   freshDraftReady,
@@ -87,6 +97,10 @@ export function useStatusbarItems({
   const terminalTakeover = useStore($terminalTakeover)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
+  const currentFastMode = useStore($currentFastMode)
+  const currentModel = useStore($currentModel)
+  const currentProvider = useStore($currentProvider)
+  const currentReasoningEffort = useStore($currentReasoningEffort)
   const currentUsage = useStore($currentUsage)
   const desktopActionTasks = useStore($desktopActionTasks)
   const previewServerRestartStatus = useStore($previewServerRestartStatus)
@@ -403,6 +417,41 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
+        id: 'model-summary',
+        label: (
+          <span className="inline-flex min-w-0 items-center gap-0.5">
+            <span className="truncate">
+              {formatModelStatusLabel(currentModel, {
+                fastLabel: t.shell.modelMenu.fast,
+                fastMode: currentFastMode,
+                mediumLabel: t.shell.modelMenu.medium,
+                noModelLabel: copy.noModel,
+                reasoningEffort: currentReasoningEffort,
+                reasoningLabels: copy.reasoningShort
+              })}
+            </span>
+            <ChevronDown className="size-2.5 shrink-0 opacity-50" />
+          </span>
+        ),
+        ...(modelMenuContent
+          ? {
+              menuAlign: 'end' as const,
+              menuClassName: 'w-64',
+              menuContent: modelMenuContent,
+              title: currentProvider
+                ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+                : copy.switchModel,
+              variant: 'menu' as const
+            }
+          : {
+              onSelect: () => setModelPickerOpen(true),
+              title: currentProvider
+                ? copy.providerModelTitle(currentProvider, currentModel || copy.noModel)
+                : copy.openModelPicker,
+              variant: 'action' as const
+            })
+      },
+      {
         className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
@@ -420,8 +469,15 @@ export function useStatusbarItems({
       contextBar,
       contextUsage,
       copy,
+      currentFastMode,
+      currentModel,
+      currentProvider,
+      currentReasoningEffort,
+      modelMenuContent,
       sessionStartedAt,
       showYoloToggle,
+      t.shell.modelMenu.fast,
+      t.shell.modelMenu.medium,
       terminalTakeover,
       toggleYolo,
       turnStartedAt,

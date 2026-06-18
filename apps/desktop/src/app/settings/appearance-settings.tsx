@@ -236,10 +236,10 @@ export function AppearanceSettings() {
                           <div className="mt-3 flex items-start justify-between gap-3 px-1">
                             <div className="min-w-0">
                               <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
-                                {theme.label}
+                                {a.themeNames?.[theme.name] ?? theme.label}
                               </div>
                               <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                                {theme.description}
+                                {a.themeDescriptions?.[theme.name] ?? theme.description}
                               </div>
                             </div>
                             {active && (
