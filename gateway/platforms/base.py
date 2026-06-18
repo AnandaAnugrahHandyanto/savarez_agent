@@ -3983,8 +3983,22 @@ class BasePlatformAdapter(ABC):
                 # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
-                    del self._session_tasks[session_key]
-                    self._release_session_guard(session_key, guard=interrupt_event)
+                    # Only clean up _session_tasks if we can also release the
+                    # guard.  When a concurrent command swapped the guard
+                    # (_active_sessions[key] is now a different Event), the
+                    # guard-match in _release_session_guard fails and the
+                    # entry survives — but _session_tasks was already deleted
+                    # below the old code, leaving _active_sessions[key]
+                    # orphaned with no detectable owner.  Keeping the
+                    # _session_tasks entry lets _session_task_is_stale()
+                    # identify the done task on the next handle_message()
+                    # entry and heal the split-brain automatically.
+                    current_guard = self._active_sessions.get(session_key)
+                    if current_guard is None or (interrupt_event is not None and current_guard is interrupt_event):
+                        del self._session_tasks[session_key]
+                        self._release_session_guard(session_key, guard=interrupt_event)
+                    # else: guard was swapped — leave _session_tasks so the
+                    # done task is visible to _session_task_is_stale().
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
