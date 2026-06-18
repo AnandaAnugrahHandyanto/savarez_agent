@@ -59,6 +59,11 @@ export interface ApiKeyOption {
   docsUrl: string
   envKey: string
   id: string
+  // Optional kind for self-hosted endpoints. When 'dynamic', the onboarding
+  // writes provider=custom_dynamic and the runtime probes GET /models live
+  // (llama-swap, Bifrost, etc.). Defaults to static for the plain 'local'
+  // option, matching the pre-existing behaviour.
+  kind?: 'static' | 'dynamic'
   name: string
   placeholder?: string
   short?: string
@@ -95,6 +100,21 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     envKey: 'OPENAI_BASE_URL',
     docsUrl: 'https://github.com/NousResearch/hermes-agent#bring-your-own-endpoint',
     placeholder: 'http://127.0.0.1:8000/v1'
+  },
+  {
+    // Sibling of "Local / custom endpoint" — same input shape, but persists
+    // provider=custom_dynamic so the runtime probes GET /models live on every
+    // open. Use when the endpoint exposes a catalog that changes (llama-swap,
+    // Bifrost, multi-tenant gateway). Sentinel envKey keeps it distinct from
+    // the static 'local' row in the de-dup map; dispatch in saveOnboardingApiKey
+    // collapses both sentinels back to the OPENAI_BASE_URL path.
+    id: 'local_dynamic',
+    name: 'Custom endpoint with live /models discovery',
+    envKey: 'OPENAI_BASE_URL__DYNAMIC',
+    kind: 'dynamic',
+    docsUrl: 'https://github.com/NousResearch/hermes-agent#bring-your-own-endpoint',
+    placeholder: 'http://127.0.0.1:8000/v1',
+    description: 'Self-hosted OpenAI-compatible endpoint with a dynamic model catalog (llama-swap, Bifrost, multi-tenant gateways).'
   }
 ]
 
@@ -698,7 +718,11 @@ export function ApiKeyForm({
     })
   }
 
-  const isLocal = option.envKey === 'OPENAI_BASE_URL'
+  // Both the static ('OPENAI_BASE_URL') and dynamic ('OPENAI_BASE_URL__DYNAMIC')
+  // self-hosted options carry a base URL plus optional API key — the dynamic
+  // variant just routes saveOnboardingApiKey down a slightly different writer
+  // (provider=custom_dynamic instead of custom).
+  const isLocal = option.envKey === 'OPENAI_BASE_URL' || option.envKey === 'OPENAI_BASE_URL__DYNAMIC'
   const alreadySet = isSet?.(option.envKey) ?? false
   // When set, surface the backend's redacted value (e.g. "sk-12…wxyz") as the
   // placeholder so users can eyeball that the right key is in place.

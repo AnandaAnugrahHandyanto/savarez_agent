@@ -240,6 +240,11 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+  /** Optional kind discriminator for `custom_providers` entries.
+   *  - "dynamic": live `/models` discovery (llama-swap, Bifrost, local Ollama)
+   *  - "static":  pinned `models:` list (ollama.com narrowing)
+   *  - undefined: legacy entry without explicit kind — heuristic fallback */
+  kind?: 'static' | 'dynamic'
 }
 
 export interface ModelCapabilities {

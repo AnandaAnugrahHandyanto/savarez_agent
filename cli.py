@@ -6797,6 +6797,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # For custom / custom_dynamic targets, also persist the resolved
+            # base_url so the next session can route through the same endpoint
+            # without relying on stale config bookkeeping (design §4.1).
+            if (result.target_provider or "").strip().lower() in {
+                "custom",
+                "custom_dynamic",
+            } and result.base_url:
+                save_config_value("model.base_url", result.base_url)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -7057,6 +7065,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # For custom / custom_dynamic targets, also persist the resolved
+            # base_url so the next session can route through the same endpoint
+            # without relying on stale config bookkeeping (design §4.1).
+            if (result.target_provider or "").strip().lower() in {
+                "custom",
+                "custom_dynamic",
+            } and result.base_url:
+                save_config_value("model.base_url", result.base_url)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")

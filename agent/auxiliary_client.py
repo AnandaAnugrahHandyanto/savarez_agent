@@ -3290,8 +3290,17 @@ def _resolve_auto(
         resolved_provider = main_provider
         explicit_base_url = runtime_base_url or None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
-            resolved_provider = "custom"
+        if runtime_base_url and (
+            main_provider in {"custom", "custom_dynamic"}
+            or main_provider.startswith("custom:")
+            or main_provider.startswith("custom_dynamic:")
+        ):
+            resolved_provider = (
+                "custom_dynamic"
+                if main_provider == "custom_dynamic"
+                or main_provider.startswith("custom_dynamic:")
+                else "custom"
+            )
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
         elif runtime_api_key:
@@ -3678,7 +3687,7 @@ def resolve_provider_client(
                 else (client, final_model))
 
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
-    if provider == "custom":
+    if provider in {"custom", "custom_dynamic"}:
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
@@ -4204,7 +4213,7 @@ def _resolve_strict_vision_backend(
         return resolve_provider_client("openai-codex", model, is_vision=True)
     if provider == "anthropic":
         return _try_anthropic()
-    if provider == "custom":
+    if provider in {"custom", "custom_dynamic"}:
         return _try_custom_endpoint()
     return None, None
 
@@ -5097,7 +5106,7 @@ def _build_call_kwargs(
         # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
         # there.
         _effective_base = base_url or (
-            _current_custom_base_url() if provider == "custom" else ""
+            _current_custom_base_url() if provider in {"custom", "custom_dynamic"} else ""
         )
         if _is_anthropic_compat_endpoint(provider, _effective_base):
             kwargs["max_tokens"] = max_tokens

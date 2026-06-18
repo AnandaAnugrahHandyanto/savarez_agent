@@ -34,6 +34,7 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
+    ("anthropic/claude-fable-5",               ""),
     ("anthropic/claude-opus-4.8",              ""),
     ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
     ("anthropic/claude-sonnet-4.6",            ""),
@@ -57,7 +58,6 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
     ("moonshotai/kimi-k2.6",                   "recommended"),
-    ("moonshotai/kimi-k2.7-code",              ""),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
@@ -175,6 +175,7 @@ def _xai_curated_models() -> list[str]:
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5",
         "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-haiku-4.5",
@@ -197,7 +198,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
         "moonshotai/kimi-k2.6",
-        "moonshotai/kimi-k2.7-code",
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
@@ -1061,6 +1061,13 @@ try:
             continue
         if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot"}:
             continue  # non-api-key flows need bespoke picker UX; skip auto-inject
+        if _pp.name == "custom_dynamic":
+            # Surfaced as a dedicated trailing action in the `hermes model` /
+            # setup wizard pickers (right after "Custom endpoint (enter URL
+            # manually)"), not as a canonical row. Keeps the auto-injected
+            # ``custom`` row untouched while still letting plugins/-discovery
+            # register the profile for runtime use.
+            continue
         _label = _pp.display_name or _pp.name
         _desc = _pp.description or f"{_label} (direct API)"
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _desc))
@@ -1071,6 +1078,7 @@ except Exception:
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+_PROVIDER_LABELS["custom_dynamic"] = "Custom (dynamic)"  # endpoint with live /models discovery
 
 
 # ---------------------------------------------------------------------------
@@ -1627,7 +1635,7 @@ def _fetch_novita_pricing(
 _KNOWN_PROVIDER_NAMES: set[str] = (
     set(_PROVIDER_LABELS.keys())
     | set(_PROVIDER_ALIASES.keys())
-    | {"openrouter", "custom"}
+    | {"openrouter", "custom", "custom_dynamic"}
 )
 
 
@@ -1641,7 +1649,7 @@ def list_available_providers() -> list[dict[str, str]]:
     source of truth shared with ``hermes model``, ``/model``, etc.).
     """
     # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
+    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom", "custom_dynamic"]
 
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -1656,7 +1664,7 @@ def list_available_providers() -> list[dict[str, str]]:
         has_creds = False
         try:
             from hermes_cli.auth import get_auth_status, has_usable_secret
-            if pid == "custom":
+            if pid in {"custom", "custom_dynamic"}:
                 custom_base_url = _get_custom_base_url() or ""
                 has_creds = bool(custom_base_url.strip())
             elif pid == "openrouter":
@@ -1701,12 +1709,12 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
             # Support custom:name:model triple syntax for named custom
             # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
             # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
-            if provider_part == "custom" and ":" in model_part:
+            if provider_part in {"custom", "custom_dynamic"} and ":" in model_part:
                 second_colon = model_part.find(":")
                 custom_name = model_part[:second_colon].strip()
                 actual_model = model_part[second_colon + 1:].strip()
                 if custom_name and actual_model:
-                    return (f"custom:{custom_name}", actual_model)
+                    return (f"{provider_part}:{custom_name}", actual_model)
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 
@@ -1864,7 +1872,7 @@ def detect_static_provider_for_model(
     # Skip "custom" and "openrouter" — custom has no model catalog, and
     # openrouter requires an explicit model name to be useful.
     resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
-    if resolved_provider not in {"custom", "openrouter"}:
+    if resolved_provider not in {"custom", "custom_dynamic", "openrouter"}:
         default_models = _PROVIDER_MODELS.get(resolved_provider, [])
         if (
             resolved_provider in _PROVIDER_LABELS
@@ -2342,7 +2350,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
         except Exception:
             pass
-    if normalized == "custom":
+    if normalized in {"custom", "custom_dynamic"}:
         base_url = _get_custom_base_url()
         if base_url:
             model_cfg = _get_model_config_dict()
@@ -3680,7 +3688,11 @@ def validate_requested_model(
             "message": f"Model `{requested}` was not found in LM Studio's model listing.",
         }
 
-    if normalized == "custom" or normalized.startswith("custom:"):
+    if (
+        normalized in {"custom", "custom_dynamic"}
+        or normalized.startswith("custom:")
+        or normalized.startswith("custom_dynamic:")
+    ):
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
             probe = probe_api_models(api_key, base_url, api_mode=api_mode)

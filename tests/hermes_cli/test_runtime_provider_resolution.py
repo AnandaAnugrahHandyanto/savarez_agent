@@ -676,6 +676,50 @@ def test_bare_custom_does_not_trust_non_loopback_when_provider_not_custom(monkey
     assert "remote.example.com" not in resolved["base_url"]
 
 
+def test_bare_custom_skips_pool_entry_with_empty_base_url(monkeypatch):
+    """A poisoned `custom` pool entry (empty base_url, e.g. a stale manual row
+    from a partial auth flow) must not hijack resolution. Bare `provider:
+    custom` should fall through to the config base_url path instead of
+    returning an empty base_url. Regression for the "Provider resolver
+    returned an empty base URL" report (2026-06-13)."""
+
+    class _Entry:
+        access_token = "poison-token"
+        runtime_api_key = "poison-token"
+        source = "manual"
+        base_url = ""
+        runtime_base_url = None
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://10.71.71.82:8081/v1",
+            "api_key": "config-key",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://10.71.71.82:8081/v1"
+    assert resolved["api_key"] != "poison-token"
+    assert resolved["base_url"], "base_url must not be empty"
+
+
 def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -2775,3 +2819,114 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+# ---------------------------------------------------------------------------
+# custom_dynamic provider — first-class provider id sharing the custom path
+# ---------------------------------------------------------------------------
+
+
+def test_custom_dynamic_resolves_with_base_url(monkeypatch):
+    """`provider: custom_dynamic` with a trustworthy config base_url must
+    resolve through the bare-custom path and surface as the `custom_dynamic`
+    provider id (not relabelled to `custom` or `openrouter`)."""
+
+    class _Pool:
+        def has_credentials(self):
+            return False
+
+        def select(self):
+            return None
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom_dynamic")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom_dynamic",
+            "base_url": "http://127.0.0.1:8081/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom_dynamic")
+
+    assert resolved["provider"] == "custom_dynamic"
+    assert resolved["base_url"] == "http://127.0.0.1:8081/v1"
+
+
+def test_custom_dynamic_skips_pool_entry_with_empty_base_url(monkeypatch):
+    """Mirror of test_bare_custom_skips_pool_entry_with_empty_base_url for
+    custom_dynamic — a poison pool entry must not hijack resolution."""
+
+    class _Entry:
+        access_token = "poison-token"
+        runtime_api_key = "poison-token"
+        source = "manual"
+        base_url = ""
+        runtime_base_url = None
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom_dynamic")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom_dynamic",
+            "base_url": "http://127.0.0.1:8081/v1",
+            "api_key": "config-key",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom_dynamic")
+
+    assert resolved["provider"] == "custom_dynamic"
+    assert resolved["base_url"] == "http://127.0.0.1:8081/v1"
+    assert resolved["api_key"] != "poison-token"
+    assert resolved["base_url"], "base_url must not be empty"
+
+
+def test_custom_dynamic_falls_through_to_openrouter_path(monkeypatch):
+    """Without any config base_url, custom_dynamic without a named entry
+    falls into the same shared openrouter/custom resolver path; the
+    provider id stays `custom_dynamic` rather than being relabelled to
+    `custom` or `openrouter`."""
+
+    class _Pool:
+        def has_credentials(self):
+            return False
+
+        def select(self):
+            return None
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom_dynamic")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom_dynamic",
+            "base_url": "http://127.0.0.1:9090/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom_dynamic")
+
+    assert resolved["provider"] == "custom_dynamic"
+    assert "openrouter" not in (resolved.get("base_url") or "").lower()

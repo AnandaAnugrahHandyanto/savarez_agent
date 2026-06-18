@@ -461,7 +461,7 @@ try:
         # openrouter/custom are aggregator/user-supplied and handled outside
         # the registry — adding them here breaks runtime_provider resolution
         # that relies on `openrouter not in PROVIDER_REGISTRY`).
-        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom", "custom_dynamic"}:
             continue
         _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
         _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
@@ -1559,6 +1559,8 @@ def resolve_provider(
         return "openrouter"
     if normalized == "custom":
         return "custom"
+    if normalized == "custom_dynamic":
+        return "custom_dynamic"
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":

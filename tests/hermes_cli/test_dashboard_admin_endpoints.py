@@ -161,6 +161,35 @@ class TestCredentialPoolEndpoints:
         )
         assert r.status_code == 400
 
+    def test_bare_custom_provider_rejected_without_base_url(self):
+        """Bare `custom` has no registry inference_base_url. Writing such an
+        entry with `base_url=""` produces the poison row that hijacks bare
+        `provider: custom` resolution and surfaces as
+        `Provider resolver returned an empty base URL` downstream. Refuse
+        rather than persist it. Regression for the 2026-06-13 root-cause."""
+        r = self.client.post(
+            "/api/credentials/pool",
+            json={"provider": "custom", "api_key": "whatever"},
+        )
+        assert r.status_code == 400
+        assert "custom_providers" in r.json()["detail"]
+
+    def test_alias_provider_inherits_canonical_base_url(self):
+        """`google` is an alias for `gemini`; the entry must inherit
+        gemini's inference_base_url so it is not written with an empty
+        base_url (same poison shape as bare `custom`)."""
+        r = self.client.post(
+            "/api/credentials/pool",
+            json={"provider": "google", "api_key": "AQ.test-key"},
+        )
+        assert r.status_code == 200
+
+        from agent.credential_pool import load_pool
+
+        raw = load_pool("google").entries()
+        assert raw[0].base_url, "base_url must not be empty for alias providers"
+        assert "googleapis.com" in raw[0].base_url
+
 
 class TestMemoryEndpoints:
     @pytest.fixture(autouse=True)
@@ -1083,3 +1112,47 @@ class TestToolsConfigEndpoints:
                 kwargs["json"] = payload
             r = fn(path, **kwargs)
             assert r.status_code == 401, f"{method} {path} not gated"
+
+
+class TestCustomDynamicCredentialPool:
+    """Dashboard /api/credentials/pool acceptance for the custom_dynamic provider id."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_credential_pool_accepts_custom_dynamic(self):
+        """`custom_dynamic` is a first-class provider id — the pool endpoint
+        must accept it as long as a non-empty base_url is provided."""
+        r = self.client.post(
+            "/api/credentials/pool",
+            json={
+                "provider": "custom_dynamic",
+                "api_key": "sk-cd-test",
+                "base_url": "http://127.0.0.1:8081/v1",
+                "label": "local-llama-swap",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["provider"] == "custom_dynamic"
+
+        from agent.credential_pool import load_pool
+
+        raw = load_pool("custom_dynamic").entries()
+        assert any(e.access_token == "sk-cd-test" for e in raw)
+        assert all(
+            (e.base_url or "").startswith("http://127.0.0.1:8081")
+            for e in raw
+            if e.access_token == "sk-cd-test"
+        )
+
+    def test_credential_pool_rejects_custom_dynamic_without_base_url(self):
+        """`custom_dynamic` shares the bare-`custom` rule: no registry
+        inference_base_url, so a base_url MUST be supplied. Refuse rather
+        than persist a poison row with an empty base_url."""
+        r = self.client.post(
+            "/api/credentials/pool",
+            json={"provider": "custom_dynamic", "api_key": "sk-no-url"},
+        )
+        assert r.status_code == 400
+        assert "base_url" in r.json()["detail"].lower()

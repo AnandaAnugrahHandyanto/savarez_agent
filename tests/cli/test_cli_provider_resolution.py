@@ -535,7 +535,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: saved_env.__setitem__(key, value))
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_env.__setitem__("MODEL", model))
     monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: None)  # accepts kind= kwarg
     monkeypatch.setattr(
         "hermes_cli.models.probe_api_models",
         lambda api_key, base_url: {
@@ -553,9 +553,11 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
 
     # After the probe detects a single model ("llm"), the flow asks
-    # "Use this model? [Y/n]:" — confirm with Enter, then context length,
-    # then display name. The api_mode prompt also runs before model selection.
-    answers = iter(["http://localhost:8000", "local-key", "", "", "", "", ""])
+    # "Use this model? [Y/n]:" — confirm with Enter, then prompts for
+    # endpoint kind (single-model branch defaults static), then context
+    # length, then display name. The api_mode prompt also runs before
+    # model selection.
+    answers = iter(["http://localhost:8000", "local-key", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": next(answers))
 
@@ -593,7 +595,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
     monkeypatch.setattr(
         "hermes_cli.main._save_custom_provider",
-        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None: captured_provider.update(
+        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None, kind=None, **_: captured_provider.update(
             {
                 "base_url": base_url,
                 "api_key": api_key,
@@ -601,6 +603,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
                 "context_length": context_length,
                 "name": name,
                 "api_mode": api_mode,
+                "kind": kind,
             }
         ),
     )
@@ -624,6 +627,118 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     assert saved_cfg["model"]["api_key"] == "test-key"
     assert saved_cfg["model"]["api_mode"] == "codex_responses"
     assert captured_provider["api_mode"] == "codex_responses"
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard: kind selection branches (design doc §3 / §5.1).
+# Verifies probe-and-prompt picks the right default kind for each branch:
+#   ≥2 models → dynamic; 1 model → static; 0/fail → static + warning.
+# ---------------------------------------------------------------------------
+
+
+def _mock_custom_flow_deps(monkeypatch, saved_cfg, captured, *, probe_models):
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: saved_cfg)
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config",
+        lambda cfg: saved_cfg.update(cfg),
+    )
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_custom_api_mode_selection",
+        lambda *a, **kw: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.main._save_custom_provider",
+        lambda *args, **kwargs: captured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": list(probe_models),
+            "probed_url": f"{base_url}/models",
+            "resolved_base_url": None,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.secret_prompt.masked_secret_prompt",
+        lambda _prompt="": "test-key",
+    )
+
+
+def test_model_flow_custom_defaults_dynamic_when_probe_returns_multiple_models(monkeypatch):
+    saved_cfg = {"model": {}}
+    captured = {}
+    _mock_custom_flow_deps(
+        monkeypatch, saved_cfg, captured,
+        probe_models=["model-a", "model-b", "model-c"],
+    )
+
+    # Inputs (input() only — masked prompt is mocked):
+    #   1. base_url
+    #   2. kind_choice for ≥2 branch (Enter → default D=dynamic)
+    #   3. default model pick (Enter → first detected model)
+    #   4. context_length (blank)
+    #   5. display_name (blank)
+    answers = iter(["https://example.com/v1", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    hermes_main._model_flow_custom({})
+
+    assert saved_cfg["model"]["provider"] == "custom_dynamic"
+    assert saved_cfg["model"]["base_url"] == "https://example.com/v1"
+    assert captured.get("kind") == "dynamic"
+
+
+def test_model_flow_custom_defaults_static_when_probe_returns_single_model(monkeypatch):
+    saved_cfg = {"model": {}}
+    captured = {}
+    _mock_custom_flow_deps(
+        monkeypatch, saved_cfg, captured,
+        probe_models=["only-model"],
+    )
+
+    # Inputs:
+    #   1. base_url
+    #   2. confirm-use-detected "Y" (Enter)
+    #   3. kind_choice for single-model branch (Enter → default S=static)
+    #   4. context_length (blank)
+    #   5. display_name (blank)
+    answers = iter(["https://example.com/v1", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    hermes_main._model_flow_custom({})
+
+    assert saved_cfg["model"]["provider"] == "custom"
+    assert captured.get("kind") == "static"
+
+
+def test_model_flow_custom_defaults_static_when_probe_returns_no_models(monkeypatch, capsys):
+    saved_cfg = {"model": {}}
+    captured = {}
+    _mock_custom_flow_deps(
+        monkeypatch, saved_cfg, captured,
+        probe_models=[],
+    )
+
+    # Inputs:
+    #   1. base_url
+    #   2. manual model name (probe yielded nothing)
+    #   3. context_length (blank)
+    #   4. display_name (blank)
+    answers = iter(["https://example.com/v1", "manual-model", "", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    hermes_main._model_flow_custom({})
+    output = capsys.readouterr().out
+
+    assert "Could not detect any models" in output
+    assert saved_cfg["model"]["provider"] == "custom"
+    assert captured.get("kind") == "static"
 
 
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):

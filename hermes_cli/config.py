@@ -3925,7 +3925,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body",
+        "discover_models", "extra_body", "kind",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4020,6 +4020,12 @@ def _normalize_custom_provider_entry(
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
 
+    kind = entry.get("kind")
+    if isinstance(kind, str):
+        kind_norm = kind.strip().lower()
+        if kind_norm in {"static", "dynamic"}:
+            normalized["kind"] = kind_norm
+
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
@@ -4051,6 +4057,7 @@ def _custom_provider_entry_to_provider_config(
         "rate_limit_delay",
         "discover_models",
         "extra_body",
+        "kind",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]
@@ -4255,6 +4262,13 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",
+    # kind: optional "static" | "dynamic". When present, controls live /models
+    # probing explicitly; when absent, the existing heuristic in
+    # model_switch.list_authenticated_providers still applies (see
+    # `_user_curated_models` flag). This preserves backwards compat for entries
+    # written by older Hermes versions.
+    "kind",
+    "discover_models",
 }
 
 # Fields that look like they should be inside custom_providers, not at root

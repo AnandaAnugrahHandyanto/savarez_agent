@@ -800,8 +800,9 @@ def run_doctor(args):
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
-                or provider_policy_id == "custom"
+                or provider_policy_id in {"custom", "custom_dynamic"}
                 or provider_policy_id.startswith("custom:")
+                or provider_policy_id.startswith("custom_dynamic:")
             )
             if (
                 default_model

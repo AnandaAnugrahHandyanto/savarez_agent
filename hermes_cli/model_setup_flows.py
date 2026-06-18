@@ -705,11 +705,18 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
     else:
         print("No change.")
 
-def _model_flow_custom(config):
+def _model_flow_custom(config, *, force_kind: str = ""):
     """Custom endpoint: collect URL, API key, and model name.
 
     Automatically saves the endpoint to ``custom_providers`` in config.yaml
     so it appears in the provider menu on subsequent runs.
+
+    ``force_kind`` ("static" | "dynamic" | ""): when the caller already
+    knows the intended kind (e.g. user picked the dedicated "Custom
+    (dynamic)" menu row), skip the in-flow kind-choice prompt and write
+    that kind directly. Empty string preserves the §3 probe-and-prompt
+    behaviour for the unspecified "Custom endpoint (enter URL manually)"
+    entry-point.
     """
     from hermes_cli.main import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
@@ -818,9 +825,17 @@ def _model_flow_custom(config):
     else:
         print("  API mode: auto-detect")
 
-    # Select model — use probe results when available, fall back to manual input
+    # Select model — use probe results when available, fall back to manual input.
+    # Also decide static vs dynamic kind for the new custom_providers entry:
+    #   - probe returns ≥2 models → default dynamic (endpoint exposes a catalog)
+    #   - probe returns 1 model  → default static  (single-model endpoint)
+    #   - probe failed / 0 models → default static + warning (offline-now is OK)
     model_name = ""
     detected_models = probe.get("models") or []
+    forced_kind = (force_kind or "").strip().lower()
+    if forced_kind not in {"static", "dynamic"}:
+        forced_kind = ""
+    selected_kind = forced_kind or "static"
     try:
         if len(detected_models) == 1:
             print(f"  Detected model: {detected_models[0]}")
@@ -829,19 +844,73 @@ def _model_flow_custom(config):
                 model_name = detected_models[0]
             else:
                 model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+            if forced_kind:
+                # Caller already committed to a kind (e.g. user entered via the
+                # dedicated "Custom (dynamic)" menu row) — don't re-ask.
+                selected_kind = forced_kind
+            else:
+                # Single model: default static. Offer dynamic as opt-in for endpoints
+                # that may grow their model list later.
+                kind_choice = input(
+                    "  Endpoint type — [S]tatic (this model only) or "
+                    "[D]ynamic (refresh /models live)? [S/d]: "
+                ).strip().lower()
+                selected_kind = "dynamic" if kind_choice in {"d", "dynamic"} else "static"
         elif len(detected_models) > 1:
-            print("  Available models:")
-            for i, m in enumerate(detected_models, 1):
-                print(f"    {i}. {m}")
-            pick = input(
-                f"  Select model [1-{len(detected_models)}] or type name: "
-            ).strip()
-            if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
-                model_name = detected_models[int(pick) - 1]
-            elif pick:
-                model_name = pick
+            print(f"  Detected {len(detected_models)} models from /models.")
+            if forced_kind:
+                selected_kind = forced_kind
+            else:
+                kind_choice = input(
+                    "  Endpoint type — [D]ynamic (use all models, refresh live; recommended) "
+                    "or [S]tatic (pin a subset)? [D/s]: "
+                ).strip().lower()
+                selected_kind = "static" if kind_choice in {"s", "static"} else "dynamic"
+            if selected_kind == "dynamic":
+                # Dynamic: pick a default model only (the catalog comes from
+                # live /models at runtime). Skip the numeric subset prompt.
+                print("  Available models (first up to 10):")
+                for i, m in enumerate(detected_models[:10], 1):
+                    print(f"    {i}. {m}")
+                pick = input(
+                    f"  Default model [1-{min(len(detected_models), 10)}] or type name "
+                    f"[Enter for {detected_models[0]}]: "
+                ).strip()
+                if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
+                    model_name = detected_models[int(pick) - 1]
+                elif pick:
+                    model_name = pick
+                else:
+                    model_name = detected_models[0]
+            else:
+                print("  Available models:")
+                for i, m in enumerate(detected_models, 1):
+                    print(f"    {i}. {m}")
+                pick = input(
+                    f"  Select model [1-{len(detected_models)}] or type name: "
+                ).strip()
+                if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
+                    model_name = detected_models[int(pick) - 1]
+                elif pick:
+                    model_name = pick
         else:
+            # Probe failed or returned no models — default to static and warn,
+            # unless the caller forced a kind (then keep it; user explicitly
+            # asked for dynamic even though we couldn't confirm /models).
+            if forced_kind == "dynamic":
+                print(
+                    "  Could not reach /models yet — saving as dynamic anyway "
+                    "since you picked the dynamic entry. The catalog will "
+                    "populate once the endpoint comes online."
+                )
+            else:
+                print(
+                    "  Could not detect any models from /models — saving as static. "
+                    "Re-run `hermes model` after the endpoint exposes models to "
+                    "switch to dynamic."
+                )
             model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+            selected_kind = forced_kind or "static"
 
         context_length_str = input(
             "Context length in tokens [leave blank for auto-detect]: "
@@ -877,7 +946,7 @@ def _model_flow_custom(config):
         if not isinstance(model, dict):
             model = {"default": model} if model else {}
             cfg["model"] = model
-        model["provider"] = "custom"
+        model["provider"] = "custom_dynamic" if selected_kind == "dynamic" else "custom"
         model["base_url"] = effective_url
         if effective_key:
             model["api_key"] = effective_key
@@ -903,7 +972,7 @@ def _model_flow_custom(config):
         _caller_model = config.get("model")
         if not isinstance(_caller_model, dict):
             _caller_model = {"default": _caller_model} if _caller_model else {}
-        _caller_model["provider"] = "custom"
+        _caller_model["provider"] = "custom_dynamic" if selected_kind == "dynamic" else "custom"
         _caller_model["base_url"] = effective_url
         if effective_key:
             _caller_model["api_key"] = effective_key
@@ -914,7 +983,9 @@ def _model_flow_custom(config):
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
-    # Auto-save to custom_providers so it appears in the menu next time
+    # Auto-save to custom_providers so it appears in the menu next time.
+    # Setup wizard always writes an explicit kind so new entries never fall
+    # into the heuristic backwards-compat path (design §3, §4.1).
     _save_custom_provider(
         effective_url,
         effective_key,
@@ -922,6 +993,7 @@ def _model_flow_custom(config):
         context_length=context_length,
         name=display_name,
         api_mode=api_mode,
+        kind=selected_kind,
     )
 
 def _model_flow_azure_foundry(config, current_model=""):

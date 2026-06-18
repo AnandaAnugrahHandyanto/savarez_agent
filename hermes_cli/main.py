@@ -2246,18 +2246,6 @@ def cmd_chat(args):
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
-    # --safe-mode: troubleshooting mode that disables ALL customizations.
-    # Inspired by Claude Code v2.1.169's --safe-mode (June 2026): run with a
-    # pristine environment to isolate whether a problem comes from the user's
-    # setup (config, rules files, plugins, MCP servers) or from Hermes itself.
-    # Implemented as a superset of --ignore-user-config + --ignore-rules plus
-    # plugin/MCP discovery suppression (HERMES_SAFE_MODE is checked by
-    # hermes_cli/plugins.py and tools/mcp_tool.py).
-    if getattr(args, "safe_mode", False):
-        os.environ["HERMES_SAFE_MODE"] = "1"
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-        os.environ["HERMES_IGNORE_RULES"] = "1"
-
     # --ignore-user-config: make load_cli_config() / load_config() skip the
     # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
     # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
@@ -2315,8 +2303,8 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
-        "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
-        "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
+        "ignore_rules": getattr(args, "ignore_rules", False),
+        "ignore_user_config": getattr(args, "ignore_user_config", False),
         "compact": getattr(args, "compact", False),
     }
     # Filter out None values
@@ -2933,6 +2921,11 @@ def select_provider_and_model(args=None):
             ordered.append((key, label, []))
 
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
+    ordered.append((
+        "custom_dynamic",
+        "Custom endpoint with live /models discovery (dynamic catalog)",
+        [],
+    ))
     _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(
         config.get("custom_providers")
     )
@@ -2998,10 +2991,19 @@ def select_provider_and_model(args=None):
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
-    elif selected_provider == "custom":
-        _model_flow_custom(config)
+    elif selected_provider in {"custom", "custom_dynamic"}:
+        # User picked the dedicated dynamic row → wizard skips the
+        # static-vs-dynamic prompt and writes kind: dynamic directly.
+        # The generic "Custom endpoint (enter URL manually)" row still
+        # routes through here with selected_provider == "custom" and
+        # falls back to the design §3 probe-and-prompt flow.
+        _model_flow_custom(
+            config,
+            force_kind="dynamic" if selected_provider == "custom_dynamic" else "",
+        )
     elif (
         selected_provider.startswith("custom:")
+        or selected_provider.startswith("custom_dynamic:")
         or selected_provider in _custom_provider_map
     ):
         provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
@@ -3054,9 +3056,13 @@ def select_provider_and_model(args=None):
     # clients that use provider:auto. Clear it proactively.  (#5161)
     if selected_provider not in {
         "custom",
+        "custom_dynamic",
         "cancel",
         "remove-custom",
-    } and not selected_provider.startswith("custom:"):
+    } and not (
+        selected_provider.startswith("custom:")
+        or selected_provider.startswith("custom_dynamic:")
+    ):
         _clear_stale_openai_base_url()
 
 
@@ -3077,7 +3083,7 @@ def _clear_stale_openai_base_url():
     else:
         provider = ""
 
-    if provider == "custom" or not provider:
+    if provider in {"custom", "custom_dynamic"} or not provider:
         return  # custom provider legitimately uses OPENAI_BASE_URL
 
     stale_url = get_env_value("OPENAI_BASE_URL")
@@ -3644,13 +3650,19 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
 
 
 def _save_custom_provider(
-    base_url, api_key="", model="", context_length=None, name=None, api_mode=None
+    base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
+    kind=None,
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
     Deduplicates by base_url — if the URL already exists, updates the
     model name, context_length, and api_mode but doesn't add a duplicate entry.
     Uses *name* when provided, otherwise auto-generates from the URL.
+
+    ``kind`` may be "static" / "dynamic" (or None to leave the field absent —
+    which preserves the existing _user_curated_models heuristic for legacy
+    entries). Setup wizard callers should always pass an explicit kind so new
+    entries never rely on heuristic fallback.
     """
     from hermes_cli.config import load_config, save_config
 
@@ -3658,6 +3670,12 @@ def _save_custom_provider(
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []
+
+    kind_norm = ""
+    if isinstance(kind, str):
+        kind_norm = kind.strip().lower()
+        if kind_norm not in {"static", "dynamic"}:
+            kind_norm = ""
 
     # Check if this URL is already saved — update model/context_length if so
     for entry in providers:
@@ -3682,6 +3700,9 @@ def _save_custom_provider(
             elif "api_mode" in entry:
                 entry.pop("api_mode", None)
                 changed = True
+            if kind_norm and entry.get("kind") != kind_norm:
+                entry["kind"] = kind_norm
+                changed = True
             if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
@@ -3698,6 +3719,8 @@ def _save_custom_provider(
         entry["model"] = model
     if api_mode:
         entry["api_mode"] = api_mode
+    if kind_norm:
+        entry["kind"] = kind_norm
     if model and context_length:
         entry["models"] = {model: {"context_length": context_length}}
 

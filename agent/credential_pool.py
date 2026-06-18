@@ -113,9 +113,20 @@ EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
-# Custom endpoints all share provider='custom' but are keyed by their
-# custom_providers name: 'custom:<normalized_name>'.
+# Custom endpoints all share provider='custom' (or 'custom_dynamic' for
+# kind: dynamic entries) but are keyed by their custom_providers name:
+# 'custom:<normalized_name>' or 'custom_dynamic:<normalized_name>'.
 CUSTOM_POOL_PREFIX = "custom:"
+CUSTOM_DYNAMIC_POOL_PREFIX = "custom_dynamic:"
+
+
+def _custom_pool_prefix_for_entry(entry: Optional[Dict[str, Any]]) -> str:
+    """Return the pool-key prefix that matches an entry's ``kind`` field."""
+    if isinstance(entry, dict):
+        kind = str(entry.get("kind") or "").strip().lower()
+        if kind == "dynamic":
+            return CUSTOM_DYNAMIC_POOL_PREFIX
+    return CUSTOM_POOL_PREFIX
 
 
 # Fields that are only round-tripped through JSON — never used for logic as attributes.
@@ -376,7 +387,9 @@ def _iter_custom_providers(config: Optional[dict] = None):
 
 
 def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
-    """Look up the custom_providers list in config.yaml and return 'custom:<name>' for a matching base_url.
+    """Look up the custom_providers list in config.yaml and return
+    'custom:<name>' (or 'custom_dynamic:<name>' for kind: dynamic entries)
+    for a matching base_url.
 
     When provider_name is given, prefer matching by name first (solving the case where
     multiple custom providers share the same base_url but have different API keys).
@@ -395,32 +408,39 @@ def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optiona
         normalized_name = _normalize_custom_pool_name(provider_name)
         for norm_name, entry in _iter_custom_providers():
             if norm_name == normalized_name:
-                return f"{CUSTOM_POOL_PREFIX}{norm_name}"
+                return f"{_custom_pool_prefix_for_entry(entry)}{norm_name}"
 
     # Fall back to base_url matching (original behavior)
     for norm_name, entry in _iter_custom_providers():
         entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
         if entry_url and entry_url == normalized_url:
-            return f"{CUSTOM_POOL_PREFIX}{norm_name}"
+            return f"{_custom_pool_prefix_for_entry(entry)}{norm_name}"
     return None
 
 
 def list_custom_pool_providers() -> List[str]:
-    """Return all 'custom:*' pool keys that have entries in auth.json."""
+    """Return all 'custom:*' / 'custom_dynamic:*' pool keys that have entries in auth.json."""
     pool_data = read_credential_pool(None)
     return sorted(
         key for key in pool_data
-        if key.startswith(CUSTOM_POOL_PREFIX)
+        if (
+            key.startswith(CUSTOM_POOL_PREFIX)
+            or key.startswith(CUSTOM_DYNAMIC_POOL_PREFIX)
+        )
         and isinstance(pool_data.get(key), list)
         and pool_data[key]
     )
 
 
 def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
-    """Return the custom_providers config entry matching a pool key like 'custom:together.ai'."""
-    if not pool_key.startswith(CUSTOM_POOL_PREFIX):
+    """Return the custom_providers config entry matching a pool key like
+    'custom:together.ai' or 'custom_dynamic:hanyu-b760'."""
+    if pool_key.startswith(CUSTOM_DYNAMIC_POOL_PREFIX):
+        suffix = pool_key[len(CUSTOM_DYNAMIC_POOL_PREFIX):]
+    elif pool_key.startswith(CUSTOM_POOL_PREFIX):
+        suffix = pool_key[len(CUSTOM_POOL_PREFIX):]
+    else:
         return None
-    suffix = pool_key[len(CUSTOM_POOL_PREFIX):]
     for norm_name, entry in _iter_custom_providers():
         if norm_name == suffix:
             return entry
@@ -2129,7 +2149,7 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                 if isinstance(v, str) and v.strip():
                     model_api_key = v.strip()
                     break
-            if model_provider == "custom" and model_base_url and model_api_key:
+            if model_provider in {"custom", "custom_dynamic"} and model_base_url and model_api_key:
                 # Check if this model's base_url matches our custom provider
                 matched_key = get_custom_provider_pool_key(model_base_url)
                 if matched_key == pool_key:
@@ -2164,7 +2184,10 @@ def load_pool(provider: str) -> CredentialPool:
     )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
 
-    if provider.startswith(CUSTOM_POOL_PREFIX):
+    if (
+        provider.startswith(CUSTOM_POOL_PREFIX)
+        or provider.startswith(CUSTOM_DYNAMIC_POOL_PREFIX)
+    ):
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
         changed = raw_needs_sanitization or custom_changed

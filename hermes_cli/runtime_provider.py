@@ -39,6 +39,17 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _is_custom_provider_id(value: str) -> bool:
+    """Return True for either ``custom`` or ``custom_dynamic`` provider ids.
+
+    Both share the same runtime resolution path (per-instance base_url, no
+    PROVIDER_REGISTRY default); only the slug used by the picker and the
+    credential-pool key differ.
+    """
+    norm = (value or "").strip().lower()
+    return norm in {"custom", "custom_dynamic"}
+
+
 def _loopback_hostname(host: str) -> bool:
     h = (host or "").lower().rstrip(".")
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -56,7 +67,7 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     bu = (cfg_base_url or "").strip()
     if not bu:
         return False
-    if cfg_provider_norm == "custom":
+    if cfg_provider_norm in {"custom", "custom_dynamic"}:
         return True
     # GitHub #27132: provider aliases that resolve to "custom" at runtime
     # (ollama, vllm, llamacpp, …) should be trusted the same way "custom"
@@ -216,8 +227,12 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     normalized_configured = (configured_provider or "").strip().lower()
     if not normalized_configured:
         return True
-    if normalized_provider == "custom":
-        return normalized_configured == "custom" or normalized_configured.startswith("custom:")
+    if normalized_provider in {"custom", "custom_dynamic"}:
+        return (
+            normalized_configured in {"custom", "custom_dynamic"}
+            or normalized_configured.startswith("custom:")
+            or normalized_configured.startswith("custom_dynamic:")
+        )
     return normalized_configured == normalized_provider
 
 
@@ -513,7 +528,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # is exempt from the shadow check — it is not a built-in to defer to.
     if requested_norm == "auto":
         return None
-    if requested_norm != "custom" and not requested_norm.startswith("custom:"):
+    if (
+        requested_norm not in {"custom", "custom_dynamic"}
+        and not requested_norm.startswith("custom:")
+        and not requested_norm.startswith("custom_dynamic:")
+    ):
         try:
             canonical = auth_mod.resolve_provider(requested_norm)
         except AuthError:
@@ -547,7 +566,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             if not resolved_api_key:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
 
-            if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
+            if requested_norm in {
+                ep_name,
+                name_norm,
+                f"custom:{name_norm}",
+                f"custom_dynamic:{name_norm}",
+            }:
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
@@ -576,7 +600,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             display_name = entry.get("name", "")
             if display_name:
                 display_norm = _normalize_custom_provider_name(display_name)
-                if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
+                if requested_norm in {
+                    display_name,
+                    display_norm,
+                    f"custom:{display_norm}",
+                    f"custom_dynamic:{display_norm}",
+                }:
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
@@ -618,10 +647,19 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             continue
         name_norm = _normalize_custom_provider_name(name)
         menu_key = f"custom:{name_norm}"
+        dyn_menu_key = f"custom_dynamic:{name_norm}"
         provider_key = str(entry.get("provider_key", "") or "").strip()
         provider_key_norm = _normalize_custom_provider_name(provider_key) if provider_key else ""
         provider_menu_key = f"custom:{provider_key_norm}" if provider_key_norm else ""
-        if requested_norm not in {name_norm, menu_key, provider_key_norm, provider_menu_key}:
+        provider_dyn_menu_key = f"custom_dynamic:{provider_key_norm}" if provider_key_norm else ""
+        if requested_norm not in {
+            name_norm,
+            menu_key,
+            dyn_menu_key,
+            provider_key_norm,
+            provider_menu_key,
+            provider_dyn_menu_key,
+        }:
             continue
         result = {
             "name": name.strip(),
@@ -642,6 +680,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
+        kind = str(entry.get("kind") or "").strip().lower()
+        if kind in {"static", "dynamic"}:
+            result["kind"] = kind
         _lift_max_output_tokens(entry, result)
         return result
 
@@ -802,7 +843,7 @@ def _resolve_named_custom_runtime(
     # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
     # fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
-    if requested_norm and requested_norm != "custom":
+    if requested_norm and requested_norm not in {"custom", "custom_dynamic"}:
         try:
             from hermes_cli.auth import resolve_provider as _resolve_provider
 
@@ -810,12 +851,12 @@ def _resolve_named_custom_runtime(
                 requested_norm = "custom"
         except Exception:
             pass
-    if requested_norm == "custom" and explicit_base_url:
+    if requested_norm in {"custom", "custom_dynamic"} and explicit_base_url:
         base_url = explicit_base_url.strip().rstrip("/")
         # Check credential pool first — mirrors the named-custom-provider path
         # so bare `provider: custom` with a configured custom_providers entry
         # also gets its api_key from the pool instead of env var fallbacks.
-        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
+        pool_result = _try_resolve_from_custom_pool(base_url, requested_norm, None)
         if pool_result:
             pool_result["source"] = "direct-alias"
             return pool_result
@@ -836,7 +877,7 @@ def _resolve_named_custom_runtime(
             "",
         ) or "no-key-required"
         return {
-            "provider": "custom",
+            "provider": requested_norm,
             "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": api_key,
@@ -855,8 +896,15 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
+    # Pick the resolved provider id based on the entry's declared kind.
+    # `custom_dynamic` is a first-class provider id (not aliased to `custom`)
+    # so the dashboard and pool can distinguish dynamic endpoints; static and
+    # absent-kind entries keep the existing `custom` id verbatim.
+    entry_kind = str(custom_provider.get("kind") or "").strip().lower()
+    resolved_provider_id = "custom_dynamic" if entry_kind == "dynamic" else "custom"
+
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    pool_result = _try_resolve_from_custom_pool(base_url, resolved_provider_id, custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -890,7 +938,7 @@ def _resolve_named_custom_runtime(
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     result = {
-        "provider": "custom",
+        "provider": resolved_provider_id,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
@@ -932,7 +980,8 @@ def _resolve_openrouter_runtime(
     # as a bare `provider: custom`. Normalising here keeps every check
     # below — `requested_norm == "custom"`, the trust check, the pool
     # gate up the stack — alias-aware without duplicating the alias map.
-    if requested_norm and requested_norm != "custom":
+    is_custom_dynamic_request = requested_norm == "custom_dynamic"
+    if requested_norm and requested_norm not in {"custom", "custom_dynamic"}:
         try:
             from hermes_cli.auth import resolve_provider as _resolve_provider
 
@@ -952,7 +1001,7 @@ def _resolve_openrouter_runtime(
         if requested_norm == "auto":
             if not cfg_provider or cfg_provider == "auto":
                 use_config_base_url = True
-        elif requested_norm == "custom" and _config_base_url_trustworthy_for_bare_custom(
+        elif requested_norm in {"custom", "custom_dynamic"} and _config_base_url_trustworthy_for_bare_custom(
             cfg_base_url, cfg_provider
         ):
             use_config_base_url = True
@@ -1023,20 +1072,25 @@ def _resolve_openrouter_runtime(
     # name instead of silently relabeling to "openrouter" (#2562).
     # Also provide a placeholder API key for local servers that don't require
     # authentication — the OpenAI SDK requires a non-empty api_key string.
-    effective_provider = "custom" if requested_norm == "custom" else "openrouter"
+    if is_custom_dynamic_request:
+        effective_provider = "custom_dynamic"
+    elif requested_norm == "custom":
+        effective_provider = "custom"
+    else:
+        effective_provider = "openrouter"
 
     # For custom endpoints, check if a credential pool exists
-    if effective_provider == "custom" and base_url:
+    if effective_provider in {"custom", "custom_dynamic"} and base_url:
         # Pass requested_provider so pool lookup prefers name match over base_url,
         # fixing credential mix-ups when multiple custom providers share a base_url.
         pool_result = _try_resolve_from_custom_pool(
             base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
-            provider_name=requested_provider if requested_norm != "custom" else None,
+            provider_name=requested_provider if requested_norm not in {"custom", "custom_dynamic"} else None,
         )
         if pool_result:
             return pool_result
 
-    if effective_provider == "custom" and not api_key and not _is_openrouter_url:
+    if effective_provider in {"custom", "custom_dynamic"} and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
     return {
@@ -1461,7 +1515,7 @@ def resolve_runtime_provider(
             or env_openai_base_url
             or env_openrouter_base_url
         )
-        if cfg_base_url and cfg_provider in {"auto", "custom"}:
+        if cfg_base_url and cfg_provider in {"auto", "custom", "custom_dynamic"}:
             has_custom_endpoint = True
         has_runtime_override = bool(explicit_api_key or explicit_base_url)
         should_use_pool = (
@@ -1498,6 +1552,21 @@ def resolve_runtime_provider(
             if not _agent_key_is_usable(nous_state, min_ttl):
                 logger.debug("Nous pool entry agent_key expired/missing, falling through to runtime resolution")
                 pool_api_key = ""
+        # For bare `provider: custom`, the pool entry must carry its own
+        # base_url — _resolve_runtime_from_pool_entry has no PROVIDER_REGISTRY
+        # default to fall back to for "custom". A poison entry with an empty
+        # base_url (e.g. a stale `source: manual` row left over from a partial
+        # auth flow) would otherwise hijack resolution and surface as
+        # "Provider resolver returned an empty base URL". Skip such entries so
+        # we fall through to _resolve_openrouter_runtime, which honours
+        # model.base_url from config.yaml under the bare-custom trust check.
+        if (
+            provider in {"custom", "custom_dynamic"}
+            and entry is not None
+            and not (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").strip()
+        ):
+            entry = None
+            pool_api_key = ""
         if entry is not None and pool_api_key:
             return _resolve_runtime_from_pool_entry(
                 provider=provider,
