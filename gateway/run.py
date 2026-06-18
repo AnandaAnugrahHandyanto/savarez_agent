@@ -68,6 +68,24 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+_IMAGE_EDIT_INTENT_RE = re.compile(
+    r"("
+    r"改一下|修改|改成|改为|重改|再改|重新改|改图|修一下|换成|变成|修图|p图|P图|重绘|重新画|"
+    r"生成|出图|做成|画成|加上|去掉|替换|换背景|换风格|"
+    r"edit|modify|change|turn\s+.*\s+into|make\s+.*\s+look|generate|redraw"
+    r")",
+    re.IGNORECASE,
+)
+
+_IMAGE_EDIT_INTENT_CLASSIFIER_SYSTEM = (
+    "你是消息网关里的意图分类器。用户消息同时附带或引用了一张真实图片。"
+    "判断用户是否希望基于这张图片生成一张修改版/重做版/新图片。"
+    '只返回 JSON：{"edit": true} 或 {"edit": false}。'
+    "当用户要求修改、重做、再来一版、换风格、调整表情/姿势/背景/主体、添加/删除/替换视觉元素、"
+    "或用参考图生成新图时，edit=true。"
+    "当用户只是问能否看到图片、询问图片内容、请求描述/分析/OCR、讨论图片、或意图不明确时，edit=false。"
+)
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -6760,6 +6778,344 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    @staticmethod
+    def _event_image_paths(event: MessageEvent) -> List[str]:
+        paths: List[str] = []
+        media_urls = getattr(event, "media_urls", None) or []
+        media_types = getattr(event, "media_types", None) or []
+        for i, path in enumerate(media_urls):
+            mtype = media_types[i] if i < len(media_types) else ""
+            if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
+                if isinstance(path, str) and path.strip():
+                    paths.append(path.strip())
+        return paths
+
+    @staticmethod
+    def _message_requests_image_edit(text: str) -> bool:
+        if not isinstance(text, str):
+            return False
+        text = text.strip()
+        if not text:
+            return False
+        return bool(_IMAGE_EDIT_INTENT_RE.search(text))
+
+    @staticmethod
+    def _parse_image_edit_intent_decision(text: str) -> Optional[bool]:
+        if not isinstance(text, str):
+            return None
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+        candidates = [cleaned]
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if match:
+            candidates.insert(0, match.group(0))
+
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            for key in ("edit", "image_edit", "direct_image_edit"):
+                if key not in payload:
+                    continue
+                value = payload.get(key)
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                    if normalized in {"true", "yes", "1"}:
+                        return True
+                    if normalized in {"false", "no", "0"}:
+                        return False
+
+        normalized = cleaned.strip().lower()
+        if normalized in {"true", "yes", "y", "edit", "image_edit"}:
+            return True
+        if normalized in {"false", "no", "n"}:
+            return False
+        return None
+
+    async def _message_semantically_requests_image_edit(self, text: str) -> bool:
+        user_text = (text or "").strip()
+        if not user_text:
+            return False
+        try:
+            from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+
+            response = await async_call_llm(
+                task="gateway_intent",
+                messages=[
+                    {"role": "system", "content": _IMAGE_EDIT_INTENT_CLASSIFIER_SYSTEM},
+                    {"role": "user", "content": f"用户消息：{user_text}"},
+                ],
+                temperature=0,
+                max_tokens=64,
+                timeout=15,
+            )
+            content = extract_content_or_reasoning(response)
+        except Exception as exc:
+            logger.info("Image edit semantic intent classifier failed closed: %s", exc)
+            return False
+
+        decision = self._parse_image_edit_intent_decision(content)
+        if decision is None:
+            logger.info(
+                "Image edit semantic intent classifier returned unclear response: %r",
+                (content or "")[:200],
+            )
+            return False
+        return decision
+
+    async def _should_handle_direct_image_edit_request(
+        self,
+        event: MessageEvent,
+        image_paths: Optional[List[str]] = None,
+    ) -> bool:
+        paths = image_paths if image_paths is not None else self._event_image_paths(event)
+        if not paths:
+            return False
+        text = event.text or ""
+        if self._message_requests_image_edit(text):
+            logger.info("Image edit shortcut intent: keyword fast path")
+            return True
+        if await self._message_semantically_requests_image_edit(text):
+            logger.info("Image edit shortcut intent: semantic fallback")
+            return True
+        return False
+
+    @staticmethod
+    def _infer_image_generation_aspect(user_text: str, image_path: str) -> str:
+        text = (user_text or "").lower()
+        if any(token in text for token in ("1:1", "方图", "方形", "square")):
+            return "square"
+        if any(token in text for token in ("9:16", "竖图", "竖版", "portrait")):
+            return "portrait"
+        if any(token in text for token in ("16:9", "横图", "横版", "landscape")):
+            return "landscape"
+
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(image_path) as img:
+                width, height = img.size
+            if width and height:
+                ratio = width / height
+                if 0.85 <= ratio <= 1.15:
+                    return "square"
+                return "landscape" if ratio > 1 else "portrait"
+        except Exception:
+            pass
+        return "landscape"
+
+    async def _describe_image_for_generation(self, image_path: str, user_text: str) -> str:
+        prompt = (
+            "请用中文详细描述这张参考图，服务于后续文生图/改图提示词。"
+            "重点写主体、人物外貌与姿态、神态、构图、镜头距离、光线、背景、色彩、真实感与原始宽高比例。"
+            "不要编造看不到的内容。用户的修改要求是："
+            f"{user_text}"
+        )
+        try:
+            from tools.vision_tools import vision_analyze_tool
+
+            raw = await vision_analyze_tool(image_path, prompt)
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(payload, dict) and payload.get("success"):
+                analysis = str(payload.get("analysis") or "").strip()
+                if analysis:
+                    return analysis
+            logger.warning("Image edit shortcut vision description failed: %s", raw[:300] if isinstance(raw, str) else raw)
+        except Exception as exc:
+            logger.warning("Image edit shortcut vision description failed: %s", exc, exc_info=True)
+        return ""
+
+    @staticmethod
+    def _build_image_edit_generation_prompt(
+        *,
+        user_text: str,
+        image_description: str,
+        aspect: str,
+    ) -> str:
+        description = image_description.strip() or "参考图已上传，但自动描述失败；请根据用户要求生成一张合理的新图。"
+        return (
+            "基于一张参考图生成修改后的新图片。\n\n"
+            f"原图描述：{description}\n\n"
+            f"用户修改要求：{user_text.strip() or '按参考图生成一张修改版'}\n\n"
+            "生成要求：参考图会以真实图片输入一并提供；保持参考图的主体身份感、构图关系、镜头距离、光线氛围和整体真实感；"
+            "只执行用户提出的修改，不要额外添加文字、水印、边框或 UI 元素；"
+            f"输出比例按 {aspect} 处理，如果用户要求保持比例，则尽量延续参考图的视觉比例和构图。"
+        )
+
+    async def _maybe_handle_direct_image_edit_request(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        *,
+        intent_confirmed: bool = False,
+        image_paths: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        image_paths = image_paths if image_paths is not None else self._event_image_paths(event)
+        if not image_paths:
+            return None
+        if not intent_confirmed and not await self._should_handle_direct_image_edit_request(event, image_paths):
+            return None
+
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            return None
+
+        user_text = event.text or ""
+        image_path = image_paths[0]
+        aspect = self._infer_image_generation_aspect(user_text, image_path)
+
+        try:
+            await adapter.send(
+                source.chat_id,
+                "收到，正在按引用图生成修改版。",
+                metadata=None if source.platform == Platform.FEISHU else self._thread_metadata_for_source(source, None),
+            )
+        except Exception:
+            logger.debug("Image edit shortcut progress send failed", exc_info=True)
+
+        description = await self._describe_image_for_generation(image_path, user_text)
+        prompt = self._build_image_edit_generation_prompt(
+            user_text=user_text,
+            image_description=description,
+            aspect=aspect,
+        )
+
+        try:
+            from tools.image_generation_tool import _handle_image_generate
+
+            raw = await asyncio.to_thread(
+                _handle_image_generate,
+                {
+                    "prompt": prompt,
+                    "aspect_ratio": aspect,
+                    "reference_image_paths": image_paths,
+                },
+            )
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as exc:
+            logger.warning("Image edit shortcut generation failed: %s", exc, exc_info=True)
+            await adapter.send(
+                source.chat_id,
+                f"生成失败：{exc}",
+                metadata=None if source.platform == Platform.FEISHU else self._thread_metadata_for_source(source, None),
+            )
+            return ""
+
+        if not isinstance(payload, dict) or not payload.get("success"):
+            error = payload.get("error") if isinstance(payload, dict) else raw
+            await adapter.send(
+                source.chat_id,
+                f"生成失败：{error or 'image_generate 没有返回图片'}",
+                metadata=None if source.platform == Platform.FEISHU else self._thread_metadata_for_source(source, None),
+            )
+            return ""
+
+        image_ref = str(payload.get("image") or "").strip()
+        if not image_ref:
+            await adapter.send(
+                source.chat_id,
+                "生成完成，但没有拿到可发送的图片路径。",
+                metadata=None if source.platform == Platform.FEISHU else self._thread_metadata_for_source(source, None),
+            )
+            return ""
+
+        metadata = None if source.platform == Platform.FEISHU else self._thread_metadata_for_source(source, None)
+        send_result = None
+        try:
+            if image_ref.startswith("file://"):
+                from urllib.parse import unquote as _unquote
+
+                image_ref = _unquote(image_ref[7:])
+            if os.path.isfile(image_ref) and hasattr(adapter, "send_image_file"):
+                send_result = await adapter.send_image_file(
+                    chat_id=source.chat_id,
+                    image_path=image_ref,
+                    metadata=metadata,
+                )
+            elif image_ref.startswith(("http://", "https://")) and hasattr(adapter, "send_image"):
+                send_result = await adapter.send_image(
+                    chat_id=source.chat_id,
+                    image_url=image_ref,
+                    metadata=metadata,
+                )
+            else:
+                from urllib.parse import quote as _quote
+
+                await adapter.send_multiple_images(
+                    chat_id=source.chat_id,
+                    images=[(f"file://{_quote(image_ref)}", "")],
+                    metadata=metadata,
+                )
+        except Exception as exc:
+            logger.warning("Image edit shortcut image delivery failed: %s", exc, exc_info=True)
+            send_result = None
+
+        if send_result is not None and not getattr(send_result, "success", False):
+            logger.warning(
+                "[%s] Image edit shortcut native image send failed: %s",
+                getattr(adapter, "name", source.platform),
+                getattr(send_result, "error", ""),
+            )
+            if os.path.isfile(image_ref) and hasattr(adapter, "send_document"):
+                fallback = await adapter.send_document(
+                    chat_id=source.chat_id,
+                    file_path=image_ref,
+                    metadata=metadata,
+                )
+                if not getattr(fallback, "success", False):
+                    await adapter.send(
+                        source.chat_id,
+                        f"图片已生成，但飞书上传失败：{getattr(send_result, 'error', '') or getattr(fallback, 'error', '')}",
+                        metadata=metadata,
+                    )
+            else:
+                await adapter.send(
+                    source.chat_id,
+                    f"图片已生成，但发送失败：{getattr(send_result, 'error', '')}",
+                    metadata=metadata,
+                )
+
+        return ""
+
+    async def _handle_direct_image_edit_shortcut(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_key: str,
+        image_paths: List[str],
+        *,
+        interrupt_existing: bool = False,
+    ) -> Optional[str]:
+        if interrupt_existing:
+            await self._interrupt_and_clear_session(
+                session_key,
+                source,
+                interrupt_reason="direct image edit requested",
+                invalidation_reason="direct_image_edit_shortcut",
+            )
+
+        self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[session_key] = time.time()
+        try:
+            return await self._maybe_handle_direct_image_edit_request(
+                event,
+                source,
+                intent_confirmed=True,
+                image_paths=image_paths,
+            )
+        finally:
+            self._release_running_agent_state(session_key)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -7093,6 +7449,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
+            _busy_direct_image_paths = self._event_image_paths(event)
+            _busy_text = (event.text or "").lstrip()
+            if (
+                _busy_direct_image_paths
+                and not _busy_text.startswith("/")
+                and await self._should_handle_direct_image_edit_request(event, _busy_direct_image_paths)
+            ):
+                return await self._handle_direct_image_edit_shortcut(
+                    event,
+                    source,
+                    _quick_key,
+                    _busy_direct_image_paths,
+                    interrupt_existing=True,
+                )
+
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
@@ -7933,6 +8304,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        _direct_image_paths = self._event_image_paths(event)
+        if _direct_image_paths and await self._should_handle_direct_image_edit_request(event, _direct_image_paths):
+            direct_image_edit_response = await self._handle_direct_image_edit_shortcut(
+                event,
+                source,
+                _quick_key,
+                _direct_image_paths,
+            )
+            if direct_image_edit_response is not None:
+                return direct_image_edit_response
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -12217,20 +12599,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                        f"image_url: {path} ~]\n"
+                        f"[If the user asks you to edit, redraw, or generate from this image, "
+                        f"call image_generate with reference_image_paths: [\"{path}\"] so the "
+                        f"image backend receives the actual reference image bytes.]"
                     )
                 else:
                     enriched_parts.append(
                         "[The user sent an image but I couldn't quite see it "
                         "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
+                        f"with vision_analyze using image_url: {path}. If the user asks for "
+                        f"image editing or regeneration, call image_generate with "
+                        f"reference_image_paths: [\"{path}\"] to pass the actual image bytes.]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
                     f"[The user sent an image but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
+                    f"with vision_analyze using image_url: {path}. If the user asks for "
+                    f"image editing or regeneration, call image_generate with "
+                    f"reference_image_paths: [\"{path}\"] to pass the actual image bytes.]"
                 )
 
         # Combine: vision descriptions first, then the user's original text
