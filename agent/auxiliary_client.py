@@ -3889,6 +3889,37 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── OpenRouter (not in PROVIDER_REGISTRY) ───────────────────
+    #
+    # OpenRouter is not in PROVIDER_REGISTRY because it uses a dynamic
+    # resolution path (``_resolve_openrouter_runtime`` in runtime_provider.py)
+    # that the main agent flow reaches but the auxiliary/vision path doesn't.
+    # Without this special case, ``resolve_api_key_provider_credentials``
+    # raises ``AuthError("Provider 'openrouter' is not an API-key provider")``
+    # and the request goes out with no ``Authorization`` header.
+    # See issue #47030.
+    if provider == "openrouter":
+        api_key = (explicit_api_key or
+                   os.environ.get("OPENROUTER_API_KEY") or
+                   os.environ.get("OPENAI_API_KEY") or "").strip()
+        if not api_key:
+            logger.warning(
+                "resolve_provider_client: openrouter requested but no "
+                "OPENROUTER_API_KEY found in environment"
+            )
+            return None, None
+        base_url = (explicit_base_url or
+                    os.environ.get("OPENROUTER_BASE_URL") or
+                    "https://openrouter.ai/api/v1").rstrip("/")
+        base_url = _to_openai_base_url(base_url)
+        default_model = _get_aux_model_for_provider(provider)
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        client = _wrap_if_needed(client, final_model, base_url, api_key)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
         from hermes_cli.auth import (
