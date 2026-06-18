@@ -1086,6 +1086,16 @@ def load_gateway_config() -> GatewayConfig:
                         "disable_topic_auto_rename",
                         telegram_cfg["disable_topic_auto_rename"],
                     )
+                # Bridge top-level `telegram.home_channel` into the platform
+                # data dict so PlatformConfig.from_dict() picks it up.  Without
+                # this, ``send_message`` (MCP tool path) cannot resolve the home
+                # channel when it was configured via the top-level telegram:
+                # shorthand instead of platforms.telegram.home_channel or the
+                # TELEGRAM_HOME_CHANNEL env var.  (#43335)
+                if "home_channel" in telegram_cfg:
+                    _tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                    if "home_channel" not in _tg_plat:
+                        _tg_plat["home_channel"] = telegram_cfg["home_channel"]
                 # Prefer telegram.require_mention; fall back to the top-level shorthand.
                 _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
                 if _effective_rm is not None and not os.getenv("TELEGRAM_REQUIRE_MENTION"):

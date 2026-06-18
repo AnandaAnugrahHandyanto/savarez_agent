@@ -996,3 +996,67 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+    def test_bridges_telegram_home_channel_from_top_level_config_yaml(self, tmp_path, monkeypatch):
+        """Top-level telegram.home_channel in config.yaml must be bridged into
+        the platform data dict so send_message_tool (MCP path) can resolve it.
+        Regression test for #43335."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        # Top-level telegram: shorthand — NOT under platforms: or gateway.platforms:
+        config_path.write_text(
+            "telegram:\n"
+            "  enabled: true\n"
+            "  token: tg-token\n"
+            "  home_channel:\n"
+            "    platform: telegram\n"
+            "    chat_id: \"999888\"\n"
+            "    name: My Home\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.home_channel is not None
+        assert telegram.home_channel == HomeChannel(
+            platform=Platform.TELEGRAM,
+            chat_id="999888",
+            name="My Home",
+        )
+
+    def test_top_level_home_channel_does_not_override_platforms_path(self, tmp_path, monkeypatch):
+        """When both platforms.telegram.home_channel and top-level telegram.home_channel
+        exist, the platforms: path (merged first) should win."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    enabled: true\n"
+            "    token: tg-token\n"
+            "    home_channel:\n"
+            "      platform: telegram\n"
+            "      chat_id: \"from_platforms\"\n"
+            "      name: Platforms Path\n"
+            "telegram:\n"
+            "  home_channel:\n"
+            "    platform: telegram\n"
+            "    chat_id: \"from_toplevel\"\n"
+            "    name: Top Level\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.home_channel is not None
+        # platforms: path should take precedence (merged first)
+        assert telegram.home_channel.chat_id == "from_platforms"
