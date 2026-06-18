@@ -36,6 +36,16 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
+class _FakeMemoryStore:
+    def __init__(self, token: str):
+        self.token = token
+        self.stat_targets = []
+
+    def stat(self, target: str):
+        self.stat_targets.append(target)
+        return {"store_state_token": self.token}
+
+
 def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None = None) -> AIAgent:
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
@@ -236,6 +246,48 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     mock_hfc.assert_not_called()
     assert "plugin policy" in messages[0]["content"]
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
+
+
+def test_sequential_memory_call_passes_current_store_state_token_to_guardrail():
+    agent = _make_agent("memory")
+    agent._memory_store = _FakeMemoryStore("opaque:seq")
+    before_call = MagicMock(wraps=agent._tool_guardrails.before_call)
+    agent._tool_guardrails.before_call = before_call
+    args = {"action": "add", "target": "notes", "content": "hello"}
+    tc = _mock_tool_call("memory", json.dumps(args), "c-memory-seq")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert agent._memory_store.stat_targets == ["notes"]
+    before_call.assert_called_once_with(
+        "memory",
+        args,
+        current_store_state_token="opaque:seq",
+    )
+
+
+def test_concurrent_memory_call_passes_current_store_state_token_to_guardrail():
+    agent = _make_agent("memory")
+    agent._memory_store = _FakeMemoryStore("opaque:conc")
+    before_call = MagicMock(wraps=agent._tool_guardrails.before_call)
+    agent._tool_guardrails.before_call = before_call
+    args = {"action": "add", "store": "shared", "content": "hello"}
+    tc = _mock_tool_call("memory", json.dumps(args), "c-memory-conc")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch.object(agent, "_invoke_tool", return_value=json.dumps({"success": True})):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert agent._memory_store.stat_targets == ["shared"]
+    before_call.assert_called_once_with(
+        "memory",
+        args,
+        current_store_state_token="opaque:conc",
+    )
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():

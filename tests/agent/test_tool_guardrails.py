@@ -118,6 +118,272 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def _memory_quota_result(operation="add", store_state_token="opaque:A", **quota_usage):
+    payload = {
+        "success": False,
+        "target": "user",
+        "store": "user",
+        "store_state_token": store_state_token,
+        "error": "Memory at 1,371/1,375 chars. Adding this entry would exceed the limit.",
+        "error_code": "memory_quota_exceeded",
+        "error_details": {
+            "code": "memory_quota_exceeded",
+            "operation": operation,
+        },
+        "quota_usage": {
+            "current_chars": 1371,
+            "limit_chars": 1375,
+            "remaining_chars": 4,
+            "attempted_total_chars": 1500,
+            "over_by_chars": 125,
+            "quota_unit": "serialized_chars",
+            **quota_usage,
+        },
+    }
+    return json.dumps(payload)
+
+
+def test_memory_quota_failure_skips_identical_retry_under_same_store_state():
+    controller = ToolCallGuardrailController()
+    args = {
+        "action": "add",
+        "target": "user",
+        "content": "same oversized memory",
+    }
+
+    assert controller.before_call("memory", args, current_store_state_token="opaque:A").action == "allow"
+    first = controller.after_call("memory", args, _memory_quota_result(), failed=True)
+    assert first.action == "warn"
+    assert first.code == "memory_quota_exceeded_non_retryable"
+
+    skipped = controller.before_call("memory", args, current_store_state_token="opaque:A")
+    assert skipped.action == "skip"
+    assert skipped.code == "memory_quota_exceeded_non_retryable"
+    assert skipped.allows_execution is False
+    assert skipped.should_halt is False
+    assert "already exceeded quota" in skipped.message
+
+
+def test_memory_quota_retry_is_allowed_after_store_state_changes():
+    controller = ToolCallGuardrailController()
+    args = {"action": "add", "target": "user", "content": "same oversized memory"}
+
+    controller.before_call("memory", args, current_store_state_token="opaque:A")
+    controller.after_call("memory", args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+
+    retry = controller.before_call("memory", args, current_store_state_token="opaque:B")
+    assert retry.action == "allow"
+
+
+def test_memory_quota_retry_is_allowed_when_arguments_change():
+    controller = ToolCallGuardrailController()
+    args = {"action": "add", "target": "user", "content": "same oversized memory"}
+    shorter = {"action": "add", "target": "user", "content": "short"}
+
+    controller.before_call("memory", args, current_store_state_token="opaque:A")
+    controller.after_call("memory", args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+
+    retry = controller.before_call("memory", shorter, current_store_state_token="opaque:A")
+    assert retry.action == "allow"
+
+
+def test_memory_quota_fingerprint_normalizes_key_order_and_trailing_content_whitespace():
+    controller = ToolCallGuardrailController()
+    args_a = {"action": "add", "target": "user", "content": "same oversized memory   "}
+    args_b = {"target": "user", "content": "same oversized memory", "action": "add"}
+
+    controller.before_call("memory", args_a, current_store_state_token="opaque:A")
+    controller.after_call("memory", args_a, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+
+    skipped = controller.before_call("memory", args_b, current_store_state_token="opaque:A")
+    assert skipped.action == "skip"
+    assert skipped.should_halt is False
+
+
+def test_replace_quota_overflow_uses_structured_code_not_error_wording():
+    controller = ToolCallGuardrailController()
+    args = {"action": "replace", "target": "memory", "old_text": "alpha", "content": "expanded"}
+    result = _memory_quota_result(operation="replace", store_state_token="opaque:R")
+
+    controller.before_call("memory", args, current_store_state_token="opaque:R")
+    first = controller.after_call("memory", args, result, failed=True)
+    assert first.code == "memory_quota_exceeded_non_retryable"
+
+    skipped = controller.before_call("memory", args, current_store_state_token="opaque:R")
+    assert skipped.action == "skip"
+    assert skipped.should_halt is False
+
+
+def test_legacy_memory_quota_error_string_does_not_crash_guardrail():
+    controller = ToolCallGuardrailController()
+    args = {"action": "replace", "target": "memory", "old_text": "alpha", "content": "beta"}
+    result = json.dumps({
+        "success": False,
+        "error": (
+            "Replacement would put memory at 1,431/1,375 chars. "
+            "Shorten the new content or remove other entries first."
+        ),
+    })
+
+    controller.before_call("memory", args, current_store_state_token="opaque:A")
+    decision = controller.after_call("memory", args, result, failed=True)
+    retry = controller.before_call("memory", args, current_store_state_token="opaque:A")
+
+    assert decision.action in {"allow", "warn"}
+    assert retry.action == "allow"
+
+
+def test_memory_quota_fallback_classifier_matches_display_full_suffix():
+    structured = _memory_quota_result(operation="replace", store_state_token="opaque:R")
+    legacy = json.dumps({
+        "success": False,
+        "error": (
+            "Replacement would put memory at 1,431/1,375 chars. "
+            "Shorten the new content or remove other entries first."
+        ),
+    })
+
+    assert classify_tool_failure("memory", structured) == (True, " [full]")
+    assert classify_tool_failure("memory", legacy) == (True, " [full]")
+
+
+def test_memory_quota_budget_suppresses_further_space_increasing_writes_without_halting():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(memory_quota_failure_suppress_after=2)
+    )
+
+    first_args = {"action": "add", "target": "user", "content": "oversized one"}
+    second_args = {"action": "add", "target": "user", "content": "oversized two"}
+
+    controller.before_call("memory", first_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", first_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+    controller.before_call("memory", second_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", second_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+
+    suppressed = controller.before_call(
+        "memory",
+        {"action": "add", "target": "user", "content": "oversized three"},
+        current_store_state_token="opaque:A",
+    )
+    assert suppressed.action == "skip"
+    assert suppressed.code == "memory_quota_write_suppressed"
+    assert suppressed.allows_execution is False
+    assert suppressed.should_halt is False
+
+    remove = controller.before_call(
+        "memory",
+        {"action": "remove", "target": "user", "old_text": "obsolete"},
+        current_store_state_token="opaque:A",
+    )
+    assert remove.action == "allow"
+
+
+def test_memory_quota_budget_allows_clearly_shrinking_replace():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(memory_quota_failure_suppress_after=2)
+    )
+
+    first_args = {"action": "add", "target": "user", "content": "oversized one"}
+    second_args = {"action": "add", "target": "user", "content": "oversized two"}
+
+    controller.before_call("memory", first_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", first_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+    controller.before_call("memory", second_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", second_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+
+    shrinking_replace = controller.before_call(
+        "memory",
+        {
+            "action": "replace",
+            "target": "user",
+            "old_text": "long obsolete memory entry",
+            "content": "short",
+        },
+        current_store_state_token="opaque:A",
+    )
+    assert shrinking_replace.action == "allow"
+
+
+def test_memory_quota_budget_allows_replace_when_old_text_is_only_selector():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(memory_quota_failure_suppress_after=2)
+    )
+
+    first_args = {"action": "add", "target": "user", "content": "oversized one"}
+    second_args = {"action": "add", "target": "user", "content": "oversized two"}
+
+    controller.before_call("memory", first_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", first_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+    controller.before_call("memory", second_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", second_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+
+    selector_replace = controller.before_call(
+        "memory",
+        {"action": "replace", "target": "user", "old_text": "abc", "content": "compact replacement"},
+        current_store_state_token="opaque:A",
+    )
+
+    assert selector_replace.action == "allow"
+
+
+def test_memory_quota_budget_allows_space_increasing_write_after_store_state_changes():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(memory_quota_failure_suppress_after=2)
+    )
+
+    args = {"action": "add", "target": "user", "content": "oversized one"}
+    second_args = {"action": "add", "target": "user", "content": "oversized two"}
+
+    controller.before_call("memory", args, current_store_state_token="opaque:A")
+    controller.after_call("memory", args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+    controller.before_call("memory", second_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", second_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+
+    controller.after_call(
+        "memory",
+        {"action": "remove", "target": "user", "old_text": "obsolete"},
+        json.dumps({"success": True, "target": "user", "store": "user", "store_state_token": "opaque:B"}),
+        failed=False,
+    )
+
+    retry = controller.before_call("memory", args, current_store_state_token="opaque:B")
+    assert retry.action == "allow"
+
+
+def test_structured_memory_quota_failure_is_detected_when_failed_flag_is_omitted():
+    controller = ToolCallGuardrailController()
+    args = {"action": "add", "target": "user", "content": "same oversized memory"}
+    result = _memory_quota_result(store_state_token="opaque:A")
+    payload = json.loads(result)
+    payload.pop("error")
+    result = json.dumps(payload)
+
+    controller.before_call("memory", args, current_store_state_token="opaque:A")
+    first = controller.after_call("memory", args, result)
+    assert first.action == "warn"
+    assert first.code == "memory_quota_exceeded_non_retryable"
+
+    skipped = controller.before_call("memory", args, current_store_state_token="opaque:A")
+    assert skipped.action == "skip"
+    assert skipped.code == "memory_quota_exceeded_non_retryable"
+
+
+def test_structured_memory_quota_failure_overrides_false_failed_flag():
+    controller = ToolCallGuardrailController()
+    args = {"action": "add", "target": "user", "content": "same oversized memory"}
+    result = _memory_quota_result(store_state_token="opaque:A")
+    payload = json.loads(result)
+    payload.pop("error")
+    result = json.dumps(payload)
+
+    controller.before_call("memory", args, current_store_state_token="opaque:A")
+    first = controller.after_call("memory", args, result, failed=False)
+    assert first.action == "warn"
+    assert first.code == "memory_quota_exceeded_non_retryable"
+
+    skipped = controller.before_call("memory", args, current_store_state_token="opaque:A")
+    assert skipped.action == "skip"
+    assert skipped.code == "memory_quota_exceeded_non_retryable"
 def test_success_resets_exact_signature_failure_streak():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, same_tool_failure_halt_after=99)

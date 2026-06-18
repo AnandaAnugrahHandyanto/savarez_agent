@@ -24,10 +24,12 @@ Design:
 """
 
 import json
+import hashlib
 import logging
 import os
 import tempfile
 import time
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -294,6 +296,74 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    @staticmethod
+    def _normalise_entry(entry: str) -> str:
+        return unicodedata.normalize("NFC", entry)
+
+    def _store_state_token_for_entries(self, target: str, entries: List[str]) -> str:
+        payload = json.dumps(
+            {
+                "store": target,
+                "entries": [self._normalise_entry(e) for e in entries],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "opaque:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _store_state_token(self, target: str) -> str:
+        return self._store_state_token_for_entries(target, self._entries_for(target))
+
+    @staticmethod
+    def _serialized_char_count(entries: List[str]) -> int:
+        if not entries:
+            return 0
+        return len(ENTRY_DELIMITER.join(entries))
+
+    def _usage_payload(
+        self,
+        target: str,
+        *,
+        current_chars: int | None = None,
+        attempted_total_chars: int | None = None,
+        extra: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        limit = self._char_limit(target)
+        current = self._char_count(target) if current_chars is None else current_chars
+        payload: Dict[str, Any] = {
+            "current_chars": current,
+            "limit_chars": limit,
+            "remaining_chars": max(0, limit - current),
+            "quota_unit": "serialized_chars",
+        }
+        if attempted_total_chars is not None:
+            payload["attempted_total_chars"] = attempted_total_chars
+            payload["over_by_chars"] = max(0, attempted_total_chars - limit)
+        if extra:
+            payload.update(extra)
+        return payload
+
+    def stat(self, target: str) -> Dict[str, Any]:
+        """Return latest store usage and opaque state without exposing entries."""
+        with self._file_lock(self._path_for(target)):
+            entries = self._read_file(self._path_for(target))
+            entries = list(dict.fromkeys(entries))
+            current = self._serialized_char_count(entries)
+            limit = self._char_limit(target)
+            return {
+                "success": True,
+                "target": target,
+                "store": target,
+                "store_state_token": self._store_state_token_for_entries(target, entries),
+                "usage": {
+                    "current_chars": current,
+                    "limit_chars": limit,
+                    "remaining_chars": max(0, limit - current),
+                    "quota_unit": "serialized_chars",
+                },
+            }
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -327,8 +397,22 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
+                delimiter_chars = len(ENTRY_DELIMITER) if entries else 0
+                max_add_chars = max(0, limit - current - delimiter_chars)
+                usage = self._usage_payload(
+                    target,
+                    current_chars=current,
+                    attempted_total_chars=new_total,
+                    extra={
+                        "new_entry_chars": len(content),
+                        "max_add_chars": max_add_chars,
+                    },
+                )
+                usage["min_chars_to_free"] = usage["over_by_chars"]
                 return {
                     "success": False,
+                    "target": target,
+                    "store": target,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
@@ -336,8 +420,15 @@ class MemoryStore:
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
                     ),
+                    "error_code": "memory_quota_exceeded",
+                    "error_details": {
+                        "code": "memory_quota_exceeded",
+                        "operation": "add",
+                    },
+                    "store_state_token": self._store_state_token_for_entries(target, entries),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
+                    "quota_usage": usage,
                 }
 
             entries.append(content)
@@ -385,6 +476,8 @@ class MemoryStore:
 
             idx = matches[0][0]
             limit = self._char_limit(target)
+            old_entry_chars = len(entries[idx])
+            new_entry_chars = len(new_content)
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
@@ -393,8 +486,16 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
+                replacement = {
+                    "old_entry_chars": old_entry_chars,
+                    "new_entry_chars": new_entry_chars,
+                    "delta_chars": new_entry_chars - old_entry_chars,
+                    "max_replacement_chars": max(0, limit - (current - old_entry_chars)),
+                }
                 return {
                     "success": False,
+                    "target": target,
+                    "store": target,
                     "error": (
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
                         f"Shorten the new content, or 'remove' other stale or less important "
@@ -403,6 +504,18 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
+                    "error_code": "memory_quota_exceeded",
+                    "error_details": {
+                        "code": "memory_quota_exceeded",
+                        "operation": "replace",
+                    },
+                    "store_state_token": self._store_state_token_for_entries(target, entries),
+                    "quota_usage": self._usage_payload(
+                        target,
+                        current_chars=current,
+                        attempted_total_chars=new_total,
+                    ),
+                    "replacement": replacement,
                 }
 
             entries[idx] = new_content
@@ -471,6 +584,8 @@ class MemoryStore:
         resp = {
             "success": True,
             "target": target,
+            "store": target,
+            "store_state_token": self._store_state_token(target),
             "entries": entries,
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
@@ -805,7 +920,4 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
 

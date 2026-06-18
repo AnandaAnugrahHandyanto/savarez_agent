@@ -85,6 +85,39 @@ class TestDetectToolFailureMemory:
         result = json.dumps({"success": False, "error": "would exceed the limit"})
         assert _detect_tool_failure("memory", result) == (True, " [full]")
 
+    def test_memory_structured_quota_error_displays_full_suffix(self):
+        result = json.dumps({
+            "success": False,
+            "store": "memory",
+            "target": "memory",
+            "store_state_token": "opaque:A",
+            "error": (
+                "Replacement would put memory at 1,431/1,375 chars. "
+                "Shorten the new content or remove other entries first."
+            ),
+            "error_code": "memory_quota_exceeded",
+            "error_details": {"code": "memory_quota_exceeded", "operation": "replace"},
+        })
+
+        failed, suffix = _detect_tool_failure("memory", result)
+
+        assert failed is True
+        assert suffix == " [full]"
+
+    def test_memory_legacy_replacement_quota_error_displays_full_suffix(self):
+        result = json.dumps({
+            "success": False,
+            "error": (
+                "Replacement would put memory at 1,431/1,375 chars. "
+                "Shorten the new content or remove other entries first."
+            ),
+        })
+
+        failed, suffix = _detect_tool_failure("memory", result)
+
+        assert failed is True
+        assert suffix == " [full]"
+
     def test_memory_other_error_returns_specific_message(self):
         # An error that's NOT a "full" overflow falls through to the
         # structured-error path and surfaces the actual message.

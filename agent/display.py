@@ -875,7 +875,12 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     # Memory: distinguish "store full" from real errors.
     if tool_name == "memory":
         if isinstance(data, dict):
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+            error = str(data.get("error", ""))
+            if data.get("success") is False and (
+                data.get("error_code") == "memory_quota_exceeded"
+                or "exceed the limit" in error
+                or "Replacement would put memory at" in error
+            ):
                 return True, " [full]"
 
     # Structured error in JSON result (any tool that surfaces {"error": ...}).
@@ -1070,5 +1075,3 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
-

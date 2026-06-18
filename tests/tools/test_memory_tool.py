@@ -9,6 +9,7 @@ from tools.memory_tool import (
     memory_tool,
     _scan_memory_content,
     MEMORY_SCHEMA,
+    ENTRY_DELIMITER,
 )
 
 
@@ -406,6 +407,96 @@ class TestMemoryStoreSnapshot:
 
     def test_empty_snapshot_returns_none(self, store):
         assert store.format_for_system_prompt("memory") is None
+
+
+class TestMemoryQuotaOverflowStructuredResults:
+    def test_success_response_includes_store_and_state_token(self, store):
+        result = store.add("memory", "small durable fact")
+
+        assert result["success"] is True
+        assert result["target"] == "memory"
+        assert result["store"] == "memory"
+        assert result["store_state_token"].startswith("opaque:")
+
+        token_after_add = result["store_state_token"]
+        removed = store.remove("memory", "small durable")
+        assert removed["success"] is True
+        assert removed["store_state_token"].startswith("opaque:")
+        assert removed["store_state_token"] != token_after_add
+
+    def test_stat_reads_latest_disk_state_without_mutating_prompt_snapshot(self, store):
+        store.add("memory", "entry one")
+        stat = store.stat("memory")
+        repeated_stat = store.stat("memory")
+
+        assert stat["success"] is True
+        assert stat["store"] == "memory"
+        assert stat["store_state_token"].startswith("opaque:")
+        assert repeated_stat["store_state_token"] == stat["store_state_token"]
+        assert "entries" not in stat
+        assert stat["usage"]["current_chars"] >= len("entry one")
+        assert stat["usage"]["limit_chars"] == store.memory_char_limit
+        assert stat["usage"]["quota_unit"] == "serialized_chars"
+
+        store._path_for("memory").write_text(
+            ENTRY_DELIMITER.join(["entry one", "entry two"]),
+            encoding="utf-8",
+        )
+        disk_stat = store.stat("memory")
+        assert disk_stat["store_state_token"] != stat["store_state_token"]
+
+    def test_add_overflow_returns_structured_quota_result(self, store):
+        store.memory_char_limit = 40
+        store.add("memory", "x" * 35)
+
+        result = store.add("memory", "y" * 20)
+
+        assert result["success"] is False
+        assert result["target"] == "memory"
+        assert result["store"] == "memory"
+        assert result["error_code"] == "memory_quota_exceeded"
+        assert "would exceed the limit" in result["error"]
+        assert result["store_state_token"].startswith("opaque:")
+        assert result["error_details"]["code"] == "memory_quota_exceeded"
+        assert result["error_details"]["operation"] == "add"
+        assert result["usage"] == "35/40"
+        assert result["quota_usage"]["current_chars"] <= result["quota_usage"]["limit_chars"]
+        assert result["quota_usage"]["remaining_chars"] == 5
+        assert result["quota_usage"]["new_entry_chars"] == 20
+        assert result["quota_usage"]["max_add_chars"] == 2
+        assert result["quota_usage"]["attempted_total_chars"] > result["quota_usage"]["limit_chars"]
+        assert result["quota_usage"]["over_by_chars"] == (
+            result["quota_usage"]["attempted_total_chars"] - result["quota_usage"]["limit_chars"]
+        )
+        assert result["quota_usage"]["min_chars_to_free"] == result["quota_usage"]["over_by_chars"]
+
+    def test_replace_overflow_uses_real_replace_path_and_structured_result(self, store):
+        store.memory_char_limit = 80
+        store.add("memory", "alpha " + "x" * 20)
+        store.add("memory", "beta " + "y" * 20)
+
+        result = store.replace("memory", "alpha", "alpha " + "z" * 70)
+
+        assert result["success"] is False
+        assert result["error_code"] == "memory_quota_exceeded"
+        assert result["error_details"]["operation"] == "replace"
+        assert "Replacement would put memory at" in result["error"]
+        assert result["replacement"]["old_entry_chars"] == len("alpha " + "x" * 20)
+        assert result["replacement"]["new_entry_chars"] == len("alpha " + "z" * 70)
+        assert result["replacement"]["delta_chars"] > 0
+        assert result["replacement"]["max_replacement_chars"] < result["replacement"]["new_entry_chars"]
+        assert result["quota_usage"]["attempted_total_chars"] > result["quota_usage"]["limit_chars"]
+
+    def test_shrinking_replace_succeeds_when_store_is_full(self, store):
+        store.memory_char_limit = 60
+        store.add("memory", "alpha " + "x" * 20)
+        store.add("memory", "beta " + "y" * 20)
+
+        result = store.replace("memory", "alpha", "alpha compact")
+
+        assert result["success"] is True
+        assert result["store"] == "memory"
+        assert "alpha compact" in result["entries"]
 
 
 # =========================================================================
