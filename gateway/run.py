@@ -16489,7 +16489,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
+    next_tick_at = time.monotonic()
     while not stop_event.is_set():
+        now = time.monotonic()
+        wait_seconds = max(0.0, next_tick_at - now)
+        if stop_event.wait(timeout=wait_seconds):
+            break
+
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
         except Exception as e:
@@ -16555,7 +16561,15 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
 
-        stop_event.wait(timeout=interval)
+        finished_at = time.monotonic()
+        next_tick_at += interval
+        if finished_at > next_tick_at:
+            behind_seconds = finished_at - next_tick_at
+            logger.debug(
+                "Cron ticker fell behind by %.1fs; collapsing backlog to a single immediate catch-up tick",
+                behind_seconds,
+            )
+            next_tick_at = finished_at
     logger.info("Cron ticker stopped")
 
 
