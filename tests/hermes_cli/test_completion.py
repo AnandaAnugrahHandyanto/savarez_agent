@@ -2,7 +2,6 @@
 
 import argparse
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -227,26 +226,14 @@ class TestGenerateFish:
 # ---------------------------------------------------------------------------
 
 class TestSubcommandDrift:
-    def test_SUBCOMMANDS_covers_required_commands(self):
-        """_SUBCOMMANDS must include all known top-level commands so that
-        multi-word session names after -c/-r are never accidentally split.
-        """
-        import inspect
-        from hermes_cli.main import _coalesce_session_name_args
+    def test_session_arg_coalescing_stops_at_builtin_commands(self):
+        """Every known top-level command must stop -c/-r name collection."""
+        from hermes_cli.main import _BUILTIN_SUBCOMMANDS, _coalesce_session_name_args
 
-        source = inspect.getsource(_coalesce_session_name_args)
-        match = re.search(r'_SUBCOMMANDS\s*=\s*\{([^}]+)\}', source, re.DOTALL)
-        assert match, "_SUBCOMMANDS block not found in _coalesce_session_name_args()"
-        defined = set(re.findall(r'"(\w+)"', match.group(1)))
-
-        required = {
-            "chat", "model", "gateway", "setup", "login", "logout", "auth",
-            "status", "cron", "config", "sessions", "version", "update",
-            "uninstall", "profile", "skills", "tools", "mcp", "plugins",
-            "acp", "claw", "honcho", "completion", "logs",
-        }
-        missing = required - defined
-        assert not missing, f"Missing from _SUBCOMMANDS: {missing}"
+        for command in _BUILTIN_SUBCOMMANDS - {"help"}:
+            assert _coalesce_session_name_args(
+                ["-r", "my", "session", command, "tail"]
+            ) == ["-r", "my session", command, "tail"]
 
 
 # ---------------------------------------------------------------------------

@@ -110,3 +110,15 @@ class TestCoalesceSessionNameArgs:
         assert _coalesce_session_name_args(
             ["-c", "my", "setup"]
         ) == ["-c", "my", "setup"]
+
+    def test_stops_at_later_added_subcommand(self):
+        """hermes -r my session send telegram hi → stops before 'send'."""
+        assert _coalesce_session_name_args(
+            ["-r", "my", "session", "send", "telegram", "hi"]
+        ) == ["-r", "my session", "send", "telegram", "hi"]
+
+    def test_stops_at_hyphenated_subcommand(self):
+        """hermes -c my session prompt-size → stops before 'prompt-size'."""
+        assert _coalesce_session_name_args(
+            ["-c", "my", "session", "prompt-size"]
+        ) == ["-c", "my session", "prompt-size"]
