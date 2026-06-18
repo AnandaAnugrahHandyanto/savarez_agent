@@ -161,7 +161,7 @@ export interface ComposerActions {
   dequeue: () => string | undefined
   enqueue: (text: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
-  openEditor: () => Promise<void>
+  openEditor: (initialText?: string) => Promise<void>
   pushHistory: (text: string) => void
   removeQueue: (index: number) => void
   replaceQueue: (index: number, text: string) => void
@@ -290,6 +290,7 @@ export interface SlashHandlerContext {
   composer: {
     enqueue: (text: string) => void
     hasSelection: boolean
+    openEditor: (initialText?: string) => Promise<void>
     paste: (quiet?: boolean) => void
     queueRef: MutableRefObject<string[]>
     selection: SelectionApi
