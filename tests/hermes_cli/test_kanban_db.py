@@ -42,6 +42,13 @@ def test_init_db_is_idempotent(kanban_home):
     assert tasks[0].title == "persisted"
 
 
+def test_needs_rework_is_valid_status_and_default_review_loop_is_human():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert "needs_rework" in kb.VALID_STATUSES
+    assert DEFAULT_CONFIG["kanban"]["review_loop_mode"] == "human"
+
+
 def test_init_creates_expected_tables(kanban_home):
     with kb.connect() as conn:
         rows = conn.execute(
@@ -997,6 +1004,32 @@ def test_block_then_unblock(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_block_accepts_needs_rework_as_human_gate(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        assert kb.complete_task(conn, target, result="implementation done")
+        reviewer = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+        kb.request_rework_task(
+            conn,
+            target_task_id=target,
+            reviewer_task_id=reviewer,
+            feedback="missing regression test",
+            author="temis",
+        )
+
+        rework_task = kb.get_task(conn, target)
+        assert rework_task is not None
+        assert rework_task.status == "needs_rework"
+        assert kb.block_task(conn, target, reason="needs human decision")
+
+        blocked = kb.get_task(conn, target)
+        events = kb.list_events(conn, target)
+
+    assert blocked is not None
+    assert blocked.status == "blocked"
+    assert any(event.kind == "blocked" for event in events)
+
+
 def test_unblock_resets_failure_counters(kanban_home):
     """unblock_task must reset consecutive_failures and last_failure_error."""
     with kb.connect() as conn:
@@ -1452,6 +1485,275 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
     assert "CLARIFICATION_MARKER" in ctx
     assert c in ctx
     assert "child" in ctx
+
+
+def test_request_rework_marks_linked_target_needs_rework_with_feedback(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        assert kb.complete_task(conn, target, result="implementation done")
+        reviewer = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+
+        kb.request_rework_task(
+            conn,
+            target_task_id=target,
+            reviewer_task_id=reviewer,
+            feedback="missing regression test for retries",
+            author="temis",
+        )
+
+        task = kb.get_task(conn, target)
+        comments = kb.list_comments(conn, target)
+        events = kb.list_events(conn, target)
+
+    assert task is not None
+    assert task.status == "needs_rework"
+    assert comments[-1].author == "temis"
+    assert "missing regression test" in comments[-1].body
+    assert any(e.kind == "rework_requested" for e in events)
+
+
+def test_request_rework_demotes_ready_children_until_parent_completes_again(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        assert kb.complete_task(conn, target, result="implementation done")
+        reviewer = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+        downstream = kb.create_task(conn, title="ship", assignee="odiseo", parents=[target])
+        running_child = kb.create_task(
+            conn, title="already running", assignee="odiseo", parents=[target]
+        )
+        kb.claim_task(conn, running_child, claimer="host:running-child")
+
+        reviewer_before = kb.get_task(conn, reviewer)
+        downstream_before = kb.get_task(conn, downstream)
+        running_before = kb.get_task(conn, running_child)
+        assert reviewer_before is not None
+        assert reviewer_before.status == "ready"
+        assert downstream_before is not None
+        assert downstream_before.status == "ready"
+        assert running_before is not None
+        assert running_before.status == "running"
+
+        kb.request_rework_task(
+            conn,
+            target_task_id=target,
+            reviewer_task_id=reviewer,
+            feedback="missing regression test for retries",
+            author="temis",
+        )
+
+        reopened = kb.get_task(conn, target)
+        reviewer_after = kb.get_task(conn, reviewer)
+        downstream_after = kb.get_task(conn, downstream)
+        running_after = kb.get_task(conn, running_child)
+
+    assert reopened is not None
+    assert reopened.status == "needs_rework"
+    assert reviewer_after is not None
+    assert reviewer_after.status == "todo"
+    assert downstream_after is not None
+    assert downstream_after.status == "todo"
+    assert running_after is not None
+    assert running_after.status == "running"
+
+
+def test_request_rework_rejects_incomplete_target_status(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        reviewer = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+
+        with pytest.raises(ValueError, match="completed implementation"):
+            kb.request_rework_task(
+                conn,
+                target_task_id=target,
+                reviewer_task_id=reviewer,
+                feedback="please redo before implementation finished",
+                author="temis",
+            )
+
+        task = kb.get_task(conn, target)
+
+    assert task is not None
+    assert task.status == "ready"
+
+
+def test_request_rework_allows_additional_feedback_on_needs_rework(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        assert kb.complete_task(conn, target, result="implementation done")
+        first_review = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+        assert kb.request_rework_task(
+            conn,
+            target_task_id=target,
+            reviewer_task_id=first_review,
+            feedback="missing regression test",
+            author="temis",
+        )
+        second_review = kb.create_task(
+            conn, title="follow-up review", assignee="temis", parents=[target]
+        )
+
+        assert kb.request_rework_task(
+            conn,
+            target_task_id=target,
+            reviewer_task_id=second_review,
+            feedback="also update docs",
+            author="temis",
+        )
+        task = kb.get_task(conn, target)
+        comments = kb.list_comments(conn, target)
+
+    assert task is not None
+    assert task.status == "needs_rework"
+    assert [comment.body for comment in comments][-2:] == [
+        "REQUEST_CHANGES: missing regression test",
+        "REQUEST_CHANGES: also update docs",
+    ]
+
+
+def test_request_rework_clears_stale_completion_fields_but_keeps_history(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        assert kb.complete_task(
+            conn,
+            target,
+            result="stale done result",
+            summary="completed implementation summary",
+        )
+        reviewer = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+
+        completed = kb.get_task(conn, target)
+        assert completed is not None
+        assert completed.status == "done"
+        assert completed.result == "stale done result"
+        assert completed.completed_at is not None
+
+        kb.request_rework_task(
+            conn,
+            target_task_id=target,
+            reviewer_task_id=reviewer,
+            feedback="please address review feedback",
+            author="temis",
+        )
+
+        reopened = kb.get_task(conn, target)
+        runs = kb.list_runs(conn, target)
+        comments = kb.list_comments(conn, target)
+        events = kb.list_events(conn, target)
+
+    assert reopened is not None
+    assert reopened.status == "needs_rework"
+    assert reopened.result is None
+    assert reopened.completed_at is None
+    assert [run.summary for run in runs] == ["completed implementation summary"]
+    assert comments[-1].body == "REQUEST_CHANGES: please address review feedback"
+    assert any(e.kind == "completed" for e in events)
+    assert any(e.kind == "rework_requested" for e in events)
+
+
+def test_request_rework_rejects_unlinked_target(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        unrelated_reviewer = kb.create_task(conn, title="review", assignee="temis")
+
+        with pytest.raises(ValueError, match="linked"):
+            kb.request_rework_task(
+                conn,
+                target_task_id=target,
+                reviewer_task_id=unrelated_reviewer,
+                feedback="please redo",
+                author="temis",
+            )
+
+
+def test_request_rework_requires_reviewer_task_id(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+
+        with pytest.raises(ValueError, match="reviewer_task_id"):
+            kb.request_rework_task(
+                conn,
+                target_task_id=target,
+                reviewer_task_id="",
+                feedback="please redo",
+                author="temis",
+            )
+
+        task = kb.get_task(conn, target)
+        assert task is not None
+        assert task.status == "ready"
+
+
+def test_request_rework_does_not_bypass_sticky_block(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        reviewer = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+        kb.block_task(conn, target, reason="human decision required")
+
+        with pytest.raises(ValueError, match="blocked"):
+            kb.request_rework_task(
+                conn,
+                target_task_id=target,
+                reviewer_task_id=reviewer,
+                feedback="please redo",
+                author="temis",
+            )
+
+        task = kb.get_task(conn, target)
+        assert task is not None
+        assert task.status == "blocked"
+
+
+def test_request_rework_rejects_running_target(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        reviewer = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+        claimed = kb.claim_task(conn, target, claimer="active-worker")
+        assert claimed is not None
+
+        with pytest.raises(ValueError, match="running"):
+            kb.request_rework_task(
+                conn,
+                target_task_id=target,
+                reviewer_task_id=reviewer,
+                feedback="please redo",
+                author="temis",
+            )
+
+        task = kb.get_task(conn, target)
+        assert task is not None
+        assert task.status == "running"
+
+
+def test_request_rework_rejects_archived_target(kanban_home):
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="implementation", assignee="hefesto")
+        reviewer = kb.create_task(conn, title="review", assignee="temis", parents=[target])
+        assert kb.archive_task(conn, target)
+
+        with pytest.raises(ValueError, match="archived"):
+            kb.request_rework_task(
+                conn,
+                target_task_id=target,
+                reviewer_task_id=reviewer,
+                feedback="please redo",
+                author="temis",
+            )
+
+        task = kb.get_task(conn, target)
+        assert task is not None
+        assert task.status == "archived"
+
+
+def test_claim_task_accepts_needs_rework_without_unblock(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="fix requested changes", assignee="hefesto")
+        conn.execute("UPDATE tasks SET status = 'needs_rework' WHERE id = ?", (task_id,))
+        conn.commit()
+
+        claimed = kb.claim_task(conn, task_id, claimer="test-claimer")
+
+    assert claimed is not None
+    assert claimed.status == "running"
 
 
 # ---------------------------------------------------------------------------

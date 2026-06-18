@@ -97,7 +97,10 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {
+    "triage", "todo", "scheduled", "ready", "needs_rework", "running",
+    "blocked", "review", "done", "archived",
+}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
@@ -2558,6 +2561,130 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
     ]
 
 
+def _tasks_are_linked(conn: sqlite3.Connection, left_id: str, right_id: str) -> bool:
+    """Return True when either task is linked as parent/child of the other."""
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM task_links "
+            "WHERE (parent_id = ? AND child_id = ?) "
+            "   OR (parent_id = ? AND child_id = ?) "
+            "LIMIT 1",
+            (left_id, right_id, right_id, left_id),
+        ).fetchone()
+    )
+
+
+def request_rework_task(
+    conn: sqlite3.Connection,
+    target_task_id: str,
+    *,
+    reason: Optional[str] = None,
+    feedback: Optional[str] = None,
+    reviewer: str = "kanban-reviewer",
+    author: Optional[str] = None,
+    reviewer_task_id: str,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """Record actionable review feedback and requeue a task for agent work.
+
+    This is not an unblock path: sticky ``blocked`` tasks remain blocked until
+    the explicit human/orchestrator unblock primitive runs. The reviewer task
+    must be linked to the target to avoid arbitrary lifecycle mutation by
+    review workers. This DB primitive is mode-agnostic by design; CLI/tool
+    callers enforce ``kanban.review_loop_mode`` before reaching it.
+    """
+    message = (reason if reason is not None else feedback or "").strip()
+    if not message:
+        raise ValueError("rework feedback is required")
+    reviewer_name = (author or reviewer or "kanban-reviewer").strip()
+    if not reviewer_name:
+        raise ValueError("reviewer is required")
+    now = int(time.time())
+    with write_txn(conn):
+        target = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (target_task_id,),
+        ).fetchone()
+        if target is None:
+            raise ValueError(f"unknown task {target_task_id}")
+        status = target["status"]
+        if status == "archived":
+            raise ValueError("cannot request rework on archived task")
+        if status == "running":
+            raise ValueError(
+                "cannot request rework on running task; wait for the active "
+                "implementation run to finish before requesting rework"
+            )
+        if status == "blocked" or _has_sticky_block(conn, target_task_id):
+            raise ValueError(
+                "cannot request rework on blocked task; unblock requires the "
+                "human/orchestrator path"
+            )
+        if not reviewer_task_id:
+            raise ValueError("reviewer_task_id is required for request rework")
+        reviewer_row = conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (reviewer_task_id,)
+        ).fetchone()
+        if reviewer_row is None:
+            raise ValueError(f"unknown reviewer task {reviewer_task_id}")
+        if not _tasks_are_linked(conn, target_task_id, reviewer_task_id):
+            raise ValueError(
+                "reviewer task must be linked to target task before "
+                "requesting rework"
+            )
+        if status not in {"done", "needs_rework"}:
+            raise ValueError(
+                "cannot request rework on task that has not completed "
+                "implementation"
+            )
+        current_run_id = target["current_run_id"]
+        if current_run_id:
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'reclaimed', outcome = 'reclaimed',
+                       summary = COALESCE(summary, 'rework requested'),
+                       ended_at = ?,
+                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                 WHERE id = ? AND ended_at IS NULL
+                """,
+                (now, int(current_run_id)),
+            )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (target_task_id, reviewer_name, f"REQUEST_CHANGES: {message}", now),
+        )
+        payload: dict[str, Any] = {
+            "reason": message,
+            "reviewer": reviewer_name,
+            "reviewer_task_id": reviewer_task_id,
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        conn.execute(
+            "UPDATE tasks "
+            "SET status = 'needs_rework', result = NULL, completed_at = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "current_run_id = NULL "
+            "WHERE id = ?",
+            (target_task_id,),
+        )
+        # A completed parent being reopened invalidates already-promoted
+        # children. Keep running/done children untouched, but stop stale
+        # ready work from being dispatched until the parent completes again.
+        conn.execute(
+            "UPDATE tasks SET status = 'todo' "
+            "WHERE status = 'ready' "
+            "AND id IN ("
+            "  SELECT child_id FROM task_links WHERE parent_id = ?"
+            ")",
+            (target_task_id,),
+        )
+        _append_event(conn, target_task_id, "rework_requested", payload)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Attachments
 # ---------------------------------------------------------------------------
@@ -2976,19 +3103,19 @@ def claim_task(
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
 ) -> Optional[Task]:
-    """Atomically transition ``ready -> running``.
+    """Atomically transition ``ready``/``needs_rework`` -> ``running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in a claimable status).
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
-        # Structural invariant: never transition ready -> running while any
+        # Structural invariant: never transition ready/needs_rework -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
-        # release_stale_claims, manual SQL) set status='ready'. If a racy
+        # release_stale_claims, manual SQL) set a claimable status. If a racy
         # writer promoted a task with undone parents, demote it back to
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
@@ -3002,7 +3129,7 @@ def claim_task(
         if undone:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
-                "WHERE id = ? AND status = 'ready'",
+                "WHERE id = ? AND status IN ('ready', 'needs_rework')",
                 (task_id,),
             )
             _append_event(
@@ -3015,7 +3142,8 @@ def claim_task(
         # it when the CAS resets the pointer below. No-op when the invariant
         # holds (the common case).
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'ready'",
+            "SELECT current_run_id FROM tasks "
+            "WHERE id = ? AND status IN ('ready', 'needs_rework')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -3038,7 +3166,7 @@ def claim_task(
                    claim_expires = ?,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
-               AND status = 'ready'
+               AND status IN ('ready', 'needs_rework')
                AND claim_lock IS NULL
             """,
             (lock, expires, now, task_id),
@@ -4116,7 +4244,7 @@ def block_task(
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running -> blocked``."""
+    """Transition dispatchable work (running/ready/needs_rework) to blocked."""
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -4127,7 +4255,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'needs_rework')
                 """,
                 (task_id,),
             )
@@ -4140,7 +4268,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'needs_rework')
                    AND current_run_id = ?
                 """,
                 (task_id, int(expected_run_id)),
@@ -5981,7 +6109,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'ready' AND assignee IS NOT NULL "
+        "WHERE status IN ('ready', 'needs_rework') AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
     if not rows:
@@ -6043,7 +6171,7 @@ def dispatch_once(
       2. Reclaim stale running tasks (no recent heartbeat).
       3. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
+      4. For each ready/needs_rework task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
@@ -6110,7 +6238,7 @@ def dispatch_once(
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
-        "WHERE status = 'ready' AND claim_lock IS NULL "
+        "WHERE status IN ('ready', 'needs_rework') AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     # Honour kanban.max_in_progress: if the board already has enough running
