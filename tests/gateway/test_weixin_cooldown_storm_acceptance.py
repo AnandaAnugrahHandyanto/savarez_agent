@@ -440,13 +440,17 @@ class TestScenario6BoundedCallCount:
 # ─── 场景7：typing 间隔 / 回归 ───────────────────────────────────────────────
 
 class TestScenario7TypingInterval:
-    """场景7.P7：_typing_interval_seconds == 3.0（改动后）。"""
+    """场景7.P7：_typing_interval_seconds == 5.0（本次限流根治改动1，对齐 iLink spec §7.2）。"""
 
-    def test_S7_P7_typing_interval_is_3_seconds(self):
-        """场景7.P7：_typing_interval_seconds shall == 3.0。"""
+    def test_S7_P7_typing_interval_is_5_seconds(self):
+        """场景7.P7：_typing_interval_seconds shall == 5.0（HERMES_WEIXIN_TYPING_INTERVAL 默认）。
+
+        注：上次修复（985d4bec2）曾改 3.0 恢复实时感；本次根治发现 typing 高频累积是限流主因，
+        改回 5.0（对齐 spec）+ _typing_max_calls=30 上限，从源头控配额。
+        """
         adapter = _make_adapter()
-        assert adapter._typing_interval_seconds == 3.0, (
-            f"场景7.P7 失败：_typing_interval_seconds 应为 3.0，"
+        assert adapter._typing_interval_seconds == 5.0, (
+            f"场景7.P7 失败：_typing_interval_seconds 应为 5.0，"
             f"实际 {adapter._typing_interval_seconds}"
         )
 

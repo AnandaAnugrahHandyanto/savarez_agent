@@ -1228,15 +1228,39 @@ class WeixinAdapter(BasePlatformAdapter):
         # timestamp to avoid resetting the iLink cooldown window. 0.0 = no cooldown.
         self._rate_limited_until: float = 0.0
 
-        # WeChat iLink typing keepalive interval — 3 s.
-        # Originally 2 s (Telegram/Discord cadence); f96688644 misdiagnosed
-        # typing as the rate-limit root cause and raised it to 5 s, which
-        # suppressed the "processing visible" UX during long agent runs.
-        # With the cooldown gating now in send() / send_typing() and the
-        # stream_consumer retry aligned to adapter.rate_limited_until, the
-        # self-oscillation root cause is fixed and 3 s is safe while
-        # restoring real-time feel.
-        self._typing_interval_seconds: float = 3.0
+        # WeChat iLink typing keepalive interval — 5 s per iLink protocol
+        # spec §7.2. Configurable via HERMES_WEIXIN_TYPING_INTERVAL for
+        # QA tuning. Combined with _typing_max_calls below, this bounds the
+        # total typing call volume per agent run to stay within iLink's
+        # account-level quota (root cause of the 2026-06 rate-limit storm:
+        # 3 s interval + no cap = ~86 typing calls on a 260 s run, burning
+        # the quota by ~call 60).
+        self._typing_interval_seconds: float = float(
+            os.getenv("HERMES_WEIXIN_TYPING_INTERVAL", "5.0")
+        )
+        # Hard cap on total send_typing calls per _keep_typing invocation.
+        # 30 × 5 s = 150 s of visible "typing" indicator, after which long
+        # tasks typically near completion. Prevents quota exhaustion on
+        # multi-minute runs. Configurable via HERMES_WEIXIN_TYPING_MAX_CALLS.
+        self._typing_max_calls: Optional[int] = int(
+            os.getenv("HERMES_WEIXIN_TYPING_MAX_CALLS", "30")
+        )
+
+        # iLink call observability counters (account-level — iLink rate-limits
+        # per account, not per chat). Reset per agent run. Enable per-call
+        # DEBUG trace via HERMES_WEIXIN_ILINK_TRACE=1. These power the
+        # rate-limit "smoking gun" WARNING so the next incident is diagnosable
+        # from logs directly instead of three rounds of inference.
+        self._ilink_send_count: int = 0
+        self._ilink_typing_count: int = 0
+        self._ilink_trace: bool = os.getenv("HERMES_WEIXIN_ILINK_TRACE", "0") == "1"
+        # Bounded retry count for final-conclusion delivery when it collides
+        # with a rate-limit window (read by base._send_with_retry). Centralised
+        # here so the env name lives on the weixin adapter (the only platform
+        # with iLink-style per-account rate limits).
+        self._delivery_max_retries: int = int(
+            os.getenv("HERMES_DELIVERY_MAX_RETRIES", "3")
+        )
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
@@ -1633,6 +1657,12 @@ class WeixinAdapter(BasePlatformAdapter):
         """
         last_error: Optional[Exception] = None
         retried_without_token = False
+        self._ilink_send_count += 1
+        if self._ilink_trace:
+            logger.debug(
+                "[%s] ilink sendmessage #%d to %s",
+                self.name, self._ilink_send_count, _safe_id(chat_id),
+            )
         for attempt in range(self._send_chunk_retries + 1):
             try:
                 resp = await _send_message(
@@ -1652,7 +1682,18 @@ class WeixinAdapter(BasePlatformAdapter):
                         is_session_expired = (
                             ret == SESSION_EXPIRED_ERRCODE
                             or errcode == SESSION_EXPIRED_ERRCODE
-                            or _is_stale_session_ret(ret, errcode, resp.get("errmsg"))
+                            # NOTE: ``_is_stale_session_ret`` (empty-errmsg ret=-2
+                            # → session expired) was removed here on 2026-06-17.
+                            # Log evidence showed empty-errmsg ret=-2 is iLink's
+                            # rate-limit signal, not a stale token: after retry it
+                            # returned ret=-2 again with "rate limited". Misclassifying
+                            # it as session-expired triggered a tokenless retry that
+                            # fired *one more* iLink call into an already-limited
+                            # account — the rate-limit amplifier. Now ret=-2 (any
+                            # errmsg) falls through to the is_rate_limited branch
+                            # below and goes straight to cooldown. Genuine token
+                            # expiry is errcode=-14, which keeps its tokenless retry.
+                            # See issue #18100 for the original (now-superseded) fix.
                         )
                         # Session expired — strip token and retry once
                         if is_session_expired and not retried_without_token and context_token:
@@ -1681,8 +1722,12 @@ class WeixinAdapter(BasePlatformAdapter):
                                 cooldown = min(float(retry_after), self._rate_limit_backoff_cap_seconds)
                             self._rate_limited_until = time.time() + cooldown
                             logger.warning(
-                                "[%s] rate limited for %s; cooling down for %.1fs (no retry)",
-                                self.name, _safe_id(chat_id), cooldown,
+                                "[%s] rate limited on sendmessage #%d "
+                                "(send_count=%d typing_count=%d) for %s; "
+                                "cooling down for %.1fs (no retry)",
+                                self.name, self._ilink_send_count,
+                                self._ilink_send_count, self._ilink_typing_count,
+                                _safe_id(chat_id), cooldown,
                             )
                             raise RateLimitedError(
                                 f"[RATE_LIMITED] iLink sendmessage rate limited: "
@@ -1829,6 +1874,18 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
 
+    async def on_processing_start(self, event) -> None:
+        """Reset iLink call counters at the start of each agent run.
+
+        Makes the observability WARNING's #N reflect per-run (not
+        process-lifetime) counts, so "sendmessage #N" / "typing #N" reads as
+        "the Nth call of THIS run" — the per-run smoking gun the user asked
+        for (qa-reviewer Medium: counters were previously process-level).
+        """
+        await super().on_processing_start(event)
+        self._ilink_send_count = 0
+        self._ilink_typing_count = 0
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:
             return
@@ -1837,6 +1894,12 @@ class WeixinAdapter(BasePlatformAdapter):
         typing_ticket = self._typing_cache.get(chat_id)
         if not typing_ticket:
             return
+        self._ilink_typing_count += 1
+        if self._ilink_trace:
+            logger.debug(
+                "[%s] ilink sendtyping #%d to %s",
+                self.name, self._ilink_typing_count, _safe_id(chat_id),
+            )
         try:
             await _send_typing(
                 self._send_session,

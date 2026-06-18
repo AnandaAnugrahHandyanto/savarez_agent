@@ -443,30 +443,33 @@ class TestSendTextChunkRateLimitFastFail:
             )
 
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
-    def test_stale_session_still_retries_not_fast_fail(self, send_message_mock):
-        """ret=-2 但 errmsg 为空/'unknown error' 是 stale session，不应速败。
+    def test_stale_session_now_treated_as_rate_limit(self, send_message_mock):
+        """改动2：ret=-2 + 空 errmsg 不再误判 stale session，走 rate limit（砍放大器）。
 
-        这是关键回归防护：stale session 和真实限流的区分逻辑不能被打乱。
+        旧逻辑（_is_stale_session_ret）把空 errmsg 的 ret=-2 当 stale session →
+        tokenless retry（放大器，在已限流时多打一次 iLink）。改动2 移除此误判：
+        ret=-2（无论 errmsg）统一走 rate limit 分支 → 设 cooldown + raise，不 retry。
+
+        回归防护：真正 token 过期是 errcode=-14（保留 tokenless retry，见 AMP-02）。
         """
         adapter = _connected_adapter()
         adapter._send_chunk_retries = 3
-        send_message_mock.side_effect = [
-            {"ret": -2, "errcode": None, "errmsg": None},  # stale session
-            {"ret": 0},  # success after retry without token
-        ]
+        send_message_mock.return_value = {
+            "ret": -2, "errcode": None, "errmsg": None,  # 旧误判源；新：rate limit
+        }
 
-        # 不应抛出异常 — stale session 重试后成功返回
-        asyncio.run(
-            adapter._send_text_chunk(
-                chat_id="wxid_test123",
-                chunk="hello",
-                context_token="ctx-token",
-                client_id="client-1",
+        # 改动2：空 errmsg ret=-2 走 rate limit → raise RateLimitedError（不 tokenless retry）
+        with pytest.raises(RateLimitedError):
+            asyncio.run(
+                adapter._send_text_chunk(
+                    chat_id="wxid_test123",
+                    chunk="hello",
+                    context_token="ctx-token",
+                    client_id="client-1",
+                )
             )
-        )
-        # 两次调用：第一次 stale，第二次不带 token 重试成功
-        assert send_message_mock.await_count == 2
-        assert send_message_mock.await_args_list[1].kwargs["context_token"] is None
+        # 砍放大器：仅 1 次 iLink 调用（不 tokenless retry）
+        assert send_message_mock.await_count == 1
 
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
     def test_rate_limited_error_includes_ret_and_errcode(self, send_message_mock):
@@ -524,7 +527,10 @@ class TestSendWithRetryRateLimitIdentification:
         assert result.success is False
         assert "[RATE_LIMITED]" in (result.error or "")
         # 只调用一次 send — 无 fallback
-        send_mock.assert_awaited_once()
+        # 改动3（结论必达有界重试）：限流时 send 重试 HERMES_DELIVERY_MAX_RETRIES 次
+        # （默认 3），用尽后 best-effort 投递失败通知 1 次。总调用 1 + 3 + 1 = 5。
+        # 仍不执行 plain-text fallback（notice 是失败通知，非 fallback）。
+        assert send_mock.await_count == 5
 
     @patch.object(WeixinAdapter, "send", new_callable=AsyncMock)
     def test_skip_fallback_when_error_contains_rate_limited_text(self, send_mock):
@@ -540,7 +546,10 @@ class TestSendWithRetryRateLimitIdentification:
         )
 
         assert result.success is False
-        send_mock.assert_awaited_once()
+        # 改动3（结论必达有界重试）：限流时 send 重试 HERMES_DELIVERY_MAX_RETRIES 次
+        # （默认 3），用尽后 best-effort 投递失败通知 1 次。总调用 1 + 3 + 1 = 5。
+        # 仍不执行 plain-text fallback（notice 是失败通知，非 fallback）。
+        assert send_mock.await_count == 5
 
     @patch.object(WeixinAdapter, "send", new_callable=AsyncMock)
     def test_still_does_fallback_for_ordinary_format_error(self, send_mock):
@@ -551,7 +560,7 @@ class TestSendWithRetryRateLimitIdentification:
             SendResult(success=True, message_id="msg-fb"),
         ]
 
-        result = asyncio.run(
+        asyncio.run(
             adapter._send_with_retry(chat_id="wxid_test123", content="# Title\n\ntext")
         )
 
@@ -574,7 +583,10 @@ class TestSendWithRetryRateLimitIdentification:
         )
 
         assert result.success is False
-        send_mock.assert_awaited_once()
+        # 改动3（结论必达有界重试）：限流时 send 重试 HERMES_DELIVERY_MAX_RETRIES 次
+        # （默认 3），用尽后 best-effort 投递失败通知 1 次。总调用 1 + 3 + 1 = 5。
+        # 仍不执行 plain-text fallback（notice 是失败通知，非 fallback）。
+        assert send_mock.await_count == 5
 
     @patch.object(WeixinAdapter, "send", new_callable=AsyncMock)
     def test_rate_limited_text_case_insensitive(self, send_mock):
@@ -590,7 +602,10 @@ class TestSendWithRetryRateLimitIdentification:
         )
 
         assert result.success is False
-        send_mock.assert_awaited_once()
+        # 改动3（结论必达有界重试）：限流时 send 重试 HERMES_DELIVERY_MAX_RETRIES 次
+        # （默认 3），用尽后 best-effort 投递失败通知 1 次。总调用 1 + 3 + 1 = 5。
+        # 仍不执行 plain-text fallback（notice 是失败通知，非 fallback）。
+        assert send_mock.await_count == 5
 
     @patch.object(WeixinAdapter, "send", new_callable=AsyncMock)
     def test_unrelated_errors_not_blocked_by_rate_limit_check(self, send_mock):
@@ -604,7 +619,7 @@ class TestSendWithRetryRateLimitIdentification:
             SendResult(success=True, message_id="msg-fb"),
         ]
 
-        result = asyncio.run(
+        asyncio.run(
             adapter._send_with_retry(chat_id="wxid_test123", content="long" * 1000)
         )
 
@@ -648,7 +663,6 @@ class TestEndToEndRateLimitCooldown:
         result = asyncio.run(adapter.send("wxid_test123", "hello"))
         assert result.success is False
         assert adapter._rate_limited_until > 0.0
-        cooldown = adapter._rate_limited_until
 
         # Step 2: 冷却期内 send_typing 被跳过
         asyncio.run(adapter.send_typing("wxid_test123"))

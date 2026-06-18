@@ -2011,9 +2011,21 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        # Optional per-adapter cap on total typing calls during a single
+        # agent run. ``None`` (the base default) means unlimited —
+        # platforms opt in by setting ``_typing_max_calls`` (e.g. WeChat
+        # iLink caps at 30 to stay within account-level quota on long runs).
+        _max_calls = getattr(self, '_typing_max_calls', None)
+        _count = 0
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
+                    return
+                if _max_calls is not None and _count >= _max_calls:
+                    logger.info(
+                        "[%s] typing stopped after %d calls (max reached)",
+                        self.name, _count,
+                    )
                     return
                 if chat_id not in self._typing_paused:
                     try:
@@ -2021,6 +2033,7 @@ class BasePlatformAdapter(ABC):
                             self.send_typing(chat_id, metadata=metadata),
                             timeout=_send_typing_timeout,
                         )
+                        _count += 1
                     except asyncio.TimeoutError:
                         # Slow network — abandon this tick, keep the loop
                         # on schedule so the next send_typing fires fresh.
@@ -2259,10 +2272,48 @@ class BasePlatformAdapter(ABC):
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
 
-        # Rate-limit errors are not formatting problems — plain-text fallback
-        # would just hit the same limit and amplify the cooldown. Return the
-        # failure so the caller (or user) can retry after the cooldown expires.
+        # Rate-limit errors: conclusion-delivery safety net. Previously this
+        # returned the failure immediately, silently dropping the agent's final
+        # reply when it collided with a rate-limit window — the direct cause of
+        # users "never receiving the result, having to ask for progress". Now
+        # wait out the adapter cooldown and retry the send a bounded number of
+        # times so the conclusion reaches the user. Bounded (not infinite) to
+        # avoid hanging the session on a persistently-limited account.
         if "rate limited" in error_str.lower() or "[RATE_LIMITED]" in error_str:
+            import time as _time
+            _max_delivery = int(getattr(self, "_delivery_max_retries", None) or os.getenv("HERMES_DELIVERY_MAX_RETRIES", "3"))
+            for _delivery_attempt in range(_max_delivery):
+                _remaining = max(0.0, getattr(self, "rate_limited_until", 0.0) - _time.time())
+                if _remaining > 0.0:
+                    await asyncio.sleep(_remaining)
+                result = await self.send(
+                    chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata,
+                )
+                if result.success:
+                    logger.info(
+                        "[%s] Send succeeded on delivery retry %d (post-cooldown)",
+                        self.name, _delivery_attempt + 1,
+                    )
+                    return result
+                _e = result.error or ""
+                if "rate limited" not in _e.lower() and "[RATE_LIMITED]" not in _e:
+                    break  # error type changed — stop retrying, return failure
+            # Retries exhausted while still rate-limited: best-effort delivery-failure
+            # notice so the user knows to retry (mirrors the is_network exhaustion path
+            # at the for-else above). Without this, the conclusion is silently dropped
+            # — the exact "user never receives the result" symptom this change fixes.
+            logger.error(
+                "[%s] Failed to deliver response after %d rate-limit retries: %s",
+                self.name, _max_delivery, error_str,
+            )
+            notice = (
+                "⚠️ Message delivery failed after multiple attempts. "
+                "Please try again — your request was processed but the response could not be sent."
+            )
+            try:
+                await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
+            except Exception as notify_err:
+                logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
             return result
 
         # Non-network / post-retry formatting failure: try plain text as fallback
