@@ -2746,6 +2746,10 @@ def run_conversation(
                         # so _flush_messages_to_session_db writes compressed
                         # messages to the new session, not skipping them.
                         conversation_history = None
+                        # Defensive: ensure _last_flushed_db_idx is reset
+                        # so compressed messages are written to the new
+                        # child session DB, not skipped by stale offset.
+                        agent._last_flushed_db_idx = 0
                         if len(messages) < original_len or old_ctx > _reduced_ctx:
                             agent._buffer_status(
                                 f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
@@ -2922,6 +2926,8 @@ def run_conversation(
                     # so _flush_messages_to_session_db writes compressed
                     # messages to the new session, not skipping them.
                     conversation_history = None
+                    # Defensive: ensure _last_flushed_db_idx is reset
+                    agent._last_flushed_db_idx = 0
 
                     if len(messages) < original_len:
                         agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
@@ -3078,6 +3084,8 @@ def run_conversation(
                     # so _flush_messages_to_session_db writes compressed
                     # messages to the new session, not skipping them.
                     conversation_history = None
+                    # Defensive: ensure _last_flushed_db_idx is reset
+                    agent._last_flushed_db_idx = 0
 
                     if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                         if len(messages) < original_len:
@@ -4055,6 +4063,8 @@ def run_conversation(
                     # _flush_messages_to_session_db writes compressed messages
                     # to the new session (see preflight compression comment).
                     conversation_history = None
+                    # Defensive: ensure _last_flushed_db_idx is reset
+                    agent._last_flushed_db_idx = 0
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
