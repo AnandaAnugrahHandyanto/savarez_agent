@@ -2126,16 +2126,29 @@ def build_anthropic_kwargs(
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
+        # 1. Prepend billing-attribution token as system[0].
+        #    Anthropic's server-side billing gate routes OAuth requests
+        #    to the subscription plan only when the request carries this
+        #    machine-parsed header block.  Without it, Pro/Max/Team
+        #    requests are attributed as third-party and rejected with
+        #    HTTP 400 "extra usage, not plan limits".  GH-48176.
+        billing_block = {
+            "type": "text",
+            "text": (
+                f"x-anthropic-billing-header: cc_version="
+                f"{_get_claude_code_version()}; cc_entrypoint=sdk-cli;"
+            ),
+        }
+        # 2. Prepend Claude Code system prompt identity
         cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
         if isinstance(system, list):
-            system = [cc_block] + system
+            system = [billing_block, cc_block] + system
         elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
+            system = [billing_block, cc_block, {"type": "text", "text": system}]
         else:
-            system = [cc_block]
+            system = [billing_block, cc_block]
 
-        # 2. Sanitize system prompt — replace product name references
+        # 3. Sanitize system prompt — replace product name references
         #    to avoid Anthropic's server-side content filters.
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
@@ -2146,7 +2159,7 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
+        # 4. Prefix tool names with mcp_ (Claude Code convention)
         #    Skip names that already begin with the marker — native MCP server
         #    tools (from mcp_servers: in config.yaml) are registered under their
         #    full mcp_<server>_<tool> name and would double-prefix otherwise,
@@ -2156,7 +2169,7 @@ def build_anthropic_kwargs(
                 if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
                     tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
+        # 5. Prefix tool names in message history (tool_use and tool_result blocks)
         for msg in anthropic_messages:
             content = msg.get("content")
             if isinstance(content, list):
