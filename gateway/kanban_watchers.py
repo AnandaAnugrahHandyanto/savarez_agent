@@ -77,6 +77,17 @@ class GatewayKanbanWatchersMixin:
             return
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        # Allow users to widen the notified kinds set via config.yaml
+        # ``kanban.notify_kinds``.  When None (default), the original
+        # terminal set is used (backward compatible).  When set to a
+        # list, that list overrides — e.g. [completed, blocked, ready]
+        # adds blocked→ready unblock pings; adding review-required
+        # surfaces block reasons prefixed "review-required:".
+        _notify_kinds_cfg = kanban_cfg.get("notify_kinds")
+        if _notify_kinds_cfg and isinstance(_notify_kinds_cfg, (list, tuple)):
+            NOTIFY_KINDS = tuple(str(k) for k in _notify_kinds_cfg)
+        else:
+            NOTIFY_KINDS = TERMINAL_KINDS
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -178,29 +189,65 @@ class GatewayKanbanWatchersMixin:
                                         sub.get("task_id"), platform or "<missing>",
                                     )
                                     continue
-                                old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
-                                    conn,
-                                    task_id=sub["task_id"],
-                                    platform=sub["platform"],
-                                    chat_id=sub["chat_id"],
-                                    thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
-                                )
-                                if not events:
-                                    continue
-                                task = _kb.get_task(conn, sub["task_id"])
-                                logger.debug(
-                                    "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                                    len(events), sub["task_id"], slug, old_cursor, cursor,
-                                )
-                                deliveries.append({
-                                    "sub": sub,
-                                    "old_cursor": old_cursor,
-                                    "cursor": cursor,
-                                    "events": events,
-                                    "task": task,
-                                    "board": slug,
-                                })
+                                # Board-level subs use a different claim path
+                                # that fetches events across all tasks.
+                                if _kb.is_board_sub(sub["task_id"]):
+                                    old_cursor, cursor, events = _kb.claim_unseen_events_for_board_sub(
+                                        conn,
+                                        board_slug=slug,
+                                        platform=sub["platform"],
+                                        chat_id=sub["chat_id"],
+                                        thread_id=sub.get("thread_id") or "",
+                                        kinds=NOTIFY_KINDS,
+                                    )
+                                    if not events:
+                                        continue
+                                    # Build a per-event task cache so we can
+                                    # format each event with its own task title
+                                    # and assignee (board-subs span tasks).
+                                    task_cache: dict[str, Any] = {}
+                                    for ev in events:
+                                        if ev.task_id not in task_cache:
+                                            task_cache[ev.task_id] = _kb.get_task(conn, ev.task_id)
+                                    logger.debug(
+                                        "kanban notifier: claimed %d event(s) for board-sub %s on board %s cursor %s→%s",
+                                        len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    )
+                                    deliveries.append({
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "task": None,  # board-subs don't have a single task
+                                        "board": slug,
+                                        "is_board_sub": True,
+                                        "task_cache": task_cache,
+                                    })
+                                else:
+                                    old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                                        conn,
+                                        task_id=sub["task_id"],
+                                        platform=sub["platform"],
+                                        chat_id=sub["chat_id"],
+                                        thread_id=sub.get("thread_id") or "",
+                                        kinds=NOTIFY_KINDS,
+                                    )
+                                    if not events:
+                                        continue
+                                    task = _kb.get_task(conn, sub["task_id"])
+                                    logger.debug(
+                                        "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
+                                        len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    )
+                                    deliveries.append({
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "task": task,
+                                        "board": slug,
+                                        "is_board_sub": False,
+                                    })
                         finally:
                             conn.close()
                     return deliveries
@@ -235,12 +282,25 @@ class GatewayKanbanWatchersMixin:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
+                    is_board_sub = d.get("is_board_sub", False)
+                    task_cache = d.get("task_cache", {})
                     for ev in d["events"]:
                         kind = ev.kind
+                        # For board-level subs, each event may reference a
+                        # different task; look up from the per-event cache.
+                        if is_board_sub:
+                            ev_task = task_cache.get(ev.task_id)
+                            display_id = ev.task_id
+                            ev_title = (ev_task.title if ev_task else ev.task_id)[:120]
+                            who = (ev_task.assignee if ev_task and ev_task.assignee else None)
+                        else:
+                            ev_task = task
+                            display_id = sub["task_id"]
+                            ev_title = title
+                            who = (task.assignee if task and task.assignee else None)
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
-                        who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
@@ -256,30 +316,38 @@ class GatewayKanbanWatchersMixin:
                                 lines = payload_summary.strip().splitlines()
                                 h = lines[0][:200] if lines else payload_summary[:200]
                                 handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
+                            elif ev_task and ev_task.result:
+                                lines = ev_task.result.strip().splitlines()
+                                r = lines[0][:160] if lines else ev_task.result[:160]
                                 handoff = f"\n{r}"
                             msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
+                                f"✔ {tag}Kanban {display_id} done"
+                                f" — {ev_title}{handoff}"
                             )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                            # Detect review-required blocks: block reasons
+                            # prefixed "review-required:" get a dedicated emoji
+                            # and phrasing so they surface clearly.
+                            if reason and "review-required:" in reason.lower():
+                                msg = f"🔍 {tag}Kanban {display_id} needs review —{reason}"
+                            else:
+                                msg = f"⏸ {tag}Kanban {display_id} blocked{reason}"
+                        elif kind == "ready":
+                            msg = f"▶ {tag}Kanban {display_id} ready — {ev_title}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
+                                f"✖ {tag}Kanban {display_id} gave up "
                                 f"after repeated spawn failures{err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
+                                f"✖ {tag}Kanban {display_id} worker crashed "
                                 f"(pid gone); dispatcher will retry"
                             )
                         elif kind == "timed_out":
@@ -287,7 +355,7 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
+                                f"⏱ {tag}Kanban {display_id} timed out "
                                 f"(max_runtime={limit}s); will retry"
                             )
                         else:
@@ -375,11 +443,14 @@ class GatewayKanbanWatchersMixin:
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
-                        task_terminal = task and task.status in {"done", "archived"}
-                        if task_terminal:
-                            await asyncio.to_thread(
-                                self._kanban_unsub, sub, board_slug,
-                            )
+                        # Board-level subs never auto-unsubscribe — they
+                        # outlive any individual task.
+                        if not is_board_sub:
+                            task_terminal = task and task.status in {"done", "archived"}
+                            if task_terminal:
+                                await asyncio.to_thread(
+                                    self._kanban_unsub, sub, board_slug,
+                                )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             # Sleep with cancellation checks.

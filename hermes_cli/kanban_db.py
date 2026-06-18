@@ -7265,6 +7265,134 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+# Board-level subscriptions use a sentinel task_id so they fit in the
+# existing ``kanban_notify_subs`` table without a schema change.  The
+# sentinel is ``__board__:<slug>`` — the prefix makes it easy to detect
+# and filter board-subs from per-task subs.
+BOARD_SUB_PREFIX = "__board__:"
+
+
+def is_board_sub(task_id: str) -> bool:
+    """Return True if *task_id* is a board-level subscription sentinel."""
+    return task_id.startswith(BOARD_SUB_PREFIX)
+
+
+def board_sub_task_id(slug: str) -> str:
+    """Return the sentinel task_id for a board-level subscription."""
+    return f"{BOARD_SUB_PREFIX}{slug}"
+
+
+def add_board_notify_sub(
+    conn: sqlite3.Connection,
+    *,
+    board_slug: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> None:
+    """Register a board-level notification subscription.
+
+    Like :func:`add_notify_sub` but subscribes to *all* events on a board,
+    not just one task.  The ``last_event_id`` cursor is seeded at the
+    current max ``task_events.id`` so NO history is replayed on first
+    subscribe — identical semantics to the per-task path.
+    """
+    sentinel = board_sub_task_id(board_slug)
+    now = int(time.time())
+    with write_txn(conn):
+        # Seed cursor at current max event id (no history replay)
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
+        ).fetchone()
+        max_eid = int(row["m"])
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_notify_subs
+                (task_id, platform, chat_id, thread_id, user_id,
+                 notifier_profile, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (sentinel, platform, chat_id, thread_id or "",
+             user_id, notifier_profile, now, max_eid),
+        )
+        # If the row already existed, do NOT advance the cursor — that
+        # could skip events. Only backfill notifier_profile if missing.
+        if notifier_profile:
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET notifier_profile = ?
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                   AND (notifier_profile IS NULL OR notifier_profile = '')
+                """,
+                (notifier_profile, sentinel, platform, chat_id, thread_id or ""),
+            )
+
+
+def claim_unseen_events_for_board_sub(
+    conn: sqlite3.Connection,
+    *,
+    board_slug: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+    limit: int = 200,
+) -> tuple[int, int, list[Event]]:
+    """Atomically claim unseen notification events for a board-level sub.
+
+    Like :func:`claim_unseen_events_for_sub` but fetches events across
+    ALL tasks on the board (no ``task_id`` filter in the WHERE clause).
+    The claim is capped at *limit* events per tick to avoid huge payloads
+    on busy boards.
+    """
+    sentinel = board_sub_task_id(board_slug)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (sentinel, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        kind_list = list(kinds) if kinds else None
+        q = (
+            "SELECT * FROM task_events WHERE id > ? "
+            + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+            + "ORDER BY id ASC LIMIT ?"
+        )
+        params: list[Any] = [old_cursor]
+        if kind_list:
+            params.extend(kind_list)
+        params.append(limit)
+        rows = conn.execute(q, params).fetchall()
+        out: list[Event] = []
+        new_cursor = old_cursor
+        for r in rows:
+            try:
+                payload = json.loads(r["payload"]) if r["payload"] else None
+            except Exception:
+                payload = None
+            out.append(Event(
+                id=r["id"], task_id=r["task_id"], kind=r["kind"],
+                payload=payload, created_at=r["created_at"],
+                run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+            ))
+            new_cursor = max(new_cursor, int(r["id"]))
+        if not out:
+            return old_cursor, old_cursor, []
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (int(new_cursor), sentinel, platform, chat_id, thread_id or "", int(old_cursor)),
+        )
+        return old_cursor, new_cursor, out
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,

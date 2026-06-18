@@ -668,6 +668,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                               "(e.g. 'completed,blocked,gave_up,crashed,timed_out')")
     p_watch.add_argument("--interval", type=float, default=0.5,
                          help="Poll interval in seconds (default: 0.5)")
+    p_watch.add_argument("--board-view", action="store_true",
+                         help="Board-at-a-glance: auto-refreshing status x assignee "
+                              "matrix + recent transitions (park in a tmux pane)")
 
     # --- stats ---
     p_stats = sub.add_parser(
@@ -679,9 +682,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub = sub.add_parser(
         "notify-subscribe",
         help="Subscribe a gateway source to a task's terminal events "
-             "(used by /kanban subscribe in the gateway adapter)",
+             "(used by /kanban subscribe in the gateway adapter). "
+             "Use --board to subscribe to a whole board.",
     )
-    p_nsub.add_argument("task_id")
+    p_nsub.add_argument("task_id", nargs="?", default=None,
+                         help="Task to subscribe to (omit when using --board)")
+    p_nsub.add_argument("--board", default=None,
+                         help="Subscribe to all events on this board (board-level sub)")
     p_nsub.add_argument("--platform", required=True)
     p_nsub.add_argument("--chat-id", required=True)
     p_nsub.add_argument("--thread-id", default=None)
@@ -2347,8 +2354,100 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     return 0
 
 
+def _render_board_glance(
+    stats: dict, events: list[dict], now: int,
+) -> str:
+    """Format a compact board-at-a-glance panel.
+
+    Returns a multi-line string suitable for ANSI-in-place redraw
+    (``\\033[H`` to home cursor, no ``clear`` flicker).
+    """
+    STATUS_ORDER = ("triage", "todo", "scheduled", "ready", "running", "blocked", "done")
+    ICONS = {
+        "triage": "❓", "todo": "◻", "scheduled": "⏱",
+        "ready": "▶", "running": "●", "blocked": "⊘", "done": "✓",
+    }
+    lines: list[str] = []
+
+    # Header
+    lines.append("╔══ Kanban Board ══════════════════════════════════════╗")
+
+    # Status x assignee matrix
+    by_status = stats.get("by_status", {})
+    by_assignee = stats.get("by_assignee", {})
+    assignees = sorted(by_assignee.keys()) if by_assignee else []
+
+    # Column widths
+    status_col = 10
+    total_col = 6
+    assignee_col_w = 7  # per-assignee column width
+
+    # Header row
+    hdr = f"║ {'Status':<{status_col}} {'Total':>{total_col}}"
+    for a in assignees:
+        short = a[:assignee_col_w]
+        hdr += f" {short:>{assignee_col_w}}"
+    lines.append(hdr + " ║")
+
+    # Separator
+    sep = f"║ {'─' * status_col} {'─' * total_col}"
+    for _ in assignees:
+        sep += f" {'─' * assignee_col_w}"
+    lines.append(sep + " ║")
+
+    # Data rows
+    for st in STATUS_ORDER:
+        icon = ICONS.get(st, "?")
+        count = by_status.get(st, 0)
+        row = f"║ {icon} {st:<{status_col - 2}} {count:>{total_col}}"
+        for a in assignees:
+            val = by_assignee.get(a, {}).get(st, 0)
+            row += f" {val:>{assignee_col_w}}"
+        lines.append(row + " ║")
+
+    # Oldest ready age
+    age = stats.get("oldest_ready_age_seconds")
+    if age is not None:
+        age_str = f"{int(age)}s"
+        if age >= 3600:
+            age_str = f"{int(age / 3600)}h{int((age % 3600) / 60)}m"
+        elif age >= 60:
+            age_str = f"{int(age / 60)}m"
+        lines.append(f"║ Oldest ready: {age_str:<39} ║")
+    else:
+        lines.append(f"║ Oldest ready: —{'':<38} ║")
+
+    # Recent transitions (last 8)
+    lines.append("╠══ Recent Transitions ════════════════════════════════╣")
+    shown = events[-8:] if len(events) > 8 else events
+    if not shown:
+        lines.append("║  (no recent events)                               ║")
+    else:
+        for ev in shown:
+            icon = ICONS.get(ev.get("kind", ""), ev.get("kind", "?")[:1])
+            ts = _fmt_ts(ev.get("created_at", 0))
+            who = ev.get("assignee") or "-"
+            tid = ev.get("task_id", "")[:10]
+            kind = ev.get("kind", "")[:12]
+            line = f"  {icon} [{ts}] {tid} {kind:<12s} @{who}"
+            # Truncate to fit in 54-char content area
+            if len(line) > 54:
+                line = line[:53] + "…"
+            lines.append(f"║{line:<55}║")
+
+    # Footer with live indicator
+    lines.append("╚═══════════════════════════════════════════════════════╝")
+    lines.append(f"  ● live  Ctrl-C to stop  refresh {now}")
+
+    return "\n".join(lines)
+
+
 def _cmd_watch(args: argparse.Namespace) -> int:
     """Live-stream task_events to the terminal."""
+    # Board-at-a-glance mode: compact auto-refreshing panel
+    if getattr(args, "board_view", False):
+        return _cmd_watch_board_view(args)
+
     kinds = (
         {k.strip() for k in args.kinds.split(",") if k.strip()}
         if args.kinds else None
@@ -2396,6 +2495,60 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         return 0
 
 
+def _cmd_watch_board_view(args: argparse.Namespace) -> int:
+    """Board-at-a-glance: auto-refreshing status x assignee matrix + events."""
+    event_cursor = 0
+    recent_events: list[dict] = []
+    tick = 0
+    # Seed cursor at the latest id so we don't replay history.
+    with kb.connect_closing() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
+        ).fetchone()
+        event_cursor = int(row["m"])
+
+    # ANSI escape: move cursor to home position for in-place redraw
+    # (no clear-screen flicker)
+    _HOME = "\033[H"
+    # On first frame, clear the screen so we start clean
+    _CLEAR = "\033[2J"
+
+    try:
+        # First frame: clear + draw
+        sys.stdout.write(_CLEAR)
+        sys.stdout.flush()
+        while True:
+            tick += 1
+            with kb.connect_closing() as conn:
+                stats = kb.board_stats(conn)
+                # Fetch recent events since cursor
+                rows = conn.execute(
+                    "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at, "
+                    "       t.assignee "
+                    "FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id "
+                    "WHERE e.id > ? ORDER BY e.id ASC LIMIT 200",
+                    (event_cursor,),
+                ).fetchall()
+            for r in rows:
+                event_cursor = max(event_cursor, int(r["id"]))
+                recent_events.append({
+                    "task_id": r["task_id"],
+                    "kind": r["kind"],
+                    "created_at": r["created_at"],
+                    "assignee": r["assignee"],
+                })
+            # Keep only last 50 events for the tail
+            if len(recent_events) > 50:
+                recent_events = recent_events[-50:]
+            frame = _render_board_glance(stats, recent_events, tick)
+            sys.stdout.write(_HOME + frame + "\n")
+            sys.stdout.flush()
+            time.sleep(max(0.5, args.interval))
+    except KeyboardInterrupt:
+        print("\n(stopped)")
+        return 0
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         stats = kb.board_stats(conn)
@@ -2417,19 +2570,35 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
-    with kb.connect_closing() as conn:
-        if kb.get_task(conn, args.task_id) is None:
-            print(f"no such task: {args.task_id}", file=sys.stderr)
-            return 1
-        kb.add_notify_sub(
-            conn, task_id=args.task_id,
-            platform=args.platform, chat_id=args.chat_id,
-            thread_id=args.thread_id, user_id=args.user_id,
-            notifier_profile=args.notifier_profile or _profile_author(),
-        )
+    board_slug = getattr(args, "board", None)
+    if board_slug:
+        # Board-level subscription — no task_id needed
+        with kb.connect_closing() as conn:
+            kb.add_board_notify_sub(
+                conn, board_slug=board_slug,
+                platform=args.platform, chat_id=args.chat_id,
+                thread_id=args.thread_id, user_id=args.user_id,
+                notifier_profile=args.notifier_profile or _profile_author(),
+            )
+        target = f"board={board_slug}"
+    else:
+        if not args.task_id:
+            print("notify-subscribe: pass a task_id or --board <slug>", file=sys.stderr)
+            return 2
+        with kb.connect_closing() as conn:
+            if kb.get_task(conn, args.task_id) is None:
+                print(f"no such task: {args.task_id}", file=sys.stderr)
+                return 1
+            kb.add_notify_sub(
+                conn, task_id=args.task_id,
+                platform=args.platform, chat_id=args.chat_id,
+                thread_id=args.thread_id, user_id=args.user_id,
+                notifier_profile=args.notifier_profile or _profile_author(),
+            )
+        target = args.task_id
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
-          + f" to {args.task_id}")
+          + f" to {target}")
     return 0
 
 
