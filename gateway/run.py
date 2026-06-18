@@ -17920,8 +17920,8 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+        except BaseException as e:
+            logger.error("Cron tick error (non-fatal): %s", e, exc_info=True)
 
         tick_count += 1
 

@@ -1694,7 +1694,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if _idle_secs >= _cron_inactivity_limit:
                         _inactivity_timeout = True
                         break
-        except Exception:
+        except BaseException:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
@@ -1953,9 +1953,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 return True
 
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+            except BaseException as e:
+                logger.error("Error processing job %s: %s", job['id'], e, exc_info=True)
+                try:
+                    mark_job_run(job["id"], False, str(e))
+                except Exception:
+                    pass
                 return False
 
         # Partition due jobs: jobs with a per-job workdir and/or profile touch
