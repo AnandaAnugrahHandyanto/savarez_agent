@@ -76,3 +76,19 @@ def test_hung_thread_is_bounded_by_timeout():
     finally:
         stop.set()
         _restore_thread_slot(saved)
+
+
+def test_default_timeout_catches_slow_npx_mcp_servers():
+    """Regression test: npx-driven MCP servers typically take 2-4s to start on
+    first launch (npm install + spawn).  The default wait must be long enough
+    to let at least one slow-but-reachable server land before the agent
+    snapshots its tool list, otherwise its tools are silently dropped for the
+    whole session.  A 0.75s default (the previous value) races; we require
+    >= 2.0s."""
+    import inspect
+    sig = inspect.signature(entry.wait_for_mcp_discovery)
+    default = sig.parameters["timeout"].default
+    assert default >= 2.0, (
+        f"default MCP discovery wait is {default}s; npx cold start races "
+        f"and slow-but-reachable servers are dropped from the tool list"
+    )

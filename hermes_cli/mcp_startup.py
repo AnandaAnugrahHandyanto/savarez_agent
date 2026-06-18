@@ -51,8 +51,23 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         thread.start()
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
-    """Briefly wait for background MCP discovery before the first tool snapshot."""
+# Default bounded wait before the first tool snapshot.  npx-driven MCP
+# servers (e.g. ``npx -y @griches/apple-mail-mcp``) typically take 2-4s to
+# install and start on first launch.  The previous 0.75s default was a race
+# that silently dropped any slow-but-reachable server from the agent's
+# tool list for the entire session (the snapshot is taken once and never
+# re-read).  3.0s catches npx cold starts while still bounding the worst
+# case: a dead/never-resolving server still gets cut off quickly.
+_DEFAULT_DISCOVERY_WAIT_SECONDS = 3.0
+
+
+def wait_for_mcp_discovery(timeout: float = _DEFAULT_DISCOVERY_WAIT_SECONDS) -> None:
+    """Briefly wait for background MCP discovery before the first tool snapshot.
+
+    The wait is bounded by ``timeout``; a hung or never-resolving server
+    cannot re-introduce a startup hang.  No-op when no discovery thread
+    was started or the thread has already finished.
+    """
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return
