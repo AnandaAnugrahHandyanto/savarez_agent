@@ -9,11 +9,24 @@ const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const onboarding = atom({ manual: false })
+const runInTerminal = vi.fn()
+const notify = vi.fn()
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
 
 vi.mock('@/hermes', () => ({
   disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
   getEnvVars: () => getEnvVars(),
   listOAuthProviders: () => listOAuthProviders()
+}))
+
+vi.mock('@/app/right-sidebar/store', () => ({
+  runInTerminal: (command: string) => runInTerminal(command)
+}))
+
+vi.mock('@/store/notifications', () => ({
+  notify: (toast: unknown) => notify(toast),
+  notifyError: vi.fn()
 }))
 
 vi.mock('@/store/onboarding', () => ({
@@ -48,6 +61,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  desktopWindow.hermesDesktop = initialHermesDesktop
   vi.restoreAllMocks()
   vi.clearAllMocks()
 })
@@ -96,5 +110,64 @@ describe('ProvidersSettings', () => {
     expect(await screen.findByText('Qwen Code')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
     expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
+  })
+
+  it('keeps Claude Code OAuth caveat visible on unconnected provider rows without using it as the title', async () => {
+    listOAuthProviders.mockResolvedValue({
+      providers: [
+        provider('claude-code', false, {
+          cli_command: 'claude setup-token',
+          description: 'Requires extra usage credits on top of a Claude Max plan.',
+          disconnectable: false,
+          docs_url: 'https://docs.claude.com/en/docs/claude-code',
+          flow: 'external',
+          name: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription'
+        })
+      ]
+    })
+
+    await renderProvidersSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Other providers/ }))
+
+    expect(await screen.findByText('Anthropic OAuth (Claude Code)')).toBeTruthy()
+    expect(screen.queryByText(/Required Extra Usage Credits to Use Subscription/)).toBeNull()
+    expect(screen.getByText(/Requires extra usage credits on top of a Claude Max plan/)).toBeTruthy()
+  })
+
+  it('keeps Claude Code OAuth caveat out of the connected title and raw command out of the confirmation', async () => {
+    const onClose = vi.fn()
+    const command = 'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; rm -f ~/.claude/.credentials.json'
+    desktopWindow.hermesDesktop = { terminal: {} } as Window['hermesDesktop']
+    listOAuthProviders.mockResolvedValue({
+      providers: [
+        provider('claude-code', true, {
+          cli_command: 'claude setup-token',
+          description: 'Requires extra usage credits on top of a Claude Max plan.',
+          disconnect_command: command,
+          disconnectable: false,
+          docs_url: 'https://docs.claude.com/en/docs/claude-code',
+          flow: 'external',
+          name: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription'
+        })
+      ]
+    })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={onClose} onViewChange={vi.fn()} view="accounts" />)
+
+    expect(await screen.findByText('Anthropic OAuth (Claude Code)')).toBeTruthy()
+    expect(screen.queryByText(/Required Extra Usage Credits to Use Subscription/)).toBeNull()
+    expect(screen.getByText(/Requires extra usage credits on top of a Claude Max plan/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Anthropic OAuth (Claude Code)' }))
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Disconnect Anthropic OAuth (Claude Code)? This will remove the saved credentials for Anthropic OAuth (Claude Code). The removal command runs in the embedded terminal so you can review exactly what executes.'
+    )
+    expect(window.confirm).not.toHaveBeenCalledWith(expect.stringContaining(command))
+    expect(onClose).toHaveBeenCalled()
+    expect(runInTerminal).toHaveBeenCalledWith(command)
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'Running Anthropic OAuth (Claude Code) disconnect in the terminal…' }))
   })
 })
