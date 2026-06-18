@@ -101,10 +101,15 @@ class GatewayStreamConsumer:
     _OPEN_THINK_TAGS = (
         "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>",
         "<THINKING>", "<thinking>", "<thought>",
+        # Gemma-4 pipe-delimited spans (vLLM gemma4 parser leak):
+        # suppress live so streaming platforms (Telegram, Matrix) never flash
+        # the raw markup. The state machine is tag-shape-agnostic.
+        "<|channel>", "<|tool_call>",
     )
     _CLOSE_THINK_TAGS = (
         "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
         "</THINKING>", "</thinking>", "</thought>",
+        "<channel|>", "<tool_call|>",
     )
 
     # Class-wide monotonic counter for native-streaming draft ids.  Telegram

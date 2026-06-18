@@ -831,6 +831,13 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if think_blocks:
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None
+        # Gemma-4 emits reasoning as <|channel>thought...<channel|>.
+        # When the gemma4 reasoning parser misses it, capture it here so it is
+        # routed to the reasoning field instead of leaking into the message.
+        if not reasoning_text and "<|channel>" in content:
+            from agent.gemma4_fallback import extract_gemma_reasoning
+            _gemma_reasoning, _ = extract_gemma_reasoning(content)
+            reasoning_text = _gemma_reasoning
 
     if reasoning_text and agent.verbose_logging:
         logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")

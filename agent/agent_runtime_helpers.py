@@ -550,6 +550,17 @@ def strip_think_blocks(agent, content: str) -> str:
         content,
         flags=re.DOTALL | re.IGNORECASE,
     )
+    # 1d. Gemma-4 pipe-delimited special-token markup.
+    #     vLLM's gemma4 parser intermittently leaves <|tool_call>...<tool_call|>
+    #     and <|channel>...<channel|> spans (plus the <|"|> string delimiter)
+    #     in content. The tool call is recovered upstream
+    #     (gemma4_fallback.apply_gemma_fallback) and reasoning is captured into
+    #     the reasoning field; here we clean the stored/delivered content of any
+    #     residual Gemma markup. Generic for every consumer of the stored message
+    #     (CLI, api_server, Telegram, Matrix, persistence). (#6626 / #29115)
+    if "<|" in content or "|>" in content:
+        from agent.gemma4_fallback import strip_gemma_markup
+        content = strip_gemma_markup(content)
     # 2. Unterminated reasoning block — open tag at a block boundary
     #    (start of text, or after a newline) with no matching close.
     #    Strip from the tag to end of string.  Fixes #8878 / #9568

@@ -3545,6 +3545,25 @@ def run_conversation(
                 else:
                     assistant_message.content = str(raw)
 
+            # Recover a Gemma-4 tool call that vLLM's gemma4
+            # parser intermittently leaks into content as raw
+            # <|tool_call>...<tool_call|> markup with an empty tool_calls
+            # field. Run BEFORE the tool-call gate so the tool still
+            # executes and the markup never reaches the visible message.
+            # Generic across every platform / api_mode (this is the
+            # post-normalization chokepoint). Thinking stays enabled.
+            # (#6626 / #29115)
+            try:
+                from agent.gemma4_fallback import apply_gemma_fallback
+                _gemma_recovered = apply_gemma_fallback(assistant_message)
+            except Exception:
+                _gemma_recovered = False
+            if _gemma_recovered and agent.verbose_logging:
+                agent._vprint(
+                    f"{agent.log_prefix}🔧 Gemma-4 fallback: recovered "
+                    f"{len(assistant_message.tool_calls or [])} tool call(s) leaked into content"
+                )
+
             try:
                 from hermes_cli.plugins import (
                     has_hook,
