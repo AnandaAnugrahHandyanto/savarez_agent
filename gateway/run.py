@@ -17014,6 +17014,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         )
         raise SystemExit(75)
 
+    # A /restart command that is not handled by an explicit service-manager
+    # shortcut (systemd, etc.) still needs a non-zero exit so that any
+    # service manager using ``KeepAlive`` / ``Restart=on-failure`` will
+    # revive the gateway.  On macOS, launchd's default plist sets
+    # ``SuccessfulExit=false`` — a clean exit 0 is treated as intentional
+    # and the gateway stays dead.
+    if runner._restart_requested:
+        logger.info(
+            "Exiting with code 1 (restart requested without explicit service "
+            "manager) so the service manager can revive the gateway."
+        )
+        return False  # → sys.exit(1) in the caller
+
     return True
 
 
