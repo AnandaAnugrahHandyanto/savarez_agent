@@ -626,6 +626,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    delete_after: Optional[int] = 7,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -742,6 +743,7 @@ def create_job(
             "times": repeat,  # None = forever
             "completed": 0
         },
+        "delete_after": delete_after,
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
@@ -955,6 +957,21 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
+def _check_repeat_limit(job: Dict[str, Any]) -> bool:
+    """
+    Increment the repeat completed count and return True if the limit is reached.
+
+    Note: One-shot jobs (kind="once") are guaranteed to have repeat["times"] = 1
+    (see create_job() in this file).
+    """
+    if job.get("repeat"):
+        job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
+        times = job["repeat"].get("times")
+        completed = job["repeat"]["completed"]
+        return times is not None and times > 0 and completed >= times
+    return False
+
+
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                  delivery_error: Optional[str] = None):
     """
@@ -977,50 +994,45 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 
-                # Increment completed count
-                if job.get("repeat"):
-                    job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                    
-                    # Check if we've hit the repeat limit
-                    times = job["repeat"].get("times")
-                    completed = job["repeat"]["completed"]
-                    if times is not None and times > 0 and completed >= times:
-                        # Remove the job (limit reached)
-                        jobs.pop(i)
-                        save_jobs(jobs)
-                        return
-                
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                # Compute next run if not already completed by repeat limit
+                if not (is_completed := _check_repeat_limit(job)):
+                    job["next_run_at"] = compute_next_run(job["schedule"], now)
 
-                # If no next run, decide whether this is terminal completion
-                # (one-shot) or a transient failure (recurring schedule couldn't
-                # compute — e.g. 'croniter' missing from the runtime env).
-                # Recurring jobs must NEVER be silently disabled: that turns a
-                # missing runtime dep into "job completed" and the user's
-                # schedule quietly goes off. See issue #16265.
-                if job["next_run_at"] is None:
-                    kind = job.get("schedule", {}).get("kind")
-                    if kind in {"cron", "interval"}:
-                        job["state"] = "error"
-                        if not job.get("last_error"):
-                            job["last_error"] = (
-                                "Failed to compute next run for recurring "
-                                "schedule (is the 'croniter' package "
-                                "installed in the gateway's Python env?)"
+                    if job["next_run_at"] is None:
+                        # compute_next_run only returns None here for recurring jobs if
+                        # 'croniter' is missing, or for tampered one-shot jobs missing a repeat limit.
+                        kind = job.get("schedule", {}).get("kind")
+                        if kind in {"cron", "interval"}:
+                            job["state"] = "error"
+                            if not job.get("last_error"):
+                                job["last_error"] = (
+                                    "Failed to compute next run for recurring "
+                                    "schedule (is the 'croniter' package "
+                                    "installed in the gateway's Python env?)"
+                                )
+                            logger.error(
+                                "Job '%s' (%s) could not compute next_run_at; "
+                                "leaving enabled and marking state=error so the "
+                                "job is not silently disabled.",
+                                job.get("name", job["id"]),
+                                kind,
                             )
-                        logger.error(
-                            "Job '%s' (%s) could not compute next_run_at; "
-                            "leaving enabled and marking state=error so the "
-                            "job is not silently disabled.",
-                            job.get("name", job["id"]),
-                            kind,
-                        )
+                        else:
+                            # Catch tampered one-shot jobs that bypassed _check_repeat_limit
+                            is_completed = True
+                    elif job.get("state") != "paused":
+                        # Ensure all incomplete jobs (unless paused) are scheduled to run again
+                        job["state"] = "scheduled"
+
+                if is_completed:
+                    days = job.get("delete_after", 0)
+                    if days == 0:
+                        jobs.pop(i)
                     else:
-                        job["enabled"] = False
                         job["state"] = "completed"
-                elif job.get("state") != "paused":
-                    job["state"] = "scheduled"
+                        job["enabled"] = False
+                        job["next_run_at"] = None
+                        job["delete_at"] = (_hermes_now() + timedelta(days=days)).isoformat()
 
                 save_jobs(jobs)
                 return
@@ -1069,10 +1081,34 @@ def get_due_jobs() -> List[Dict[str, Any]]:
         return _get_due_jobs_locked()
 
 
+def delete_expired_jobs(raw_jobs: List[Dict[str, Any]], now: datetime) -> List[Dict[str, Any]]:
+    """Remove completed jobs whose delete_at deadline has passed."""
+    valid_jobs = []
+    needs_delete = False
+    for job in raw_jobs:
+        delete_at_str = job.get("delete_at")
+        if delete_at_str:
+            try:
+                delete_at = _ensure_aware(datetime.fromisoformat(delete_at_str))
+                if delete_at <= now:
+                    logger.info("Job '%s' has passed its delete_at deadline, removing", job["id"])
+                    needs_delete = True
+                    continue
+            except Exception:
+                pass
+        valid_jobs.append(job)
+
+    if needs_delete:
+        save_jobs(valid_jobs)
+    return valid_jobs
+
+
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
+    raw_jobs = delete_expired_jobs(raw_jobs, now)
+
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
     needs_save = False

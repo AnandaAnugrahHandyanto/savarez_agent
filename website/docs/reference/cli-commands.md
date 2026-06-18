@@ -533,6 +533,8 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `status` | Check whether the cron scheduler is running. |
 | `tick` | Run due jobs once and exit. |
 
+`create` and `edit` accept `--delete-after <days>` to control how long completed one-shot jobs stay listed before removal. The default for newly created jobs is 7 days; use `--delete-after 0` to delete immediately after completion.
+
 ## `hermes kanban`
 
 ```bash

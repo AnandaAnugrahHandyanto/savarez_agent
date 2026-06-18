@@ -49,6 +49,7 @@ hermes cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
   --skill maps \
   --name "Skill combo"
+hermes cron create "30m" "Remind me to check the build" --delete-after 0
 ```
 
 ### Through natural conversation
@@ -469,9 +470,11 @@ every 1d     → Every day
 
 | Schedule type | Default repeat | Behavior |
 |--------------|----------------|----------|
-| One-shot (`30m`, timestamp) | 1 | Runs once |
+| One-shot (`30m`, timestamp) | 1 | Runs once, then becomes `[completed]` |
 | Interval (`every 2h`) | forever | Runs until removed |
 | Cron expression | forever | Runs until removed |
+
+Completed one-shot jobs remain visible for `--delete-after` days, then disappear from the list. The default is 7 days when the option is not specified. Set `--delete-after 0` to preserve the old immediate-delete behavior.
 
 You can override it:
 
@@ -481,6 +484,13 @@ cronjob(
     prompt="...",
     schedule="every 2h",
     repeat=5,
+)
+
+cronjob(
+    action="create",
+    prompt="...",
+    schedule="30m",
+    delete_after=0,
 )
 ```
 

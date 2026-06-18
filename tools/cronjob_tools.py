@@ -482,6 +482,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    delete_after: Optional[int] = 7,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -548,6 +549,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                delete_after=delete_after,
             )
             return json.dumps(
                 {
@@ -701,6 +703,8 @@ def cronjob(
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
+            if delete_after is not None:
+                updates["delete_after"] = delete_after
             if schedule is not None:
                 parsed_schedule = parse_schedule(schedule)
                 updates["schedule"] = parsed_schedule
