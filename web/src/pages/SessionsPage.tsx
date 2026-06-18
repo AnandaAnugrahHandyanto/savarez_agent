@@ -1626,6 +1626,7 @@ export default function SessionsPage() {
         )
       ) : (
         <div className="flex min-w-0 flex-col gap-4">
+          <PluginSlot name="sessions:overview-top" />
           {platformEntries.length > 0 && status && (
             <PlatformsCard platforms={platformEntries} />
           )}
