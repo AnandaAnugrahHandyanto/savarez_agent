@@ -148,11 +148,20 @@ async def _run_reference_model_safe(
             
             content = extract_content_or_reasoning(response)
             if not content:
-                # Reasoning-only response — let the retry loop handle it
+                # Reasoning-only response — let the retry loop handle it.
                 logger.warning("%s returned empty content (attempt %s/%s), retrying", model, attempt + 1, max_retries)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(min(2 ** (attempt + 1), 60))
                     continue
+                # Exhausted retries on empty-content path.  Without an explicit
+                # failure return here we used to fall through to
+                # `len(content)` below — TypeError when extract_content_or_reasoning
+                # returned None, false-success ("", True) when it returned "".
+                return (
+                    model,
+                    f"{model} returned empty content after {max_retries} attempts",
+                    False,
+                )
             logger.info("%s responded (%s characters)", model, len(content))
             return model, content, True
             
@@ -228,6 +237,8 @@ async def _run_aggregator_model(
         logger.warning("Aggregator returned empty content, retrying once")
         response = await _get_openrouter_client().chat.completions.create(**api_params)
         content = extract_content_or_reasoning(response)
+        if not content:
+            raise ValueError("Aggregator returned empty content after retry")
 
     logger.info("Aggregation complete (%s characters)", len(content))
     return content

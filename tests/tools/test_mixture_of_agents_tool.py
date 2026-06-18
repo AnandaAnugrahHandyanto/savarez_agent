@@ -8,6 +8,22 @@ import pytest
 moa = importlib.import_module("tools.mixture_of_agents_tool")
 
 
+def _chat_response(content="", reasoning=None, reasoning_content=None):
+    message = SimpleNamespace(
+        content=content,
+        reasoning=reasoning,
+        reasoning_content=reasoning_content,
+        reasoning_details=None,
+    )
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=message,
+            )
+        ]
+    )
+
+
 def test_moa_defaults_are_well_formed():
     # Invariants, not a catalog snapshot: the exact model list churns with
     # OpenRouter availability (see PR #6636 where gemini-3-pro-preview was
@@ -48,6 +64,47 @@ async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_fail
     assert all(call.kwargs.get("exc_info") is None for call in warn.call_args_list)
     err.assert_called_once()
     assert err.call_args.kwargs.get("exc_info") is True
+
+
+@pytest.mark.asyncio
+async def test_reference_model_returns_failure_after_empty_content_retries(monkeypatch):
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(return_value=_chat_response(content=""))
+            )
+        )
+    )
+
+    monkeypatch.setattr(moa, "_get_openrouter_client", lambda: fake_client)
+    monkeypatch.setattr(moa.asyncio, "sleep", AsyncMock())
+
+    model, message, success = await moa._run_reference_model_safe(
+        "anthropic/claude-opus-4.6", "hello", max_retries=2
+    )
+
+    assert model == "anthropic/claude-opus-4.6"
+    assert success is False
+    assert message == "anthropic/claude-opus-4.6 returned empty content after 2 attempts"
+    assert fake_client.chat.completions.create.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_aggregator_raises_after_empty_content_retry(monkeypatch):
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(return_value=_chat_response(content=""))
+            )
+        )
+    )
+
+    monkeypatch.setattr(moa, "_get_openrouter_client", lambda: fake_client)
+
+    with pytest.raises(ValueError, match="Aggregator returned empty content after retry"):
+        await moa._run_aggregator_model("system", "user")
+
+    assert fake_client.chat.completions.create.await_count == 2
 
 
 @pytest.mark.asyncio
