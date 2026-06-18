@@ -6460,7 +6460,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # systemd units use Restart=always, so a planned restart should
                 # exit cleanly and still be relaunched.  Using TEMPFAIL here
                 # makes systemd treat the operator-requested restart as a
-                # failure and can trip stepped restart backoff.  launchd's
+                # failure and can trip stepped restartbackoff.  launchd's
                 # KeepAlive.SuccessfulExit=false needs a non-zero exit to
                 # relaunch, so keep the old code on macOS.
                 self._exit_code = (
@@ -6468,6 +6468,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if sys.platform == "darwin" or not os.environ.get("INVOCATION_ID")
                     else 0
                 )
+                self._exit_reason = self._exit_reason or "Gateway restart requested"
+            elif self._restart_requested and sys.platform == "darwin":
+                # launchd uses KeepAlive.SuccessfulExit=false — a clean exit
+                # (code 0) is treated as success and launchd will NOT relaunch
+                # the process.  Force a non-zero exit so launchd revives us.
+                # This covers the detached-restart path used by `/restart` on
+                # macOS (via_service=False).  See #43475.
+                self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
