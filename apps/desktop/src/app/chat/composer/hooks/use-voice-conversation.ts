@@ -276,6 +276,23 @@ export function useVoiceConversation({
     }
   }, [handleTurn])
 
+  const interruptResponse = useCallback(() => {
+    if (statusRef.current !== 'speaking' && statusRef.current !== 'thinking') {
+      return
+    }
+
+    stopVoicePlayback()
+    awaitingSpokenResponseRef.current = false
+    resetSpeechBuffer()
+    consumePendingResponse()
+
+    if (enabledRef.current && !mutedRef.current && !busyRef.current) {
+      pendingStartRef.current = true
+    }
+
+    setStatus('idle')
+  }, [consumePendingResponse])
+
   const toggleMute = useCallback(() => {
     setMuted(value => {
       const next = !value
@@ -353,6 +370,8 @@ export function useVoiceConversation({
 
           return
         }
+
+        return
       }
 
       if (!busy && status === 'thinking') {
@@ -386,5 +405,5 @@ export function useVoiceConversation({
     wasEnabledRef.current = enabled
   }, [enabled, end, start])
 
-  return { end, level, muted, start, status, stopTurn, toggleMute }
+  return { end, interruptResponse, level, muted, start, status, stopTurn, toggleMute }
 }
