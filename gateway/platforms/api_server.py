@@ -774,6 +774,242 @@ class APIServerAdapter(BasePlatformAdapter):
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
     @staticmethod
+    def _model_route_id(provider: Optional[str], model: Optional[str], fallback: str) -> str:
+        """Build an OpenAI model-list ID for a Hermes provider/model route."""
+        provider_s = str(provider or "").strip()
+        model_s = str(model or "").strip()
+        if provider_s and model_s:
+            return f"{provider_s}/{model_s}"
+        return model_s or provider_s or fallback
+
+    @staticmethod
+    def _model_entry(route: Dict[str, Any], created: int) -> Dict[str, Any]:
+        """Return an OpenAI-compatible model object with Hermes route metadata."""
+        route_id = str(route.get("id") or route.get("model") or "hermes-agent")
+        hermes_meta: Dict[str, Any] = {
+            "route": route.get("route", "default"),
+            "profile_model": bool(route.get("profile_model")),
+        }
+        for key in ("label", "category", "route_class", "description", "policy_source", "status"):
+            value = route.get(key)
+            if value is not None:
+                hermes_meta[key] = value
+        if route.get("expose_provider_metadata"):
+            hermes_meta["provider"] = route.get("provider")
+            hermes_meta["model"] = route.get("model")
+        return {
+            "id": route_id,
+            "object": "model",
+            "created": created,
+            "owned_by": "hermes",
+            "permission": [],
+            "root": route_id,
+            "parent": None,
+            "hermes": hermes_meta,
+        }
+
+    def _available_model_routes(self) -> List[Dict[str, Any]]:
+        """Return the selectable Hermes runtime routes advertised to OpenAI UIs.
+
+        The profile model remains first and preserves the historical /v1/models
+        contract.  Additional entries expose the active primary provider/model
+        and configured fallback provider/model pairs so clients such as Paseo or
+        Open WebUI can intentionally switch away from an exhausted primary while
+        still routing through Hermes.
+        """
+        routes: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def add(route: Dict[str, Any]) -> None:
+            route_id = str(route.get("id") or "").strip()
+            if not route_id or route_id in seen:
+                return
+            seen.add(route_id)
+            routes.append(route)
+
+        cfg: Dict[str, Any] = {}
+        try:
+            from gateway.run import _load_gateway_config, _resolve_gateway_model
+
+            cfg = _load_gateway_config() or {}
+            primary_model = _resolve_gateway_model(cfg)
+        except Exception:
+            primary_model = ""
+
+        api_server_cfg = cfg.get("api_server", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(api_server_cfg, dict):
+            api_server_cfg = {}
+        configured_routes = (
+            api_server_cfg.get("model_routes")
+            or api_server_cfg.get("model_aliases")
+            or []
+        )
+        if isinstance(configured_routes, dict):
+            configured_routes = list(configured_routes.values())
+        configured_only = bool(
+            api_server_cfg.get("model_routes_only")
+            or api_server_cfg.get("model_aliases_only")
+            or api_server_cfg.get("advertise_model_routes_only")
+        )
+        expose_provider_metadata = bool(api_server_cfg.get("expose_provider_metadata"))
+
+        model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+        primary_provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+        if not configured_only:
+            add({
+                "id": self._model_name,
+                "route": "default",
+                "provider": primary_provider,
+                "model": primary_model,
+                "profile_model": True,
+                "expose_provider_metadata": expose_provider_metadata,
+            })
+
+            primary_id = self._model_route_id(primary_provider, primary_model, self._model_name)
+            add({
+                "id": primary_id,
+                "route": "primary",
+                "provider": primary_provider,
+                "model": primary_model,
+                "profile_model": False,
+                "expose_provider_metadata": expose_provider_metadata,
+            })
+
+            try:
+                from gateway.run import get_fallback_chain
+
+                fallback_chain = get_fallback_chain(cfg) if isinstance(cfg, dict) else []
+            except Exception:
+                fallback_chain = []
+            for entry in fallback_chain or []:
+                if not isinstance(entry, dict):
+                    continue
+                provider = entry.get("provider")
+                model = entry.get("model")
+                route_id = self._model_route_id(provider, model, "")
+                add({
+                    "id": route_id,
+                    "route": "fallback",
+                    "provider": provider,
+                    "model": model,
+                    "base_url": entry.get("base_url"),
+                    "api_key": entry.get("api_key"),
+                    "key_env": entry.get("key_env") or entry.get("api_key_env"),
+                    "profile_model": False,
+                    "expose_provider_metadata": expose_provider_metadata,
+                    "accept_model_name": True,
+                })
+        for entry in configured_routes or []:
+            if isinstance(entry, str):
+                provider, _, model = entry.partition("/")
+                entry = {"provider": provider, "model": model}
+            if not isinstance(entry, dict):
+                continue
+            provider = entry.get("provider")
+            model = entry.get("model")
+            route_id = str(entry.get("id") or self._model_route_id(provider, model, "")).strip()
+            if not provider or not model or not route_id:
+                continue
+            add({
+                "id": route_id,
+                "route": entry.get("route") or "alias",
+                "provider": provider,
+                "model": model,
+                "base_url": entry.get("base_url"),
+                "api_key": entry.get("api_key"),
+                "key_env": entry.get("key_env") or entry.get("api_key_env"),
+                "profile_model": False,
+                "label": entry.get("label") or entry.get("name"),
+                "category": entry.get("category"),
+                "route_class": entry.get("route_class"),
+                "description": entry.get("description"),
+                "policy_source": entry.get("policy_source"),
+                "status": entry.get("status"),
+                "expose_provider_metadata": bool(entry.get("expose_provider_metadata", expose_provider_metadata)),
+                "accept_model_name": bool(entry.get("accept_model_name")),
+            })
+        return routes
+
+    def _route_for_requested_model(self, requested_model: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Resolve a client-supplied OpenAI model ID to a Hermes runtime route."""
+        if not requested_model:
+            return None
+        requested = str(requested_model).strip()
+        if not requested:
+            return None
+        for route in self._available_model_routes():
+            if requested == str(route.get("id")):
+                return route
+            if route.get("accept_model_name") and requested == str(route.get("model")):
+                return route
+        return None
+
+    @staticmethod
+    def _model_route_selection_locked(cfg: Dict[str, Any]) -> bool:
+        """Return true when clients must use configured API model route IDs."""
+        api_server_cfg = cfg.get("api_server", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(api_server_cfg, dict):
+            return False
+        return bool(
+            api_server_cfg.get("model_routes_only")
+            or api_server_cfg.get("model_aliases_only")
+            or api_server_cfg.get("advertise_model_routes_only")
+        )
+
+    def _unsupported_requested_model_response(self, requested_model: Any) -> Optional["web.Response"]:
+        """Reject unknown client-selected models when route selection is locked.
+
+        In locked mode /v1/models is an allowlist, not a hint. This prevents
+        OpenAI-compatible clients from bypassing the curated alias surface by
+        POSTing raw provider/model IDs that are intentionally hidden from the
+        picker.
+        """
+        requested = str(requested_model or "").strip()
+        if not requested or self._route_for_requested_model(requested) is not None:
+            return None
+        try:
+            from gateway.run import _load_gateway_config
+
+            cfg = _load_gateway_config() or {}
+        except Exception:
+            cfg = {}
+        if not self._model_route_selection_locked(cfg):
+            return None
+        return web.json_response(
+            _openai_error(
+                f"Unsupported model: {requested}",
+                code="unsupported_model",
+            ),
+            status=400,
+        )
+
+    @staticmethod
+    def _runtime_kwargs_for_route(route: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve runtime kwargs for a selectable provider/model route."""
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        explicit_api_key = route.get("api_key")
+        if not explicit_api_key:
+            key_env = str(route.get("key_env") or "").strip()
+            if key_env:
+                explicit_api_key = os.getenv(key_env, "").strip() or None
+        runtime = resolve_runtime_provider(
+            requested=route.get("provider"),
+            explicit_base_url=route.get("base_url"),
+            explicit_api_key=explicit_api_key,
+        )
+        return {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
+            "max_tokens": None,
+        }
+
+    @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
         """Normalize configured CORS origins into a stable tuple."""
         if not value:
@@ -1016,6 +1252,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        requested_model: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1036,18 +1273,26 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        requested_route = self._route_for_requested_model(requested_model)
+        if requested_route and requested_route.get("route") != "default":
+            runtime_kwargs = self._runtime_kwargs_for_route(requested_route)
+            model = str(requested_route.get("model") or requested_model or _resolve_gateway_model())
+            fallback_model = None
+        else:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            model = _resolve_gateway_model()
+            fallback_model = GatewayRunner._load_fallback_model()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
-        # Load fallback provider chain so the API server platform has the
-        # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
-        fallback_model = GatewayRunner._load_fallback_model()
+        # Load fallback provider chain for the default profile route so the API
+        # server platform has the same fallback behaviour as Telegram/Discord/
+        # Slack (fixes #4954).  Explicit client-selected routes are intentional
+        # switches, so they run without immediately falling back to the primary.
 
         agent = AIAgent(
             model=model,
@@ -1108,19 +1353,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        created = int(time.time())
         return web.json_response({
             "object": "list",
-            "data": [
-                {
-                    "id": self._model_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": self._model_name,
-                    "parent": None,
-                }
-            ],
+            "data": [self._model_entry(route, created) for route in self._available_model_routes()],
         })
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
@@ -1134,10 +1370,12 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        created = int(time.time())
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
             "model": self._model_name,
+            "models": [self._model_entry(route, created) for route in self._available_model_routes()],
             "auth": {
                 "type": "bearer",
                 "required": bool(self._api_key),
@@ -1164,6 +1402,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "model_route_selection": True,
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
@@ -1560,6 +1799,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if err is not None:
             return err
         system_prompt = body.get("system_message") or body.get("instructions")
+        requested_model = body.get("model")
+        model_err = self._unsupported_requested_model_response(requested_model)
+        if model_err is not None:
+            return model_err
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
         history = self._conversation_history_for_session(session_id)
@@ -1569,6 +1812,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            requested_model=requested_model,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = result.get("final_response", "") if isinstance(result, dict) else ""
@@ -1604,6 +1848,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if err is not None:
             return err
         system_prompt = body.get("system_message") or body.get("instructions")
+        requested_model = body.get("model")
+        model_err = self._unsupported_requested_model_response(requested_model)
+        if model_err is not None:
+            return model_err
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
 
@@ -1660,6 +1908,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    requested_model=requested_model,
                 )
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -1841,7 +2090,11 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
+        requested_model = body.get("model")
+        model_err = self._unsupported_requested_model_response(requested_model)
+        if model_err is not None:
+            return model_err
+        model_name = requested_model or self._model_name
         created = int(time.time())
 
         if stream:
@@ -1926,6 +2179,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1945,6 +2199,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2820,6 +3075,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
         instructions = body.get("instructions")
+        requested_model = body.get("model")
+        model_err = self._unsupported_requested_model_response(requested_model)
+        if model_err is not None:
+            return model_err
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
@@ -2958,6 +3217,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2991,6 +3251,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                requested_model=requested_model,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3501,6 +3762,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        requested_model: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3533,6 +3795,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
+                    requested_model=requested_model,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -3655,6 +3918,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
+        requested_model = body.get("model")
+        model_err = self._unsupported_requested_model_response(requested_model)
+        if model_err is not None:
+            return model_err
+
         user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
@@ -3750,6 +4018,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    requested_model=requested_model,
                 )
                 self._active_run_agents[run_id] = agent
 

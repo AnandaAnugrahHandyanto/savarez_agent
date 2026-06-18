@@ -577,7 +577,14 @@ class HermesACPAgent(acp.Agent):
         return f"{raw_provider}:{raw_model}"
 
     def _build_model_state(self, state: SessionState) -> SessionModelState | None:
-        """Return the ACP model selector payload for editors like Zed."""
+        """Return the ACP model selector payload for editors like Zed/Paseo.
+
+        ACP clients use this payload as their model picker.  In addition to the
+        current provider's curated catalog, expose the configured Hermes primary
+        and fallback provider/model routes so a client can intentionally switch
+        from an exhausted primary to another Hermes route without bypassing the
+        Hermes runtime.
+        """
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
 
@@ -589,26 +596,41 @@ class HermesACPAgent(acp.Agent):
             available_models: list[ModelInfo] = []
             seen_ids: set[str] = set()
 
-            for model_id, description in curated_models_for_provider(normalized_provider):
-                rendered_model = str(model_id or "").strip()
+            def add_model(
+                *,
+                route_provider: str | None,
+                route_model: str | None,
+                route_name: str | None = None,
+                description: str | None = None,
+                current: bool = False,
+            ) -> None:
+                rendered_provider = normalize_provider(route_provider or normalized_provider)
+                rendered_model = str(route_model or "").strip()
                 if not rendered_model:
-                    continue
-                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
-                if choice_id in seen_ids:
-                    continue
-                desc_parts = [f"Provider: {provider_name}"]
+                    return
+                choice_id = self._encode_model_choice(rendered_provider, rendered_model)
+                if not choice_id or choice_id in seen_ids:
+                    return
+                desc_parts = [f"Provider: {provider_label(rendered_provider)}"]
                 if description:
                     desc_parts.append(str(description).strip())
-                if rendered_model == model:
+                if current or (rendered_provider == normalized_provider and rendered_model == model):
                     desc_parts.append("current")
                 available_models.append(
                     ModelInfo(
                         model_id=choice_id,
-                        name=rendered_model,
+                        name=str(route_name or rendered_model),
                         description=" • ".join(part for part in desc_parts if part),
                     )
                 )
                 seen_ids.add(choice_id)
+
+            for model_id, description in curated_models_for_provider(normalized_provider):
+                add_model(
+                    route_provider=normalized_provider,
+                    route_model=model_id,
+                    description=description,
+                )
 
             current_model_id = self._encode_model_choice(normalized_provider, model)
             if current_model_id and current_model_id not in seen_ids:
@@ -620,6 +642,77 @@ class HermesACPAgent(acp.Agent):
                         description=f"Provider: {provider_name} • current",
                     ),
                 )
+                seen_ids.add(current_model_id)
+
+            try:
+                from gateway.run import _load_gateway_config, _resolve_gateway_model, get_fallback_chain
+
+                cfg = _load_gateway_config() or {}
+                model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+                primary_provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+                primary_model = _resolve_gateway_model(cfg)
+                if primary_provider and primary_model:
+                    add_model(
+                        route_provider=primary_provider,
+                        route_model=primary_model,
+                        route_name=f"{primary_provider}/{primary_model}",
+                        description="Hermes primary route",
+                        current=(
+                            normalize_provider(primary_provider) == normalized_provider
+                            and str(primary_model) == model
+                        ),
+                    )
+                for entry in get_fallback_chain(cfg) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    fallback_provider = entry.get("provider")
+                    fallback_model = entry.get("model")
+                    if not fallback_provider or not fallback_model:
+                        continue
+                    add_model(
+                        route_provider=fallback_provider,
+                        route_model=fallback_model,
+                        route_name=f"{fallback_provider}/{fallback_model}",
+                        description="Hermes fallback route",
+                    )
+                api_server_cfg = cfg.get("api_server", {}) if isinstance(cfg, dict) else {}
+                if not isinstance(api_server_cfg, dict):
+                    api_server_cfg = {}
+                configured_aliases = (
+                    api_server_cfg.get("model_routes")
+                    or api_server_cfg.get("model_aliases")
+                    or []
+                )
+                if isinstance(configured_aliases, dict):
+                    configured_aliases = list(configured_aliases.values())
+                if isinstance(configured_aliases, list):
+                    for alias in configured_aliases:
+                        if not isinstance(alias, dict):
+                            continue
+                        alias_id = str(alias.get("id") or alias.get("name") or "").strip()
+                        alias_provider = alias.get("provider")
+                        alias_model = str(alias.get("model") or "").strip()
+                        if not alias_id or not alias_provider or not alias_model or alias_id in seen_ids:
+                            continue
+                        rendered_provider = normalize_provider(alias_provider)
+                        desc_parts = [f"Provider: {provider_label(rendered_provider)}"]
+                        route_class = alias.get("route_class")
+                        if route_class:
+                            desc_parts.append(str(route_class).strip())
+                        description = alias.get("description")
+                        if description:
+                            desc_parts.append(str(description).strip())
+                        label = alias.get("label") or alias_id
+                        available_models.append(
+                            ModelInfo(
+                                model_id=alias_id,
+                                name=str(label),
+                                description=" • ".join(part for part in desc_parts if part),
+                            )
+                        )
+                        seen_ids.add(alias_id)
+            except Exception:
+                logger.debug("Could not add configured Hermes ACP model routes", exc_info=True)
 
             if available_models:
                 return SessionModelState(
@@ -643,6 +736,32 @@ class HermesACPAgent(acp.Agent):
         """Resolve ``provider:model`` input into the provider and normalized model id."""
         target_provider = current_provider
         new_model = raw_model.strip()
+
+        try:
+            from gateway.run import _load_gateway_config
+            from hermes_cli.models import normalize_provider
+
+            cfg = _load_gateway_config() or {}
+            api_server_cfg = cfg.get("api_server", {}) if isinstance(cfg, dict) else {}
+            if isinstance(api_server_cfg, dict):
+                configured_aliases = (
+                    api_server_cfg.get("model_routes")
+                    or api_server_cfg.get("model_aliases")
+                    or []
+                )
+                if isinstance(configured_aliases, dict):
+                    configured_aliases = list(configured_aliases.values())
+                if isinstance(configured_aliases, list):
+                    for alias in configured_aliases:
+                        if not isinstance(alias, dict):
+                            continue
+                        alias_id = str(alias.get("id") or alias.get("name") or "").strip()
+                        alias_provider = alias.get("provider")
+                        alias_model = str(alias.get("model") or "").strip()
+                        if alias_id == new_model and alias_provider and alias_model:
+                            return normalize_provider(alias_provider), alias_model
+        except Exception:
+            logger.debug("API model alias resolution failed, falling back", exc_info=True)
 
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input

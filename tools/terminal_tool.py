@@ -1840,6 +1840,184 @@ def _resolve_command_cwd(
     return default_cwd
 
 
+# =============================================================================
+# Hermes resource router (Phase 2): automatic command routing
+# =============================================================================
+#
+# When explicitly enabled for the active process, terminal commands from the
+# homelab profile can be routed through the resource-router dispatch script
+# (hermes_router_dispatch.py). The dispatcher scores the task, picks the best
+# worker lane (local VM, MacBook, Synology DS nodes, ...), runs the command
+# there, and emits a JSON envelope. terminal_tool maps that envelope back onto
+# its own {output, exit_code, error, status} contract.
+#
+# Safety / traceability:
+#   * Routing only engages when ``HERMES_RESOURCE_ROUTER_TERMINAL=1`` and the
+#     profile is homelab (HERMES_HOME ends in ``profiles/homelab``); every
+#     normal session keeps the local terminal path unless explicitly opted in.
+#   * The dispatch subprocess runs with HERMES_INTERNAL_ROUTED=1, and we refuse
+#     to route any command that already mentions ``hermes_router``. Both guards
+#     stop the dispatcher (which itself shells out) from recursing back into
+#     routing.
+#   * Any failure — missing script, bad JSON, non-zero dispatcher exit, a
+#     timeout, or an unexpected exception — is logged and falls through to the
+#     normal local execution path rather than failing the command outright.
+
+HERMES_ROUTER_DISPATCH_SCRIPT = (
+    "/srv/hermes-agent/workspaces/homelab-resource-router/"
+    "Scripts/hermes_router_dispatch.py"
+)
+HERMES_RESOURCE_ROUTER_TERMINAL_ENV = "HERMES_RESOURCE_ROUTER_TERMINAL"
+
+
+def _should_route_command(command: Any) -> bool:
+    """Return True when this terminal call should be handed to the router.
+
+    All conditions must hold:
+      1. Terminal routing is explicitly enabled for this process via
+         ``HERMES_RESOURCE_ROUTER_TERMINAL=1``.
+      2. The active profile is the homelab profile
+         (``HERMES_HOME`` ends with ``profiles/homelab``).
+      3. We are not already inside an internal routed subprocess
+         (``HERMES_INTERNAL_ROUTED`` is unset/empty).
+      4. The command is not itself a router script / internal check — any
+         command mentioning ``hermes_router`` is left alone so the dispatcher
+         (which shells out) cannot recurse back into routing.
+    """
+    if not isinstance(command, str) or not command.strip():
+        return False
+    if os.getenv(HERMES_RESOURCE_ROUTER_TERMINAL_ENV, "").lower() not in {"1", "true", "yes", "on"}:
+        return False
+    if not os.getenv("HERMES_HOME", "").endswith("profiles/homelab"):
+        return False
+    if os.getenv("HERMES_INTERNAL_ROUTED"):
+        return False
+    if "hermes_router" in command:
+        return False
+    return True
+
+
+def _route_command_via_dispatch(
+    command: str,
+    timeout: Optional[int] = None,
+) -> Optional[str]:
+    """Route *command* through the resource-router dispatch script.
+
+    Returns the terminal_tool JSON envelope string on success, or ``None`` when
+    the caller should fall back to normal local execution (script missing,
+    invalid JSON, dispatcher failure, timeout, or any unexpected error).
+    """
+    dispatch_path = HERMES_ROUTER_DISPATCH_SCRIPT
+    if not os.path.isfile(dispatch_path):
+        logger.warning(
+            "Hermes router dispatch script not found at %s; "
+            "falling back to local execution.",
+            dispatch_path,
+        )
+        return None
+
+    # Copy the parent environment and mark the subprocess as internally routed
+    # so the dispatcher (and anything it spawns) cannot recurse back into
+    # routing. A clean copy keeps PATH / interpreter / SSH config intact.
+    routed_env = os.environ.copy()
+    routed_env["HERMES_INTERNAL_ROUTED"] = "1"
+
+    # The dispatcher applies its own per-task timeout (300s default). Give the
+    # subprocess a little headroom on top so we read its JSON rather than
+    # killing it mid-write.
+    dispatch_timeout = timeout if (isinstance(timeout, int) and timeout > 0) else 300
+    subprocess_timeout = dispatch_timeout + 60
+
+    cmd = [
+        sys.executable,
+        dispatch_path,
+        command,  # prompt (used for scoring/classification)
+        command,  # command (the shell command to execute on the chosen lane)
+        "--timeout",
+        str(dispatch_timeout),
+    ]
+
+    logger.info(
+        "Hermes router: routing terminal command via dispatch "
+        "(timeout=%ss): %s",
+        dispatch_timeout,
+        _safe_command_preview(command),
+    )
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            env=routed_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=subprocess_timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Hermes router dispatch timed out after %ss; "
+            "falling back to local execution.",
+            subprocess_timeout,
+        )
+        return None
+    except Exception as e:
+        logger.warning(
+            "Hermes router dispatch failed to launch (%s); "
+            "falling back to local execution.",
+            e,
+        )
+        return None
+
+    if proc.returncode != 0:
+        logger.warning(
+            "Hermes router dispatch exited %s; falling back to local "
+            "execution. stderr=%s",
+            proc.returncode,
+            (proc.stderr or "")[:500],
+        )
+        return None
+
+    try:
+        dispatch_res = json.loads(proc.stdout)
+    except (ValueError, TypeError) as e:
+        logger.warning(
+            "Hermes router dispatch returned invalid JSON (%s); falling back "
+            "to local execution. stdout=%s",
+            e,
+            (proc.stdout or "")[:500],
+        )
+        return None
+
+    if not isinstance(dispatch_res, dict) or "status" not in dispatch_res:
+        logger.warning(
+            "Hermes router dispatch JSON missing expected fields; "
+            "falling back to local execution.",
+        )
+        return None
+
+    completed = dispatch_res.get("status") == "completed"
+    logger.info(
+        "Hermes router: dispatch status=%s worker=%s class=%s reason=%s",
+        dispatch_res.get("status"),
+        dispatch_res.get("selected_worker"),
+        dispatch_res.get("task_class"),
+        dispatch_res.get("routing_reason", ""),
+    )
+
+    # Map the dispatcher envelope onto the terminal_tool contract.
+    return json.dumps(
+        {
+            "output": dispatch_res.get("stdout", ""),
+            "exit_code": 0 if completed else 1,
+            "error": dispatch_res.get("stderr", ""),
+            "status": "success" if completed else "error",
+        },
+        ensure_ascii=False,
+    )
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1893,6 +2071,17 @@ def terminal_tool(
                 "error": f"Invalid command: expected string, got {type(command).__name__}",
                 "status": "error",
             }, ensure_ascii=False)
+
+        # Phase 2 resource router: under the homelab profile, transparently
+        # hand the command to the resource-router dispatch script, which scores
+        # the task and runs it on the best worker lane. Background/PTY calls are
+        # left on the local path because the synchronous dispatcher cannot honor
+        # their lifecycle/interactivity contracts. Any routing failure returns
+        # None and falls through to normal local execution below.
+        if not background and not pty and _should_route_command(command):
+            routed = _route_command_via_dispatch(command, timeout)
+            if routed is not None:
+                return routed
 
         # Get configuration
         config = _get_env_config()
