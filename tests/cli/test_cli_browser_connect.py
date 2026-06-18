@@ -183,8 +183,15 @@ class TestChromeDebugLaunch:
 
         assert candidates == [brave, edge]
 
-    def test_darwin_candidates_include_user_applications(self, monkeypatch):
+    def test_darwin_candidates_include_user_applications_in_stable_order(self, monkeypatch):
         home = "/Users/alice"
+        system_chrome = os.path.join(
+            "/Applications",
+            "Google Chrome.app",
+            "Contents",
+            "MacOS",
+            "Google Chrome",
+        )
         user_chrome = os.path.join(
             home,
             "Applications",
@@ -193,15 +200,24 @@ class TestChromeDebugLaunch:
             "MacOS",
             "Google Chrome",
         )
+        system_chromium = os.path.join(
+            "/Applications",
+            "Chromium.app",
+            "Contents",
+            "MacOS",
+            "Chromium",
+        )
 
         monkeypatch.setattr(
             "hermes_cli.browser_connect.os.path.expanduser",
             lambda value: home if value == "~" else value,
         )
-        with patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == user_chrome):
+        existing = {system_chrome, user_chrome, system_chromium}
+        with patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path in existing):
             candidates = get_chrome_debug_candidates("Darwin")
 
-        assert user_chrome in candidates
+        assert candidates == [system_chrome, user_chrome, system_chromium]
+        assert len(candidates) == len({os.path.normcase(os.path.normpath(path)) for path in candidates})
         assert user_chrome in get_darwin_browser_app_paths(home)
 
     def test_launch_tries_next_browser_when_first_candidate_fails(self):
