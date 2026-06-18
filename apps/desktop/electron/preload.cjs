@@ -3,7 +3,10 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
+  // Keepalive: mark a pool profile backend as recently used so the idle reaper
+  // spares it while its chat is active.
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
+  setMessageSendState: payload => ipcRenderer.invoke('hermes:message-send:state', payload),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openNewSessionWindow: () => ipcRenderer.invoke('hermes:window:openNewSession'),

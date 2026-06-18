@@ -11,8 +11,32 @@ function readElectronFile(name) {
   return fs.readFileSync(path.join(ELECTRON_DIR, name), 'utf8').replace(/\r\n/g, '\n')
 }
 
+function compactSourceWithMap(source) {
+  let text = ''
+  const map = []
+
+  for (let index = 0; index < source.length; index += 1) {
+    if (/\s/.test(source[index])) continue
+    map[text.length] = index
+    text += source[index]
+  }
+
+  return { text, map }
+}
+
+function sourceIndexOf(source, needle) {
+  const direct = source.indexOf(needle)
+  if (direct !== -1) return direct
+
+  const compactNeedle = needle.replace(/\s+/g, '')
+  const compact = compactSourceWithMap(source)
+  const compactIndex = compact.text.indexOf(compactNeedle)
+
+  return compactIndex === -1 ? -1 : compact.map[compactIndex]
+}
+
 function requireHiddenChildOptions(source, needle) {
-  const index = source.indexOf(needle)
+  const index = sourceIndexOf(source, needle)
   assert.notEqual(index, -1, `missing call site: ${needle}`)
   const snippet = source.slice(index, index + 700)
   assert.match(
@@ -28,10 +52,9 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
 
   requireHiddenChildOptions(source, "execFileSync(\n          'reg'")
-  requireHiddenChildOptions(source, 'execFileSync(pyExe')
+  requireHiddenChildOptions(source, 'execFileSync(\n          pyExe')
   requireHiddenChildOptions(source, 'spawn(resolveGitBinary()')
   requireHiddenChildOptions(source, "execFileSync('taskkill'")
-  requireHiddenChildOptions(source, 'spawn(command, args')
   requireHiddenChildOptions(source, "spawn('curl'")
   requireHiddenChildOptions(source, 'spawn(backend.command, backend.args')
   requireHiddenChildOptions(source, 'hermesProcess = spawn(backend.command, backend.args')

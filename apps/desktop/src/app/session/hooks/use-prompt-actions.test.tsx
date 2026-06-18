@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { getStatus } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
 import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
@@ -12,9 +13,16 @@ import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
+  getStatus: vi.fn(async () => ({ gateway_running: true, gateway_state: 'running' })),
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
+
+const getStatusMock = vi.mocked(getStatus)
+
+beforeEach(() => {
+  getStatusMock.mockResolvedValue({ gateway_running: true, gateway_state: 'running' } as never)
+})
 
 // The active id the desktop holds is the *runtime* session id from
 // session.create — deliberately distinct from the stored DB id here, because
@@ -418,6 +426,52 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     expect(accepted).toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+  })
+
+  it('blocks prompt.submit locally when /api/status reports a stopped gateway', async () => {
+    getStatusMock.mockResolvedValue({ gateway_running: false, gateway_state: 'stopped' } as never)
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const seeds: Record<string, unknown>[] = []
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('should not loop')
+
+    expect(accepted).toBe(false)
+    expect(getStatusMock).toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    expect(seeds).toEqual([])
+  })
+
+  it('filters malformed attachment slots before building refs and prompt context', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const validAttachment: ComposerAttachment = {
+      id: 'file:report.txt',
+      kind: 'file',
+      label: 'report.txt',
+      refText: '@file:report.txt'
+    }
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const accepted = await handle!.submitText('summarize', {
+      attachments: [undefined, null, { kind: 'file' }, validAttachment] as unknown as ComposerAttachment[]
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: '@file:report.txt\n\nsummarize'
+    })
   })
 })
 

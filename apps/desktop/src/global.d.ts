@@ -17,6 +17,9 @@ declare global {
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      // Renderer -> main process hint used to suppress updater/bootstrap restart
+      // handoff while a chat send is active or has just failed recoverably.
+      setMessageSendState?: (payload: DesktopMessageSendStatePayload) => Promise<DesktopMessageSendStateSnapshot>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
@@ -123,6 +126,16 @@ declare global {
       }
     }
   }
+}
+
+export interface DesktopMessageSendStatePayload {
+  state: 'begin' | 'failure' | 'success'
+}
+
+export interface DesktopMessageSendStateSnapshot {
+  activeCount: number
+  blockingRestart: boolean
+  lastFailureAt: null | number
 }
 
 export interface DesktopMarketplaceSearchItem {

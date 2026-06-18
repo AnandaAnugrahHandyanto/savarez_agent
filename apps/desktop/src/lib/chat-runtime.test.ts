@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { attachmentDisplayText, coerceThinkingText, normalizeComposerAttachments, optimisticAttachmentRef } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -11,6 +11,12 @@ function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttach
 }
 
 describe('optimisticAttachmentRef', () => {
+  it('ignores empty attachment slots instead of throwing', () => {
+    expect(optimisticAttachmentRef(undefined)).toBeNull()
+    expect(optimisticAttachmentRef(null)).toBeNull()
+    expect(attachmentDisplayText(undefined)).toBeNull()
+  })
+
   it('renders an image from its in-hand base64 preview (no @image: path ref)', () => {
     const ref = optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL }))
 
@@ -35,6 +41,14 @@ describe('optimisticAttachmentRef', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'file', refText: '@file:src/a.ts', previewUrl: DATA_URL }))).toBe(
       '@file:src/a.ts'
     )
+  })
+})
+
+describe('normalizeComposerAttachments', () => {
+  it('filters malformed attachment slots before submit-time mapping', () => {
+    const valid = attachment({ kind: 'file', refText: '@file:src/a.ts' })
+
+    expect(normalizeComposerAttachments([undefined, null, { kind: 'file' }, valid])).toEqual([valid])
   })
 })
 

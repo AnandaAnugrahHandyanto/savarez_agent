@@ -46,6 +46,7 @@ const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
+const { createMessageSendRestartGuard, safeDecodeChunk } = require('./runtime-guards.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -810,7 +811,7 @@ function scheduleDesktopLogFlush() {
 }
 
 function rememberLog(chunk) {
-  const text = String(chunk || '').trim()
+  const text = safeDecodeChunk(chunk).trim()
   if (!text) return
   const lines = text.split(/\r?\n/).map(line => `[hermes] ${line}`)
   hermesLog.push(...lines)
@@ -1430,12 +1431,12 @@ function runGit(args, options = {}) {
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', chunk => {
-      const text = chunk.toString()
+      const text = safeDecodeChunk(chunk)
       stdout += text
       options.onLine?.('stdout', text)
     })
     child.stderr.on('data', chunk => {
-      const text = chunk.toString()
+      const text = safeDecodeChunk(chunk)
       stderr += text
       options.onLine?.('stderr', text)
     })
@@ -1591,6 +1592,16 @@ async function readCommitLog(cwd, branch) {
 }
 
 let updateInFlight = false
+const messageSendRestartGuard = createMessageSendRestartGuard()
+
+function restartBlockedByMessageSend() {
+  const reason = messageSendRestartGuard.restartBlockReason()
+  if (!reason) return null
+
+  const message = `Deferring desktop restart handoff while a message send is active or has just failed (${reason}).`
+  rememberLog(`[restart-guard] ${message}`)
+  return message
+}
 
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
@@ -1761,6 +1772,13 @@ async function applyUpdates(opts = {}) {
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }
+
+  const restartBlock = restartBlockedByMessageSend()
+  if (restartBlock) {
+    emitUpdateProgress({ stage: 'error', message: restartBlock, error: 'message-send-active' })
+    return { ok: false, recoverable: true, error: 'message-send-active', message: restartBlock }
+  }
+
   updateInFlight = true
 
   try {
@@ -1852,6 +1870,8 @@ async function applyUpdates(opts = {}) {
 async function handOffWindowsBootstrapRecovery(reason) {
   if (!IS_WINDOWS || !IS_PACKAGED) return false
 
+  if (restartBlockedByMessageSend()) return false
+
   const updater = resolveUpdaterBinary()
   if (!updater) return false
 
@@ -1914,7 +1934,7 @@ function runStreamedUpdate(command, args, { cwd, env, stage } = {}) {
       return
     }
     const emitLines = chunk => {
-      for (const line of chunk.toString().split('\n')) {
+      for (const line of safeDecodeChunk(chunk).split('\n')) {
         const trimmed = line.trim()
         if (trimmed) emitUpdateProgress({ stage, message: trimmed, percent: null })
       }
@@ -5273,6 +5293,7 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+ipcMain.handle('hermes:message-send:state', async (_event, payload) => messageSendRestartGuard.record(payload))
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connectionPromise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -6237,7 +6258,7 @@ async function getUninstallSummary() {
         })
       )
       child.stdout.on('data', chunk => {
-        stdout += chunk.toString()
+        stdout += safeDecodeChunk(chunk)
       })
       child.on('error', () => done(fallback()))
       child.on('exit', code => {

@@ -2,11 +2,12 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { getProfiles, transcribeAudio } from '@/hermes'
+import { getProfiles, getStatus, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
+  normalizeComposerAttachments,
   optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand,
@@ -55,6 +56,7 @@ import {
 } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
+import type { StatusResponse } from '@/types/hermes'
 
 import type {
   ClientSessionState,
@@ -110,6 +112,42 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
 
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
+}
+
+const PRE_SEND_BLOCKED_GATEWAY_STATES = new Set(['startup_failed', 'stopped'])
+
+export function preSendGatewayHealthError(status: Pick<StatusResponse, 'gateway_running' | 'gateway_state'>): string | null {
+  const gatewayState = status.gateway_state?.trim().toLowerCase() || null
+
+  if (status.gateway_running && !PRE_SEND_BLOCKED_GATEWAY_STATES.has(gatewayState || '')) {
+    return null
+  }
+
+  const details = [
+    `gateway_running=${status.gateway_running ? 'true' : 'false'}`,
+    gatewayState ? `gateway_state=${gatewayState}` : null
+  ]
+    .filter(Boolean)
+    .join(', ')
+
+  return `Hermes gateway is not ready for sending (${details}). Restart the gateway or wait for it to finish starting, then try again.`
+}
+
+export async function checkPreSendGatewayHealth(
+  fetchStatus: () => Promise<StatusResponse> = getStatus
+): Promise<string | null> {
+  try {
+    return preSendGatewayHealthError(await fetchStatus())
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+
+    return `Could not verify Hermes gateway status before sending: ${message}`
+  }
+}
+
+function markDesktopMessageSendState(state: 'begin' | 'failure' | 'success'): void {
+  const pending = window.hermesDesktop?.setMessageSendState?.({ state })
+  void pending?.catch(() => undefined)
 }
 
 function isSessionNotFoundError(error: unknown): boolean {
@@ -550,7 +588,7 @@ export function usePromptActions({
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
       const usingComposerAttachments = !options?.attachments
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      const attachments = normalizeComposerAttachments(options?.attachments ?? $composerAttachments.get())
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -583,6 +621,17 @@ export function usePromptActions({
       if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
         return false
       }
+
+      const preSendHealthError = await checkPreSendGatewayHealth()
+      if (preSendHealthError) {
+        clearNotifications()
+        notify({ kind: 'error', title: copy.sessionUnavailable, message: preSendHealthError })
+        markDesktopMessageSendState('failure')
+
+        return false
+      }
+
+      markDesktopMessageSendState('begin')
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -673,6 +722,7 @@ export function usePromptActions({
           dropOptimistic(null)
           releaseBusy()
           notifyError(err, copy.sessionUnavailable)
+          markDesktopMessageSendState('failure')
 
           return false
         }
@@ -681,6 +731,7 @@ export function usePromptActions({
           dropOptimistic(null)
           releaseBusy()
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+          markDesktopMessageSendState('failure')
 
           return false
         }
@@ -735,6 +786,8 @@ export function usePromptActions({
           clearComposerAttachments()
         }
 
+        markDesktopMessageSendState('success')
+
         return true
       } catch (err) {
         releaseBusy()
@@ -743,6 +796,8 @@ export function usePromptActions({
         // "session busy" (4009). Don't surface an error bubble/toast — the entry
         // stays queued and the composer's bounded auto-drain retries when idle.
         if (options?.fromQueue && isSessionBusyError(err)) {
+          markDesktopMessageSendState('failure')
+
           return false
         }
 
@@ -768,11 +823,13 @@ export function usePromptActions({
 
         if (isProviderSetupError(err)) {
           requestDesktopOnboarding(copy.providerCredentialRequired)
+          markDesktopMessageSendState('failure')
 
           return false
         }
 
         notifyError(err, copy.promptFailed)
+        markDesktopMessageSendState('failure')
 
         return false
       }
@@ -1329,7 +1386,7 @@ export function usePromptActions({
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      const attachments = normalizeComposerAttachments(options?.attachments ?? $composerAttachments.get())
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
