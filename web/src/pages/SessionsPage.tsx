@@ -405,6 +405,25 @@ function SessionRow({
     }
   }, [isExpanded, session.id, messages, loading]);
 
+  // Poll for new messages while the row is expanded and the session is still
+  // live. Without this, the Web UI chat view stays stuck on the old state
+  // until the user manually refreshes the browser (issue #19543 symptom 1).
+  // The interval also stops automatically when the session flips to inactive
+  // — the dependency on ``session.is_active`` cleans up the timer.
+  useEffect(() => {
+    if (!isExpanded || !session.is_active) return;
+    const interval = setInterval(() => {
+      api
+        .getSessionMessages(session.id)
+        .then((resp) => setMessages(resp.messages))
+        .catch(() => {
+          // Best-effort: a single poll failure should not surface a toast
+          // or block subsequent polls. The next tick will retry.
+        });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isExpanded, session.is_active, session.id]);
+
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
@@ -806,8 +825,8 @@ export default function SessionsPage() {
     };
   }, [setEnd]);
 
-  const loadSessions = useCallback((p: number) => {
-    setLoading(true);
+  const loadSessions = useCallback((p: number, silent = false) => {
+    if (!silent) setLoading(true);
     api
       .getSessions(PAGE_SIZE, p * PAGE_SIZE)
       .then((resp) => {
@@ -815,7 +834,9 @@ export default function SessionsPage() {
         setTotal(resp.total);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!silent) setLoading(false);
+      });
   }, []);
 
   const loadStats = useCallback(() => {
@@ -833,6 +854,18 @@ export default function SessionsPage() {
     loadSessions(page);
     refreshEmptyCount();
   }, [loadSessions, page, refreshEmptyCount]);
+
+  // Silently re-fetch the main sessions list so per-row ``is_active`` flags
+  // (and therefore the "Live" badge) stay in sync with the backend. This
+  // fixes issue #19543 symptom 2 — the badge stays stuck "Live" after the
+  // run completes until a manual browser refresh. Skip during a debounced
+  // search so we don't clobber the filtered result set with the unfiltered
+  // one. Re-runs on page change so a stale page never gets polled.
+  useEffect(() => {
+    if (search.trim()) return;
+    const interval = setInterval(() => loadSessions(page, true), 10000);
+    return () => clearInterval(interval);
+  }, [loadSessions, page, search]);
 
   useEffect(() => {
     const loadOverview = () => {
