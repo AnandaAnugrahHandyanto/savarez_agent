@@ -9,6 +9,7 @@ All run zero LLM calls.
 """
 import json
 import time
+from typing import Any
 
 import pytest
 
@@ -579,6 +580,7 @@ class TestCrossProfileRead:
         other_home.mkdir()
         other = SessionDB(other_home / "state.db")
         other.create_session("s_other", source="cli")
+        assert other._conn is not None
         other._conn.execute(
             "UPDATE sessions SET title = ? WHERE id = ?", ("Other Profile Chat", "s_other")
         )
@@ -601,6 +603,7 @@ class TestCrossProfileRead:
         other = SessionDB(other_home / "state.db")
         other.create_session("s_far", source="cli")
         other.append_message("s_far", role="user", content="hi")
+        assert other._conn is not None
         other._conn.commit()
 
         from collections import namedtuple
@@ -629,16 +632,18 @@ class TestCrossProfileRead:
         other = SessionDB(other_home / "state.db")
         other.create_session("s_other", source="cli")
         other.append_message("s_other", role="user", content="hi")
+        assert other._conn is not None
         other._conn.commit()
 
         self._patch_profiles(monkeypatch, other_home)
 
         # Every permutation the model might send must resolve to (asdf, s_other).
-        for kwargs in (
+        cases: tuple[dict[str, Any], ...] = (
             {"session_id": "asdf/s_other"},                    # full value, no profile
             {"session_id": "asdf/s_other", "profile": "asdf"},  # full value AND profile
             {"session_id": "s_other", "profile": "asdf"},       # bare id + profile
-        ):
+        )
+        for kwargs in cases:
             result = json.loads(session_search(db=db, **kwargs))
             assert result["success"] is True, kwargs
             assert result["mode"] == "read"

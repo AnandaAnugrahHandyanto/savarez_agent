@@ -32,6 +32,7 @@ support.
 import json
 import logging
 import os
+from importlib import import_module
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
@@ -61,7 +62,7 @@ class _SessionSearchEmbedder:
         self.batch_size = max(1, min(int(batch_size or 32), 128))
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        from openai import OpenAI
+        OpenAI = import_module("openai").OpenAI
 
         client = OpenAI(
             api_key=self.api_key,
@@ -313,7 +314,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: Optional[str] = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
@@ -359,9 +360,9 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
 def _scroll(
     db,
     session_id: str,
-    around_message_id: int,
-    window: int = 5,
-    current_session_id: str = None,
+    around_message_id: Union[int, str],
+    window: Union[int, str] = 5,
+    current_session_id: Optional[str] = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -485,13 +486,13 @@ def _shape_discovery_response(
     query: str,
     raw_results: List[Dict[str, Any]],
     limit: int,
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
     search_mode: str = "keyword",
     warning: Optional[str] = None,
     semantic_index: Optional[Dict[str, Any]] = None,
 ) -> str:
     if not raw_results:
-        payload = {
+        payload: Dict[str, Any] = {
             "success": True,
             "mode": "discover",
             "query": query,
@@ -566,7 +567,7 @@ def _shape_discovery_response(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    payload = {
+    payload: Dict[str, Any] = {
         "success": True,
         "mode": "discover",
         "query": query,
@@ -589,7 +590,7 @@ def _discover_keyword(
     role_filter: Optional[List[str]],
     limit: int,
     sort: Optional[str],
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
     warning: Optional[str] = None,
     search_mode: str = "keyword",
 ) -> str:
@@ -669,10 +670,10 @@ def _discover_semantic(
     role_filter: Optional[List[str]],
     limit: int,
     sort: Optional[str],
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
     search_mode: str = "semantic",
     backfill_semantic_index: bool = False,
-    semantic_backfill_limit: Optional[int] = None,
+    semantic_backfill_limit: Optional[Union[int, str]] = None,
     embedder=None,
 ) -> str:
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -777,22 +778,22 @@ def _discover_semantic(
 
 def session_search(
     query: str = "",
-    role_filter: str = None,
-    limit: int = 3,
+    role_filter: Optional[str] = None,
+    limit: Union[int, str] = 3,
     db=None,
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
     # Scroll shape
-    session_id: str = None,
-    around_message_id: int = None,
-    window: int = 5,
+    session_id: Optional[str] = None,
+    around_message_id: Optional[Union[int, str]] = None,
+    window: Union[int, str] = 5,
     # Discovery shape
-    sort: str = None,
+    sort: Optional[str] = None,
     search_mode: str = "keyword",
     backfill_semantic_index: bool = False,
-    semantic_backfill_limit: int = None,
+    semantic_backfill_limit: Optional[Union[int, str]] = None,
     embedder=None,
     # Cross-profile (any shape)
-    profile: str = None,
+    profile: Optional[str] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -932,7 +933,7 @@ def check_session_search_requirements() -> bool:
         return False
 
 
-SESSION_SEARCH_SCHEMA = {
+SESSION_SEARCH_SCHEMA: Dict[str, Any] = {
     "name": "session_search",
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
