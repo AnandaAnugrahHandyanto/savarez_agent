@@ -3497,11 +3497,11 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
         )
         assert agent._cached_system_prompt == db.system_prompt
-        assert session["history"][-1]["role"] == "system"
+        assert session["history"][-1]["role"] == "user"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
         assert db.messages[-1] == {
             "session_id": "session-key",
-            "role": "system",
+            "role": "user",
             "content": session["history"][-1]["content"],
         }
         # ...and the shared process env was NOT touched.
@@ -7783,3 +7783,68 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+class TestAppendModelSwitchMarker:
+    def test_marker_uses_user_role_not_system(self):
+        """Model switch marker must use role=user to avoid HTTP 400 on strict providers.
+
+        Strict providers (vLLM, Qwen) reject mid-conversation role=system messages.
+        The marker is an in-conversation annotation, not a true system prompt.
+        """
+        from tui_gateway.server import _append_model_switch_marker
+
+        session = {
+            "session_key": "test-session",
+            "history": [],
+            "history_version": 0,
+            "agent": None,
+        }
+        _append_model_switch_marker(
+            session, model="claude-sonnet-4.6", provider="anthropic"
+        )
+        history = session.get("history", [])
+        assert len(history) == 1
+        entry = history[0]
+        assert entry["role"] == "user"
+        assert "claude-sonnet-4.6" in entry["content"]
+        assert "anthropic" in entry["content"]
+        assert session["history_version"] == 1
+
+    def test_marker_without_provider(self):
+        from tui_gateway.server import _append_model_switch_marker
+
+        session = {
+            "session_key": "test-session",
+            "history": [],
+            "history_version": 0,
+            "agent": None,
+        }
+        _append_model_switch_marker(
+            session, model="gpt-5.5", provider=""
+        )
+        history = session.get("history", [])
+        assert len(history) == 1
+        assert history[0]["role"] == "user"
+        assert "gpt-5.5" in history[0]["content"]
+        assert "via provider" not in history[0]["content"]
+
+    def test_marker_no_session(self):
+        """Should be a no-op when session is None."""
+        from tui_gateway.server import _append_model_switch_marker
+
+        # Should not raise
+        _append_model_switch_marker(None, model="x", provider="y")
+
+    def test_marker_empty_session_key(self):
+        """Should be a no-op when session_key is empty."""
+        from tui_gateway.server import _append_model_switch_marker
+
+        session = {
+            "session_key": "",
+            "history": [],
+            "history_version": 0,
+            "agent": None,
+        }
+        _append_model_switch_marker(session, model="x", provider="y")
+        assert len(session["history"]) == 0
