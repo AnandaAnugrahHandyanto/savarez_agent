@@ -1685,8 +1685,7 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
 
     server = mcp_serve.create_profile_router_mcp_server()
     tools = server._tool_manager._tools
-
-    assert set(tools) == {
+    expected_public_tools = {
         "profiles_list",
         "profile_get",
         "profile_health",
@@ -1699,10 +1698,19 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         "file_read",
         "file_search",
     }
+    metadata_public_tools = {
+        name
+        for name, tool in get_router_tool_metadata().items()
+        if tool["enabled_by_default"]
+    }
+
+    assert set(tools) == expected_public_tools
+    assert set(tools) == metadata_public_tools
     assert "messages_send" not in tools
     assert "conversations_list" not in tools
     assert "terminal_run" not in tools
     assert "workspace_diff" not in tools
+    assert "file_patch" not in tools
     assert "file_write" not in tools
 
     listed = json.loads(tools["profiles_list"].fn())
