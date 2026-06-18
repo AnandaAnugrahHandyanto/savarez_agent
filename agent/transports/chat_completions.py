@@ -172,6 +172,16 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                # ``timestamp`` is a Hermes session/gateway metadata field
+                # that is not part of the OpenAI Chat Completions message
+                # schema. Permissive providers (real OpenAI, OpenRouter)
+                # silently drop it; strict OpenAI-compatible gateways
+                # (Fireworks-backed routes, opencode-go) reject any
+                # payload containing it with
+                # ``Extra inputs are not permitted, field:
+                # 'messages[N].timestamp'`` (#47868). Strip it before
+                # the request goes over the wire.
+                or "timestamp" in msg
             ):
                 needs_sanitize = True
                 break
@@ -201,6 +211,11 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            # Strip the schema-foreign ``timestamp`` metadata field
+            # before sending to strict chat-completions providers.
+            # Internal state in the session DB is unaffected — only
+            # the API-facing message copy is mutated (#47868).
+            msg.pop("timestamp", None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

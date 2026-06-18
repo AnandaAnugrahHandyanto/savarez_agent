@@ -104,6 +104,50 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
 
+    def test_convert_messages_strips_timestamp_metadata(self, transport):
+        """``timestamp`` is session/gateway metadata, not part of the OpenAI
+        Chat Completions message schema. Permissive providers silently
+        ignore the unknown key, but strict OpenAI-compatible gateways
+        (Fireworks-backed routes via opencode-go) reject the request with
+        ``Extra inputs are not permitted, field: 'messages[N].timestamp'``,
+        which then fails every subsequent turn in the session (#47868).
+        """
+        msgs = [
+            {"role": "system", "content": "you are hermes"},
+            {"role": "user", "content": "テスト", "timestamp": 1781698587.0},
+            {"role": "assistant", "content": "ok",
+             "timestamp": 1781698588.5},
+        ]
+        result = transport.convert_messages(msgs)
+        # All timestamps stripped from the API-facing copy
+        for m in result:
+            assert "timestamp" not in m, (
+                f"timestamp leaked to wire: {m!r} (would be rejected by "
+                f"strict chat-completions providers — #47868)"
+            )
+        # The rest of the message is preserved
+        assert result[0] == {"role": "system", "content": "you are hermes"}
+        assert result[1]["role"] == "user"
+        assert result[1]["content"] == "テスト"
+        assert result[2]["content"] == "ok"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[1]["timestamp"] == 1781698587.0
+        assert msgs[2]["timestamp"] == 1781698588.5
+
+    def test_convert_messages_without_timestamp_keeps_early_return(self, transport):
+        """Messages that don't carry any schema-foreign field must hit the
+        ``if not needs_sanitize: return messages`` fast path — the result
+        is the *same* list object (no deepcopy). The ``timestamp`` addition
+        to the detection block must not break this for clean messages.
+        """
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        result = transport.convert_messages(msgs)
+        # Identity (no copy) — proves the early-return fired.
+        assert result is msgs
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 
