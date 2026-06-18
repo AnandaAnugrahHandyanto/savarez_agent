@@ -918,6 +918,55 @@ def test_find_reusable_container_prefers_running_over_stopped(monkeypatch):
     )
 
 
+# ── Windows drive-letter cwd handling (#48137) ─────────────────────
+
+
+def test_windows_drive_letter_cwd_normalized_to_workspace(monkeypatch):
+    """A Windows-style CWD (e.g. C:\\Users\\...) must be rewritten to
+    /workspace before it reaches ``docker run -w``."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(cwd="C:\\Users\\testuser")
+    assert env.cwd == "/workspace", (
+        f"expected /workspace for Windows CWD, got {env.cwd!r}"
+    )
+
+
+def test_windows_drive_letter_single_char_drive(monkeypatch):
+    """D: or Z: — any single-letter drive prefix triggers the guard."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(cwd="D:\\work\\project")
+    assert env.cwd == "/workspace"
+
+
+def test_posix_cwd_passes_through(monkeypatch):
+    """POSIX paths must NOT be rewritten."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(cwd="/home/user/project")
+    assert env.cwd == "/home/user/project"
+
+
+def test_tilde_cwd_still_normalized(monkeypatch):
+    """~ must still be normalized to /root (existing behaviour)."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(cwd="~")
+    assert env.cwd == "/root"
+
 # ── Cleanup correctness (issue #20561) ────────────────────────────
 
 

@@ -534,6 +534,16 @@ class DockerEnvironment(BaseEnvironment):
     ):
         if cwd == "~":
             cwd = "/root"
+        # On native Windows, TERMINAL_CWD can be a drive-letter path
+        # (e.g. C:\\Users\\<user>) that leaks into ``docker run -w``.
+        # Docker rejects Windows-style paths inside Linux containers;
+        # fall back to a container-internal default instead.
+        if len(cwd) >= 2 and cwd[1] == ":":
+            logger.info(
+                "Inside Docker environment, ignoring Windows-style cwd "
+                "(%r) and defaulting to /workspace.", cwd,
+            )
+            cwd = "/workspace"
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
@@ -595,6 +605,26 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        # On native Windows, TERMINAL_CWD defaults to the user's entire
+        # profile directory (C:\\Users\\<name>).  Blindly bind-mounting
+        # that into /workspace exposes Documents, Pictures, AppData,
+        # browser cookies, and NTUSER.DAT inside the sandbox.  Scope it
+        # to a dedicated subdirectory instead.
+        if (
+            host_cwd_abs
+            and len(host_cwd_abs) >= 2
+            and host_cwd_abs[1] == ":"
+        ):
+            scoped = os.path.join(host_cwd_abs, ".hermes_docker_workspace")
+            try:
+                os.makedirs(scoped, exist_ok=True)
+                host_cwd_abs = scoped
+            except OSError:
+                logger.debug(
+                    "Cannot create scoped workspace %r, skipping cwd mount",
+                    scoped,
+                )
+                host_cwd_abs = ""
         bind_host_cwd = (
             auto_mount_cwd
             and bool(host_cwd_abs)
