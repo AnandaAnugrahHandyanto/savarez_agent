@@ -197,13 +197,41 @@ def run_codex_app_server_turn(
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
         cwd = getattr(agent, "session_cwd", None) or os.getcwd()
         # Approval callback: defer to Hermes' standard prompt flow if a
-        # CLI thread has installed one. Gateway / cron contexts get the
-        # codex-side fail-closed default.
+        # CLI thread has installed one. Gateway contexts do not have that
+        # terminal-local callback, so bridge through tools.approval's
+        # per-session queue instead. Cron / non-interactive contexts still
+        # get the codex-side fail-closed default.
         try:
             from tools.terminal_tool import _get_approval_callback
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+        if approval_callback is None:
+            try:
+                from tools.approval import (
+                    get_current_session_key,
+                    prompt_gateway_approval,
+                )
+                session_key = get_current_session_key(default="")
+                if session_key:
+                    def _gateway_approval_callback(
+                        command: str,
+                        description: str,
+                        *,
+                        allow_permanent: bool = True,
+                    ) -> str:
+                        return prompt_gateway_approval(
+                            command,
+                            description,
+                            session_key=session_key,
+                            pattern_key=f"codex_app_server:{command}",
+                            allow_permanent=allow_permanent,
+                            surface="codex_app_server",
+                        )
+
+                    approval_callback = _gateway_approval_callback
+            except Exception:
+                approval_callback = None
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
