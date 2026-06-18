@@ -13,6 +13,8 @@ from mcp_profile_router import (
     PROFILE_ROUTER_TOOL_GROUP,
     ProfileRouterError,
     RouterToolMetadata,
+    _build_terminal_sanitized_env,
+    _prepare_terminal_subprocess_plan,
     assert_default_tools_are_no_model,
     classify_terminal_command,
     create_workspace_metadata,
@@ -204,6 +206,54 @@ def test_terminal_command_classifier_blocks_model_destructive_git_and_deploy_com
     assert low["decision"] == "disabled_pending_execution_policy"
     assert low["risk_level"] == "low_unexecuted"
     assert low["reasons"] == []
+
+
+def test_terminal_subprocess_plan_uses_sanitized_no_inheritance_env(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "should-not-leak")
+    monkeypatch.setenv("PATH", "/tmp/should-not-inherit")
+
+    env = _build_terminal_sanitized_env()
+
+    assert "OPENAI_API_KEY" not in env
+    assert "HERMES_HOME" not in env
+    assert "should-not-leak" not in json.dumps(env)
+    assert "should-not-inherit" not in json.dumps(env)
+    assert env["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert all(isinstance(value, str) and "\x00" not in value for value in env.values())
+    assert all(
+        marker not in key.upper()
+        for key in env
+        for marker in ("API_KEY", "AUTH", "CREDENTIAL", "KEY", "PASSWORD", "SECRET", "TOKEN")
+    )
+
+    plan = _prepare_terminal_subprocess_plan(
+        "git status --short",
+        resolved_cwd=tmp_path,
+        public_cwd=".",
+        timeout_seconds=7,
+        max_output_chars=1234,
+    )
+    assert plan.argv == ("git", "status", "--short")
+    assert plan.cwd == tmp_path
+    assert plan.public_cwd == "."
+    assert plan.env == env
+    assert plan.timeout_seconds == 7
+    assert plan.max_output_chars == 1234
+    assert plan.uses_shell is False
+    assert plan.executes is False
+
+    with pytest.raises(ProfileRouterError) as shell_control:
+        _prepare_terminal_subprocess_plan(
+            "pwd && git status",
+            resolved_cwd=tmp_path,
+            public_cwd=".",
+            timeout_seconds=7,
+            max_output_chars=1234,
+        )
+    assert shell_control.value.code == "terminal_shell_control_not_allowed"
 
 
 def test_profile_router_policy_is_deny_by_default_for_execution_groups(hermes_home):

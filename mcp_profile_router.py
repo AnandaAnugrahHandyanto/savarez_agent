@@ -78,6 +78,14 @@ TERMINAL_SANITIZED_ENV_ALLOWED_KEYS = (
     "TERM",
     "TMPDIR",
 )
+TERMINAL_SANITIZED_ENV_DEFAULTS = {
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "LC_CTYPE": "C.UTF-8",
+    "TERM": "dumb",
+    "TMPDIR": "/tmp",
+}
 TERMINAL_SANITIZED_ENV_BLOCKED_MARKERS = (
     "API_KEY",
     "AUTH",
@@ -186,6 +194,25 @@ class TerminalExecutionPolicy:
     allowed_commands: tuple[str, ...] = ()
     allowed_command_prefixes: tuple[str, ...] = ()
     require_no_shell: bool = True
+
+
+@dataclass(frozen=True)
+class TerminalSubprocessPlan:
+    """Internal no-shell execution scaffold for future terminal_run support.
+
+    This object is deliberately not an executor: it contains the argv/cwd/env
+    that a future bounded subprocess runner would receive, but Phase 6 keeps
+    ``terminal_run`` non-executing and absent from public MCP registration.
+    """
+
+    argv: tuple[str, ...]
+    cwd: Path
+    public_cwd: str
+    env: Mapping[str, str]
+    timeout_seconds: int
+    max_output_chars: int
+    uses_shell: bool = False
+    executes: bool = False
 
 
 @dataclass(frozen=True)
@@ -2261,11 +2288,68 @@ def _terminal_sanitized_env_policy() -> dict:
     }
 
 
+def _terminal_env_key_is_allowed(key: str) -> bool:
+    upper_key = key.upper()
+    return key in TERMINAL_SANITIZED_ENV_ALLOWED_KEYS and not any(
+        marker in upper_key for marker in TERMINAL_SANITIZED_ENV_BLOCKED_MARKERS
+    )
+
+
+def _build_terminal_sanitized_env() -> dict[str, str]:
+    """Build the future executor's minimal env without inheriting secrets.
+
+    The returned mapping is for internal subprocess use only and is never exposed
+    through MCP responses. Values are deterministic defaults rather than parent
+    process values, so profile credentials and model-provider keys cannot leak
+    into terminal command environments by inheritance.
+    """
+
+    env: dict[str, str] = {}
+    for key in TERMINAL_SANITIZED_ENV_ALLOWED_KEYS:
+        if not _terminal_env_key_is_allowed(key):
+            continue
+        value = TERMINAL_SANITIZED_ENV_DEFAULTS.get(key)
+        if not isinstance(value, str) or not value or "\x00" in value:
+            continue
+        env[key] = value
+    return env
+
+
+def _prepare_terminal_subprocess_plan(
+    command: str,
+    *,
+    resolved_cwd: Path,
+    public_cwd: str,
+    timeout_seconds: int,
+    max_output_chars: int,
+) -> TerminalSubprocessPlan:
+    """Prepare a bounded no-shell subprocess plan without executing it."""
+
+    stripped = command.strip()
+    tokens = _shell_command_tokens(stripped)
+    if "\n" in stripped or "\r" in stripped or _terminal_command_has_shell_control(tokens):
+        raise ProfileRouterError(
+            "terminal_shell_control_not_allowed",
+            "terminal command cannot contain shell control operators",
+        )
+    if not tokens:
+        raise ProfileRouterError("invalid_terminal_command", "command is required")
+    return TerminalSubprocessPlan(
+        argv=tuple(tokens),
+        cwd=resolved_cwd,
+        public_cwd=public_cwd,
+        env=_build_terminal_sanitized_env(),
+        timeout_seconds=timeout_seconds,
+        max_output_chars=max_output_chars,
+    )
+
+
 def _terminal_execution_plan_audit(
     command: str,
     *,
     classification: Mapping[str, Any],
     execution_policy: Mapping[str, Any],
+    resolved_cwd: Path,
     public_cwd: str,
     timeout_seconds: int,
     max_output_chars: int,
@@ -2277,10 +2361,14 @@ def _terminal_execution_plan_audit(
         and execution_policy.get("enabled", False)
         and execution_policy.get("allowlist_match", False)
     )
-    argv_shape = None
+    prepared_plan = None
     if plan_available:
-        argv_shape = _terminal_argv_shape(
-            _terminal_non_control_tokens(_shell_command_tokens(command.strip()))
+        prepared_plan = _prepare_terminal_subprocess_plan(
+            command,
+            resolved_cwd=resolved_cwd,
+            public_cwd=public_cwd,
+            timeout_seconds=timeout_seconds,
+            max_output_chars=max_output_chars,
         )
 
     return {
@@ -2288,7 +2376,7 @@ def _terminal_execution_plan_audit(
         "implementation_status": "pending_no_shell_subprocess_executor",
         "executes": False,
         "shell": False,
-        "argv": argv_shape,
+        "argv": _terminal_argv_shape(prepared_plan.argv) if prepared_plan else None,
         "argv_redacted": True,
         "env_policy": _terminal_sanitized_env_policy(),
         "cwd": {
@@ -2364,6 +2452,7 @@ def preflight_terminal_command(
         command,
         classification=classification,
         execution_policy=execution_policy,
+        resolved_cwd=_resolved_cwd,
         public_cwd=public_cwd,
         timeout_seconds=timeout_seconds,
         max_output_chars=capped_output_chars,
