@@ -3162,6 +3162,16 @@ class FeishuAdapter(BasePlatformAdapter):
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
+        # Per-channel ephemeral prompt (mirrors Telegram/Slack).
+        from gateway.platforms.base import resolve_channel_prompt
+
+        config_extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        _channel_prompt = resolve_channel_prompt(
+            config_extra,
+            thread_id or chat_id,
+            chat_id if thread_id else None,
+        )
+
         normalized = MessageEvent(
             text=text,
             message_type=inbound_type,
@@ -3172,6 +3182,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
+            channel_prompt=_channel_prompt,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
