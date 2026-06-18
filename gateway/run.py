@@ -10885,7 +10885,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _sanitize_telegram_topic_title(self, title: str) -> str:
         """Return a Bot API-safe forum topic name from a generated session title."""
-        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
+        # Defensive: if a polluted title (raw ``<think>`` block from a reasoning
+        # model) somehow reaches this layer — e.g. from a code path that
+        # bypasses ``agent.title_generator._strip_reasoning_tags_for_title``
+        # — strip it here too so it never surfaces as a Telegram topic name.
+        # Mirrors the regex family in ``agent/title_generator.py``.
+        title = re.sub(
+            r"<think>.*?</think>|<thinking>.*?</thinking>"
+            r"|<reasoning>.*?</reasoning>"
+            r"|<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>"
+            r"|<thought>.*?</thought>",
+            "",
+            str(title or ""),
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        title = re.sub(
+            r"(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$",
+            "",
+            title,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        title = re.sub(
+            r"</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s+", " ", title).strip()
         if not cleaned:
             return "Hermes Chat"
         # Telegram forum topic names are short (currently 1-128 chars). Keep

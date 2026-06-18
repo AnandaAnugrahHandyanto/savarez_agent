@@ -2,12 +2,78 @@
 
 from unittest.mock import MagicMock, patch
 
-
 from agent.title_generator import (
+    _strip_reasoning_tags_for_title,
     generate_title,
     auto_title_session,
     maybe_auto_title,
 )
+
+
+class TestStripReasoningTagsForTitle:
+    """Unit tests for _strip_reasoning_tags_for_title()."""
+
+    def test_strips_closed_think_block(self):
+        # Most common case: model emits ``<think>reasoning</think>Actual title``
+        out = _strip_reasoning_tags_for_title(
+            "<think>Let me think about this.</think>TTS-Server Setup"
+        )
+        assert out == "TTS-Server Setup"
+
+    def test_strips_unterminated_think_block(self):
+        # The real-world polluter: title is truncated to 80 chars before
+        # the closing tag appears, leaving a bare ``<think>…`` prefix.
+        out = _strip_reasoning_tags_for_title(
+            "<think> The user wants a short descriptive title (3-7 words) for a conversati... #2"
+        )
+        assert out == ""
+
+    def test_strips_only_thinking_returns_empty(self):
+        out = _strip_reasoning_tags_for_title("<think>reasoning only</think>")
+        assert out == ""
+
+    def test_strips_multiple_think_blocks(self):
+        out = _strip_reasoning_tags_for_title(
+            "Multi <think>block 1</think> middle <think>block 2</think> tail"
+        )
+        assert out == "Multi  middle  tail"
+
+    def test_handles_thinking_and_reasoning_variants(self):
+        for tag in ("thinking", "reasoning", "REASONING_SCRATCHPAD", "thought"):
+            out = _strip_reasoning_tags_for_title(
+                f"<{tag}>internal scratch</{tag}>Visible Title"
+            )
+            assert out == "Visible Title", f"failed for {tag}: {out!r}"
+
+    def test_handles_case_insensitivity(self):
+        for tag in ("THINK", "Think", "ThInKiNg"):
+            out = _strip_reasoning_tags_for_title(
+                f"<{tag}>internal</{tag}>Visible"
+            )
+            assert out == "Visible", f"failed for {tag}: {out!r}"
+
+    def test_passes_through_normal_text(self):
+        out = _strip_reasoning_tags_for_title("Normal title without think blocks")
+        assert out == "Normal title without think blocks"
+
+    def test_strips_orphan_close_tag(self):
+        out = _strip_reasoning_tags_for_title("A title </think> leaked")
+        assert out == "A title  leaked"
+
+    def test_empty_input_returns_empty(self):
+        assert _strip_reasoning_tags_for_title("") == ""
+        assert _strip_reasoning_tags_for_title(None) == ""
+
+    def test_strips_unterminated_think_after_newline(self):
+        out = _strip_reasoning_tags_for_title(
+            "Lead text\n<think>unterminated block\nmore reasoning"
+        )
+        assert out == "Lead text"
+
+    def test_preserves_prose_mention_of_tag_word(self):
+        # Don't over-strip: bare word "think" without a tag must survive.
+        out = _strip_reasoning_tags_for_title("Let me think about the title")
+        assert out == "Let me think about the title"
 
 
 class TestGenerateTitle:
@@ -57,6 +123,35 @@ class TestGenerateTitle:
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") is None
+
+    def test_strips_think_block_from_response(self):
+        """Regression: MiniMax-M3 returns thinking inline in content."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        # Real-world polluter: closed think block followed by a clean title.
+        mock_response.choices[0].message.content = (
+            "<think>The user wants a short title. The topic is a TTS server.</think>"
+            "TTS-Server Setup"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("help with tts", "sure") == "TTS-Server Setup"
+
+    def test_strips_unterminated_think_block_returns_none(self):
+        """Regression: title truncated at 80 chars before closing tag.
+
+        When the response is just truncated thinking prose, the session
+        stays untitled instead of being polluted.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        # Real-world polluter: bare ``<think>`` prefix from truncation.
+        mock_response.choices[0].message.content = (
+            "<think> The user wants a short descriptive title (3-7 words) for a conversati... #2"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("q", "a") is None
 
     def test_returns_none_on_exception(self):
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):

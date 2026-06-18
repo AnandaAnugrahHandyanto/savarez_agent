@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -24,6 +25,53 @@ _TITLE_PROMPT = (
     "following exchange. The title should capture the main topic or intent. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+# ---- Reasoning-tag scrub for auto-titles --------------------------------
+# Reasoning models (notably MiniMax-M3) emit their chain-of-thought inline
+# in the ``content`` field when the structured ``reasoning_content`` field
+# isn't populated — which is exactly what happens for the auxiliary
+# title-generation call.  Without scrubbing, the raw thinking prose gets
+# saved as the session title and surfaces in:
+#   * the desktop session list
+#   * the Telegram topic/thread name (via ``_rename_telegram_topic_for_session_title``)
+#   * ``/sessions`` output
+# Mirrors ``agent.agent_runtime_helpers.strip_think_blocks`` but is
+# self-contained so this module doesn't pull in the agent runtime.
+_THINK_CLOSED_RE = re.compile(
+    r"<think>.*?</think>"
+    r"|<thinking>.*?</thinking>"
+    r"|<reasoning>.*?</reasoning>"
+    r"|<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>"
+    r"|<thought>.*?</thought>",
+    re.DOTALL | re.IGNORECASE,
+)
+# Unterminated open tag at a block boundary (start of string or after
+# newline).  Catches the case where the title was truncated at 80 chars
+# before the closing tag could appear, leaving a bare ``<think>…`` prefix.
+_THINK_UNTERMINATED_RE = re.compile(
+    r"(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$",
+    re.DOTALL | re.IGNORECASE,
+)
+# Stray orphan opening/closing tags that slipped past the two passes above.
+_THINK_ORPHAN_RE = re.compile(
+    r"</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_reasoning_tags_for_title(content: str) -> str:
+    """Remove inline reasoning/thinking blocks from a title-generation response.
+
+    Returns the cleaned content (possibly empty).  Empty results are
+    handled by ``generate_title`` returning ``None`` so the session simply
+    stays untitled rather than getting a polluted string.
+    """
+    if not content:
+        return ""
+    s = _THINK_CLOSED_RE.sub("", content)
+    s = _THINK_UNTERMINATED_RE.sub("", s)
+    s = _THINK_ORPHAN_RE.sub("", s)
+    return s.strip()
 
 
 def generate_title(
@@ -62,7 +110,12 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
+        # Reasoning models (e.g. MiniMax-M3) may emit their chain-of-thought
+        # inline in ``content`` when ``reasoning_content`` isn't populated —
+        # strip those blocks before treating the response as a title.
+        title = _strip_reasoning_tags_for_title(
+            response.choices[0].message.content or ""
+        )
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
