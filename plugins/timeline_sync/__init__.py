@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agent.timeline_sync import build_timeline_context, coerce_epoch_seconds
+from agent.runtime_context_layer import build_runtime_context
+from agent.timeline_sync import coerce_epoch_seconds
 
 
 def _env_disabled(value: str | None) -> bool:
@@ -79,11 +80,13 @@ def on_pre_llm_call(
             default_db = Path.home() / ".hermes" / "state.db"
         if not default_db.exists():
             return None
-    context = build_timeline_context(
+    context = build_runtime_context(
         db_path=db_path,
         now=_now_override(),
         session_id=session_id or "",
         platform=platform or "",
+        user_message=user_message or "",
+        conversation_history=conversation_history or [],
         recent_window_minutes=max(0, int(settings.get("recent_window_minutes", 30))),
         max_events=max(0, int(settings.get("max_events", 8))),
         include_other_platforms=bool(settings.get("include_other_platforms", True)),
