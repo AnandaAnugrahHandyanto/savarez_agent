@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from cli import HermesCLI
 from hermes_cli.browser_connect import (
+    get_darwin_browser_app_paths,
     get_chrome_debug_candidates,
     is_browser_debug_ready,
     manual_chrome_debug_command,
@@ -181,6 +182,27 @@ class TestChromeDebugLaunch:
             candidates = get_chrome_debug_candidates("Linux")
 
         assert candidates == [brave, edge]
+
+    def test_darwin_candidates_include_user_applications(self, monkeypatch):
+        home = "/Users/alice"
+        user_chrome = os.path.join(
+            home,
+            "Applications",
+            "Google Chrome.app",
+            "Contents",
+            "MacOS",
+            "Google Chrome",
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.os.path.expanduser",
+            lambda value: home if value == "~" else value,
+        )
+        with patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == user_chrome):
+            candidates = get_chrome_debug_candidates("Darwin")
+
+        assert user_chrome in candidates
+        assert user_chrome in get_darwin_browser_app_paths(home)
 
     def test_launch_tries_next_browser_when_first_candidate_fails(self):
         brave = "/usr/bin/brave-browser"

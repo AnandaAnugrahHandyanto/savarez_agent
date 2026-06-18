@@ -40,12 +40,14 @@ const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
+const { buildDesktopResolverPath, findExecutableOnPath } = require('./desktop-path-resolver.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
+const { rebuiltMacAppCandidates } = require('./desktop-update-paths.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -274,6 +276,14 @@ const HERMES_HOME = resolveHermesHome()
 const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
 const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
+// GUI-launched macOS apps often inherit a minimal PATH that omits Homebrew.
+// Resolve desktop prerequisites against the same augmented PATH we pass to the
+// backend so Hermes, Python, and Git can be found before the backend exists.
+const DESKTOP_RESOLVER_PATH = buildDesktopResolverPath({
+  hermesHome: HERMES_HOME,
+  venvRoot: VENV_ROOT,
+  currentEnv: process.env
+})
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
 // (Phase 1D) after install.ps1 has completed all stages and the user has
 // finished initial configuration. Presence of this marker means the install
@@ -1095,29 +1105,13 @@ function unpackedPathFor(filePath) {
 }
 
 function findOnPath(command) {
-  if (!command) return null
-
-  if (path.isAbsolute(command) || command.includes(path.sep) || (IS_WINDOWS && command.includes('/'))) {
-    if (!fileExists(command)) return null
-    if (isWindowsBinaryPathInWsl(command, { isWsl: IS_WSL })) return null
-    return command
-  }
-
-  const pathEntries = String(process.env.PATH || '')
-    .split(path.delimiter)
-    .filter(Boolean)
-  const extensions = IS_WINDOWS
-    ? ['', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
-    : ['']
-
-  for (const entry of pathEntries) {
-    for (const extension of extensions) {
-      const candidate = path.join(entry, `${command}${extension}`)
-      if (fileExists(candidate)) return candidate
-    }
-  }
-
-  return null
+  return findExecutableOnPath(command, {
+    searchPath: DESKTOP_RESOLVER_PATH,
+    currentEnv: process.env,
+    fileExists,
+    isWindowsBinaryPathInWsl,
+    isWsl: IS_WSL
+  })
 }
 
 function isCommandScript(command) {
@@ -2028,10 +2022,7 @@ async function applyUpdatesPosixInApp() {
     return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
   }
 
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
+  const rebuiltApp = rebuiltMacAppCandidates(updateRoot).find(directoryExists)
   const targetApp = runningAppBundle()
 
   // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
