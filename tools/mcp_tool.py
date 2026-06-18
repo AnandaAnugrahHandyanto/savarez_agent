@@ -4075,21 +4075,33 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     if not pids:
         return
 
+    # Guard against killing the gateway's own process group. MCP children
+    # spawned with start_new_session=True get their own pgid, but at least
+    # one code path can leave a child in the gateway's group. killpg on
+    # the gateway's own pgid sends SIGTERM to ourselves (issue #47134).
+    _getpgid = getattr(os, "getpgid", None)
+    _gateway_pgid: int | None = _getpgid(os.getpid()) if _getpgid else None
+
     def _send_signal(pid: int, sig: int, server_name: str) -> None:
         """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
         pgid = pgids.get(pid)
         killpg = getattr(os, "killpg", None)
         if pgid is not None and killpg is not None:
-            try:
-                killpg(pgid, sig)
-                return
-            except (ProcessLookupError, PermissionError, OSError) as exc:
-                # Pgroup gone (all members exited) or refused — fall back to
-                # the per-pid path so we still try the direct child if alive.
-                logger.debug(
-                    "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
-                    pgid, sig, server_name, exc,
+            if _gateway_pgid is not None and pgid == _gateway_pgid:
+                logger.warning(
+                    "Refusing killpg(%d, %d) for MCP server '%s': "
+                    "pgid matches gateway own process group — using per-pid kill",
+                    pgid, sig, server_name,
                 )
+            else:
+                try:
+                    killpg(pgid, sig)
+                    return
+                except (ProcessLookupError, PermissionError, OSError) as exc:
+                    logger.debug(
+                        "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
+                        pgid, sig, server_name, exc,
+                    )
         try:
             os.kill(pid, sig)
         except (ProcessLookupError, PermissionError, OSError):
