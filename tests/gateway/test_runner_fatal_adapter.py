@@ -11,7 +11,12 @@ class _FatalAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="token"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    # ``is_reconnect`` is forwarded by ``_connect_adapter_with_timeout`` (see
+    # #46621). Stubbed adapters in the test suite need to accept the same
+    # kwargs-only parameter or the runner's connect() call raises
+    # ``TypeError: got an unexpected keyword argument 'is_reconnect'`` before
+    # the adapter's own error path can run, masking the test setup.
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
             "telegram_token_lock",
             "Another local Hermes gateway is already using this Telegram bot token.",
@@ -33,7 +38,7 @@ class _RuntimeRetryableAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="token"), Platform.WHATSAPP)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
