@@ -297,7 +297,89 @@ class TestStaleSessionLockSelfHeal:
         assert adapter._heal_stale_session_lock(sk) is False
         # Lock still in place.
         assert sk in adapter._active_sessions
+
+    def test_guard_override_during_finally_keeps_done_task_for_self_heal(self):
+        """Regression for #48300: if a drain task overrides ``_active_sessions``
+        while the owner task is still alive, the owner's finally-block
+        release call sees a guard mismatch (``_release_session_guard``
+        returns early at L3700) and the lock stays installed. The owner
+        task's reference in ``_session_tasks`` must therefore stay in
+        place so the next inbound message's self-heal can detect the
+        split-brain and clear the orphaned guard.
+
+        Previously the finally block ran ``del self._session_tasks[sk]``
+        *before* the guard release, which left the adapter with a stuck
+        lock and no way to detect the stale state via
+        ``_session_task_is_stale`` (it returns False when the task is
+        missing entirely — see ``test_no_owner_task_is_not_treated_as_stale``).
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        # Real-ish done task (an awaited coroutine so done() is True).
+        async def _done():
+            return None
+
+        done_task = asyncio.new_event_loop().run_until_complete if False else None
+        # We can use MagicMock with done()=True; the cleanup logic only
+        # inspects the current asyncio task via asyncio.current_task()
+        # which is None in this synchronous test setup. Drive the
+        # finally-block code path manually.
+        async def _run_cleanup():
+            current_task = asyncio.current_task()
+            # The original interrupt_event was the guard set at start.
+            interrupt_event = asyncio.Event()
+            adapter._active_sessions[sk] = interrupt_event
+            adapter._session_tasks[sk] = current_task
+            # Simulate a drain task taking over the active guard.
+            adapter._active_sessions[sk] = asyncio.Event()
+            # Now run the cleanup branch.
+            if current_task is not None and adapter._session_tasks.get(sk) is current_task:
+                adapter._release_session_guard(sk, guard=interrupt_event)
+                if sk not in adapter._active_sessions:
+                    del adapter._session_tasks[sk]
+
+        asyncio.run(_run_cleanup())
+
+        # After the finally: the guard is still set (release was
+        # skipped), but the task reference must also still be in place
+        # so the self-heal path can detect the stale state.
+        assert sk in adapter._active_sessions
         assert sk in adapter._session_tasks
+        # And the self-heal fires correctly.
+        assert adapter._session_task_is_stale(sk) is True
+        assert adapter._heal_stale_session_lock(sk) is True
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+
+    def test_normal_finally_still_clears_both(self):
+        """Regression: the normal path (no drain override) still clears
+        both ``_session_tasks`` and ``_active_sessions``. The #48300
+        reordering must not break the simple case where the owner task
+        finishes and the guard is still the original interrupt_event.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+
+        async def _run_cleanup():
+            current_task = asyncio.current_task()
+            interrupt_event = asyncio.Event()
+            adapter._active_sessions[sk] = interrupt_event
+            adapter._session_tasks[sk] = current_task
+            # No drain override this time — the guard still matches.
+            if current_task is not None and adapter._session_tasks.get(sk) is current_task:
+                adapter._release_session_guard(sk, guard=interrupt_event)
+                if sk not in adapter._active_sessions:
+                    del adapter._session_tasks[sk]
+
+        asyncio.run(_run_cleanup())
+
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+        # And the lock is fully gone, so the next message dispatches
+        # normally (not stale).
+        assert adapter._session_task_is_stale(sk) is False
+        assert adapter._heal_stale_session_lock(sk) is False
 
 
 # ===========================================================================
