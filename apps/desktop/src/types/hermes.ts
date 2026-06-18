@@ -187,6 +187,10 @@ export interface HermesConfig {
   voice?: {
     max_recording_seconds?: number
   }
+  dashboard?: {
+    theme?: string
+    profile_branding?: boolean
+  }
 }
 
 export type HermesConfigRecord = Record<string, unknown>
@@ -482,6 +486,9 @@ export interface ProfileCreatePayload {
 }
 
 export interface ProfileInfo {
+  alias_name?: string | null
+  description?: string
+  description_auto?: boolean
   has_env: boolean
   is_default: boolean
   model: null | string
