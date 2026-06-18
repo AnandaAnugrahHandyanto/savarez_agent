@@ -619,6 +619,45 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
+# Upper bound on a single inbound-media download. A request timeout bounds
+# wall-clock, not response size; these URLs come from inbound platform
+# messages (sender-chosen host), so an unbounded body could fill the cache
+# directory / spike memory. Matches tools/vision_tools._VISION_MAX_DOWNLOAD_BYTES.
+_MAX_MEDIA_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB
+
+
+async def _read_capped_body(response, kind: str) -> bytes:
+    """Read a streaming response body, aborting once it exceeds the media cap.
+
+    Checks the Content-Length header first (fast reject for honest oversized
+    responses), then reads incrementally via ``aiter_bytes()`` and raises as
+    soon as the accumulated body passes the cap — so a sender-controlled URL
+    that omits or lies about Content-Length can never force the whole body to
+    be buffered in memory. Raises ValueError on an oversized response so the
+    caller does not cache it. Mirrors the bounded-download guard in
+    tools/vision_tools.py.
+    """
+    max_bytes = _MAX_MEDIA_DOWNLOAD_BYTES
+    declared = response.headers.get("content-length")
+    if declared:
+        try:
+            declared_int = int(declared)
+        except (TypeError, ValueError):
+            declared_int = None
+        if declared_int is not None and declared_int > max_bytes:
+            raise ValueError(
+                f"{kind} too large ({declared_int} bytes, max {max_bytes})"
+            )
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > max_bytes:
+            raise ValueError(
+                f"{kind} too large (exceeds {max_bytes} bytes while streaming)"
+            )
+    return bytes(body)
+
+
 async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
     Download an image from a URL and save it to the local cache.
@@ -651,15 +690,17 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     ) as client:
         for attempt in range(retries + 1):
             try:
-                response = await client.get(
+                async with client.stream(
+                    "GET",
                     url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
                         "Accept": "image/*,*/*;q=0.8",
                     },
-                )
-                response.raise_for_status()
-                return cache_image_from_bytes(response.content, ext)
+                ) as response:
+                    response.raise_for_status()
+                    body = await _read_capped_body(response, "Image")
+                return cache_image_from_bytes(body, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -765,15 +806,17 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     ) as client:
         for attempt in range(retries + 1):
             try:
-                response = await client.get(
+                async with client.stream(
+                    "GET",
                     url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
                         "Accept": "audio/*,*/*;q=0.8",
                     },
-                )
-                response.raise_for_status()
-                return cache_audio_from_bytes(response.content, ext)
+                ) as response:
+                    response.raise_for_status()
+                    body = await _read_capped_body(response, "Audio")
+                return cache_audio_from_bytes(body, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
