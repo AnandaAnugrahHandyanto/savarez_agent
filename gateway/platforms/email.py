@@ -42,7 +42,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, _coerce_bool
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
@@ -321,6 +321,13 @@ class EmailAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
 
+        # Use BODY.PEEK[] for IMAP fetch to avoid marking messages as read on
+        # the server.  Set to false to restore the legacy RFC822 behaviour.
+        #   platforms:
+        #     email:
+        #       imap_peek: false
+        self._imap_peek = _coerce_bool(extra.get("imap_peek"), True)
+
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
@@ -484,7 +491,8 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    fetch_cmd = "(BODY.PEEK[])" if self._imap_peek else "(RFC822)"
+                    status, msg_data = imap.uid("fetch", uid, fetch_cmd)
                     if status != "OK":
                         continue
 
