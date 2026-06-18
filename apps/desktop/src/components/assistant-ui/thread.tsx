@@ -1177,6 +1177,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
+  const composingRef = useRef(false)
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -1325,6 +1326,23 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       setTriggerActive(0)
     }
   }, [trigger])
+
+  // Keep inline message edit behavior aligned with the main composer: IME
+  // preedit should not leak into draft state, and Windows/Electron may omit a
+  // trailing input event after compositionend.
+  const flushEditorToDraft = useCallback(
+    (editor: HTMLDivElement) => {
+      if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+        editor.replaceChildren()
+      }
+
+      const nextDraft = syncDraftFromEditor(editor)
+      window.setTimeout(refreshTrigger, 0)
+
+      return nextDraft
+    },
+    [refreshTrigger, syncDraftFromEditor]
+  )
 
   const closeTrigger = useCallback(() => {
     setTrigger(null)
@@ -1563,14 +1581,11 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   }
 
   const handleInput = (event: FormEvent<HTMLDivElement>) => {
-    const editor = event.currentTarget
-
-    if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
-      editor.replaceChildren()
+    if (composingRef.current) {
+      return
     }
 
-    syncDraftFromEditor(editor)
-    window.setTimeout(refreshTrigger, 0)
+    flushEditorToDraft(event.currentTarget)
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
@@ -1588,7 +1603,11 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   }
 
   const submitEdit = (editor: HTMLDivElement) => {
-    const nextDraft = syncDraftFromEditor(editor)
+    if (composingRef.current) {
+      return
+    }
+
+    const nextDraft = flushEditorToDraft(editor)
 
     if (submitting || staging || !nextDraft.trim()) {
       return
@@ -1622,6 +1641,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -1735,6 +1758,13 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
+              onCompositionEnd={event => {
+                composingRef.current = false
+                flushEditorToDraft(event.currentTarget)
+              }}
+              onCompositionStart={() => {
+                composingRef.current = true
+              }}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}
