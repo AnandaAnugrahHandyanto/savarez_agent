@@ -122,6 +122,47 @@ class TestWeComConnect:
         assert adapter.fatal_error_code == "wecom_connect_error"
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
+    @pytest.mark.asyncio
+    async def test_reconnect_once_logs_attempt_and_success(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        adapter._open_connection = AsyncMock()
+        adapter._mark_connected = MagicMock()
+
+        with patch("gateway.platforms.wecom.logger") as mock_logger:
+            success = await adapter._reconnect_once(delay=0, attempt=3)
+
+        assert success is True
+        adapter._open_connection.assert_awaited_once()
+        adapter._mark_connected.assert_called_once_with()
+        assert mock_logger.info.call_args_list[0].args == ("[%s] Reconnecting in %ss (attempt %d)", adapter.name, 0, 3)
+        assert mock_logger.info.call_args_list[1].args == ("[%s] Reconnected", adapter.name)
+
+    @pytest.mark.asyncio
+    async def test_reconnect_once_times_out_and_logs_warning(self, monkeypatch):
+        import gateway.platforms.wecom as wecom_module
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+
+        async def _hang_forever():
+            await asyncio.sleep(1)
+
+        adapter._open_connection = _hang_forever
+
+        monkeypatch.setattr(wecom_module, "RECONNECT_ATTEMPT_TIMEOUT_SECONDS", 0.01)
+        with patch("gateway.platforms.wecom.logger") as mock_logger:
+            success = await adapter._reconnect_once(delay=0, attempt=1)
+
+        assert success is False
+        mock_logger.warning.assert_called_once()
+        warning_args = mock_logger.warning.call_args.args
+        assert warning_args[:3] == ("[%s] Reconnect failed: timed out after %.1fs", adapter.name, 0.01)
+        assert mock_logger.warning.call_args.kwargs["exc_info"] is True
+
 
 class TestWeComQrScan:
     @patch("gateway.platforms.wecom.time")
