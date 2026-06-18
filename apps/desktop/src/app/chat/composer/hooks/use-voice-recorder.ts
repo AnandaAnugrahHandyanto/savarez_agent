@@ -85,7 +85,11 @@ export function useVoiceRecorder({
     }
 
     try {
-      await handle.start({ onError: error => notifyError(error, voiceCopy.recordingFailed) })
+      await handle.start({
+        onDeviceFallback: () =>
+          notify({ kind: 'warning', title: voiceCopy.microphoneSelectionUnavailable, message: voiceCopy.usingSystemMicrophone }),
+        onError: error => notifyError(error, voiceCopy.recordingFailed)
+      })
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')

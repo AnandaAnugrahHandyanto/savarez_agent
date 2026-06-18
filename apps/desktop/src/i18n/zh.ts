@@ -117,6 +117,7 @@ export const zh: Translations = {
       microphoneFailed: '麦克风出错',
       microphoneInUse: '麦克风正被其他应用占用。',
       microphonePermissionDenied: '麦克风权限被拒绝。',
+      microphoneSelectionUnavailable: '所选麦克风不可用',
       microphoneStartFailed: '无法开始麦克风录音。',
       microphoneUnsupported: '当前运行环境不支持麦克风录音。',
       noMicrophone: '未找到麦克风。',
@@ -126,7 +127,8 @@ export const zh: Translations = {
       transcriptionFailed: '语音转写失败',
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
-      unavailable: '语音不可用'
+      unavailable: '语音不可用',
+      usingSystemMicrophone: 'Hermes 将在本次录音中使用系统默认麦克风。'
     },
     native: {
       approvalTitle: '需要批准',
@@ -569,6 +571,39 @@ export const zh: Translations = {
           'Hermes 从应用内更新时（无终端提示），保留本地源码修改（暂存）或丢弃（放弃）。通过终端更新时始终会询问。'
       }
     }),
+    voice: {
+      title: '语音输入',
+      microphoneTitle: '麦克风',
+      microphoneDesc: '用于听写和语音对话的本机输入设备。',
+      systemDefault: '系统默认麦克风',
+      refreshDevices: '刷新',
+      devicesUnavailable: '当前运行环境无法访问麦克风设备。',
+      missingDeviceOption: '已保存的麦克风（未连接）',
+      selectedDeviceUnavailable: '已保存的麦克风未连接。Hermes 将回退到系统默认麦克风。',
+      backendTitle: '转写后端',
+      localBackend: '本地',
+      remoteBackend: '远程',
+      localBackendDesc: '音频在此处采集，并由本地 Hermes 后端转写成文本后发送给智能体。',
+      remoteBackendDesc: baseUrl =>
+        `音频在此处采集，然后发送到 ${baseUrl} 进行转写。模型 API 收到的是转写文本，而不是原始音频。`,
+      sttTitle: '语音转文字',
+      refreshStatus: '检查',
+      checkingStatus: '正在检查语音转文字状态…',
+      statusUnavailable: '语音转文字状态不可用。',
+      statusUnsupported: '此后端尚未提供语音转文字诊断接口。语音转写可能仍可使用；更新后端后可查看就绪详情。',
+      statusFailed: '状态检查失败',
+      statusError: message => `语音转文字状态检查失败：${message}`,
+      sttDisabled: '配置中已禁用语音转文字。',
+      sttReady: provider => `已连接后端上的 ${provider} 语音转文字已就绪。`,
+      sttUnavailable: provider => `已连接后端上的 ${provider} 语音转文字尚未就绪。`,
+      localSttInstallable: missing =>
+        `本地 STT 缺少 ${missing}。懒安装已启用，后端可在首次本地转写时安装允许的软件包。`,
+      localSttMissing: missing => `本地 STT 缺少 ${missing}。请启用懒安装，或在此后端安装本地 STT 软件包。`,
+      localCommandAvailable: missing =>
+        `命令式本地 STT 可用。缺少的软件包组合：${missing}。桌面端采集不需要 sounddevice 或 numpy。`,
+      localPackagesReady: '此后端已安装本地 STT 软件包。',
+      localPackagesMissing: missing => `缺少本地 STT 软件包：${missing}。`
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,

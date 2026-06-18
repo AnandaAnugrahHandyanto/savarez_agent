@@ -16,6 +16,22 @@ export interface AudioTranscriptionResponse {
   transcript: string
 }
 
+export interface AudioStatusResponse {
+  available: boolean
+  configured_provider: string
+  enabled: boolean
+  lazy_installs_allowed: boolean
+  local: {
+    faster_whisper_available: boolean
+    local_command_available: boolean
+    missing_packages: string[]
+    model: string
+    numpy_available: boolean
+    sounddevice_available: boolean
+  }
+  resolved_provider: string
+}
+
 export interface AudioSpeakResponse {
   ok: boolean
   data_url: string

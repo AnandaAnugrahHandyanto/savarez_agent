@@ -2533,6 +2533,17 @@ async def check_hermes_update(force: bool = False):
     return payload
 
 
+@app.get("/api/audio/status")
+async def audio_status():
+    try:
+        from tools.transcription_tools import transcription_status
+
+        return transcription_status()
+    except Exception as exc:
+        _log.exception("Desktop audio status check failed")
+        raise HTTPException(status_code=500, detail=f"Audio status failed: {exc}")
+
+
 @app.post("/api/audio/transcribe")
 async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
     data_url = (payload.data_url or "").strip()

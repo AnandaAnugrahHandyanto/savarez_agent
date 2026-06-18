@@ -121,6 +121,7 @@ export const en: Translations = {
       microphoneFailed: 'Microphone failed',
       microphoneInUse: 'Microphone is already in use by another app.',
       microphonePermissionDenied: 'Microphone permission was denied.',
+      microphoneSelectionUnavailable: 'Selected microphone unavailable',
       microphoneStartFailed: 'Could not start microphone recording.',
       microphoneUnsupported: 'This runtime does not support microphone recording.',
       noMicrophone: 'No microphone was found.',
@@ -130,7 +131,8 @@ export const en: Translations = {
       transcriptionFailed: 'Voice transcription failed',
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
-      unavailable: 'Voice unavailable'
+      unavailable: 'Voice unavailable',
+      usingSystemMicrophone: 'Hermes is using the system default microphone for this recording.'
     },
     native: {
       approvalTitle: 'Approval needed',
@@ -370,6 +372,42 @@ export const en: Translations = {
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
+    voice: {
+      title: 'Voice Input',
+      microphoneTitle: 'Microphone',
+      microphoneDesc: 'Device-local input used for dictation and voice conversations.',
+      systemDefault: 'System default microphone',
+      refreshDevices: 'Refresh',
+      devicesUnavailable: 'Microphone devices are unavailable in this runtime.',
+      missingDeviceOption: 'Saved microphone (not connected)',
+      selectedDeviceUnavailable: 'The saved microphone is not connected. Hermes will fall back to the system default.',
+      backendTitle: 'Transcription backend',
+      localBackend: 'Local',
+      remoteBackend: 'Remote',
+      localBackendDesc:
+        'Audio is captured here and transcribed by the local Hermes backend before the text is sent to the agent.',
+      remoteBackendDesc: baseUrl =>
+        `Audio is captured here, then sent to ${baseUrl} for transcription. The model API receives the transcript text, not the raw audio.`,
+      sttTitle: 'Speech-to-text',
+      refreshStatus: 'Check',
+      checkingStatus: 'Checking speech-to-text status...',
+      statusUnavailable: 'Speech-to-text status is unavailable.',
+      statusUnsupported:
+        'This backend does not expose speech-to-text diagnostics yet. Voice transcription may still work; update the backend to see readiness details.',
+      statusFailed: 'Status check failed',
+      statusError: message => `Speech-to-text status failed: ${message}`,
+      sttDisabled: 'Speech-to-text is disabled in config.',
+      sttReady: provider => `${provider} speech-to-text is ready on the connected backend.`,
+      sttUnavailable: provider => `${provider} speech-to-text is not ready on the connected backend.`,
+      localSttInstallable: missing =>
+        `Local STT is missing ${missing}. Lazy installs are enabled, so the backend can install the allowed packages on first local transcription.`,
+      localSttMissing: missing =>
+        `Local STT is missing ${missing}. Enable lazy installs or install the local STT packages on this backend.`,
+      localCommandAvailable: missing =>
+        `Command-based local STT is available. Missing package bundle: ${missing}. Desktop capture does not need sounddevice or numpy.`,
+      localPackagesReady: 'Local STT packages are installed on this backend.',
+      localPackagesMissing: missing => `Missing local STT packages: ${missing}.`
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `Version ${value}`,
