@@ -9274,7 +9274,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # job (issue #34600). If the live file is now empty while the
         # pre-update snapshot held jobs, restore it and warn loudly.
         try:
-            from hermes_cli.backup import restore_cron_jobs_if_emptied
+            from hermes_cli.backup import (
+                restore_cron_jobs_if_emptied,
+                restore_env_keys_if_removed,
+            )
 
             cron_restore = restore_cron_jobs_if_emptied(pre_update_snapshot_id)
             if cron_restore:
@@ -9284,9 +9287,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     f"restored {cron_restore['job_count']} job(s) from "
                     f"pre-update snapshot {cron_restore['snapshot_id']}."
                 )
+            env_restore = restore_env_keys_if_removed(pre_update_snapshot_id)
+            if env_restore:
+                restored_keys = env_restore.get("keys") or []
+                shown = ", ".join(restored_keys[:8])
+                if len(restored_keys) > 8:
+                    shown += f", … and {len(restored_keys) - 8} more"
+                print()
+                print(
+                    "  ⚠️  .env lost "
+                    f"{env_restore['key_count']} key(s) during this update — "
+                    f"restored from pre-update snapshot {env_restore['snapshot_id']}."
+                )
+                if shown:
+                    print(f"     Restored keys: {shown}")
         except Exception as exc:
-            # Never let the cron safety net break an otherwise-good update.
-            logger.debug("Cron jobs auto-restore check failed: %s", exc)
+            # Never let the config/state safety nets break an otherwise-good update.
+            logger.debug("Post-update config/state auto-restore check failed: %s", exc)
 
         print()
         print("✓ Update complete!")
