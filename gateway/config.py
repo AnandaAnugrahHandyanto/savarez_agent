@@ -1217,6 +1217,20 @@ def load_gateway_config() -> GatewayConfig:
                         ac = ",".join(str(v) for v in ac)
                     os.environ["DINGTALK_ALLOWED_CHATS"] = str(ac)
                 allowed = dingtalk_cfg.get("allowed_users")
+                if allowed is None:
+                    # Fall back to the documented nested path
+                    # (gateway.platforms.dingtalk.extra.allowed_users, see
+                    # website/docs/user-guide/messaging/dingtalk.md). The
+                    # adapter reads the allowlist from PlatformConfig.extra,
+                    # but _is_user_authorized() in gateway/authz_mixin.py only
+                    # consults DINGTALK_ALLOWED_USERS — without this bridge a
+                    # nested-only allowlist passes the adapter and is then
+                    # denied at the gateway. platforms_data already merged
+                    # gateway.platforms and top-level platforms blocks.
+                    _dt_plat = platforms_data.get(Platform.DINGTALK.value)
+                    _dt_extra = _dt_plat.get("extra") if isinstance(_dt_plat, dict) else None
+                    if isinstance(_dt_extra, dict):
+                        allowed = _dt_extra.get("allowed_users")
                 if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
                     if isinstance(allowed, list):
                         allowed = ",".join(str(v) for v in allowed)
