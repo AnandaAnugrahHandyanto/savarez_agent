@@ -2683,16 +2683,17 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
         )
 
     with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
-        with caplog.at_level("WARNING", logger="hermes_state"):
+        with caplog.at_level("ERROR", logger="hermes_state"):
             conn = kb.connect()
 
-    # One fallback warning, naming kanban.db
-    warnings = [
-        r for r in caplog.records
-        if r.levelname == "WARNING" and "kanban.db" in r.getMessage()
+    # One fallback error, naming kanban.db
+    errors = [
+        r
+        for r in caplog.records
+        if r.levelname == "ERROR" and "kanban.db" in r.getMessage()
     ]
-    assert len(warnings) >= 1, (
-        f"Expected a kanban.db WARNING, got: {[r.getMessage() for r in caplog.records]}"
+    assert len(errors) >= 1, (
+        f"Expected a kanban.db ERROR, got: {[r.getMessage() for r in caplog.records]}"
     )
 
     # DB still usable end-to-end — create + list a task
