@@ -7864,8 +7864,32 @@ def _resolve_update_branch(args) -> str:
     or whitespace-only values as the default" parsing so every consumer of
     ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
     the same answer.
+
+    Resolution order:
+      1. explicit ``--branch NAME`` on the command line
+      2. ``updates.branch`` in config.yaml — lets deployments that run a
+         fork's integration branch (e.g. ``team-agent``) have EVERY update
+         path (CLI, gateway /update, desktop) track that branch without
+         remembering a flag
+      3. ``"main"``
     """
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    explicit = (getattr(args, "branch", None) or "").strip()
+    if explicit:
+        return explicit
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cfg_branch = str(
+            (cfg.get("updates", {}) or {}).get("branch") or ""
+        ).strip()
+        if cfg_branch:
+            return cfg_branch
+    except Exception:
+        # Config trouble must never break updates — the update may be the
+        # fix for the config trouble.
+        pass
+    return "main"
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):

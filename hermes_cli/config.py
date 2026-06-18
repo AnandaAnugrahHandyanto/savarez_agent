@@ -2534,6 +2534,14 @@ DEFAULT_CONFIG = {
 
     # ``hermes update`` behaviour.
     "updates": {
+        # Default branch for ``hermes update`` when ``--branch`` is not
+        # passed on the command line. Deployments that run a fork's
+        # integration branch (e.g. a ``team-agent`` branch carrying local
+        # patches on top of upstream main) set this so EVERY update path —
+        # CLI, gateway /update, desktop — tracks that branch consistently.
+        # Empty/unset means "main". Note: updates always pull from the
+        # ``origin`` remote; point origin at your fork if you maintain one.
+        "branch": "",
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
         # can be restored with ``hermes import <path>``.  Defaults to true
