@@ -2849,11 +2849,21 @@ def _refresh_spotify_oauth_state(
 
     if response.status_code >= 400:
         detail = response.text.strip()
+        is_invalid_grant = False
+        try:
+            body = response.json()
+            is_invalid_grant = isinstance(body, dict) and body.get("error") == "invalid_grant"
+        except Exception:
+            pass
         raise AuthError(
-            "Spotify token refresh failed. Run `hermes auth spotify` again."
-            + (f" Response: {detail}" if detail else ""),
+            "Spotify refresh token has expired or was revoked. Run `hermes auth spotify` again."
+            if is_invalid_grant
+            else (
+                "Spotify token refresh failed. Run `hermes auth spotify` again."
+                + (f" Response: {detail}" if detail else "")
+            ),
             provider="spotify",
-            code="spotify_refresh_failed",
+            code="spotify_refresh_invalid_grant" if is_invalid_grant else "spotify_refresh_failed",
             relogin_required=True,
         )
 
@@ -2877,6 +2887,23 @@ def _refresh_spotify_oauth_state(
     )
 
 
+def _quarantine_spotify_oauth_state(
+    state: Dict[str, Any],
+    error: AuthError,
+) -> None:
+    """Strip dead Spotify tokens so subsequent calls fail fast without a network retry."""
+    for key in ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at"):
+        state.pop(key, None)
+    state["last_auth_error"] = {
+        "provider": "spotify",
+        "code": error.code,
+        "message": str(error),
+        "reason": "runtime_refresh_failure",
+        "relogin_required": True,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def resolve_spotify_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -2898,7 +2925,14 @@ def resolve_spotify_runtime_credentials(
         if not should_refresh and refresh_if_expiring:
             should_refresh = _is_expiring(state.get("expires_at"), refresh_skew_seconds)
         if should_refresh:
-            state = _refresh_spotify_oauth_state(state)
+            try:
+                state = _refresh_spotify_oauth_state(state)
+            except AuthError as exc:
+                if exc.code == "spotify_refresh_invalid_grant":
+                    _quarantine_spotify_oauth_state(state, exc)
+                    _store_provider_state(auth_store, "spotify", state, set_active=False)
+                    _save_auth_store(auth_store)
+                raise
             _store_provider_state(auth_store, "spotify", state, set_active=False)
             _save_auth_store(auth_store)
 

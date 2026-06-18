@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -181,3 +182,167 @@ def test_spotify_interactive_setup_empty_aborts(
     env_path = tmp_path / ".env"
     if env_path.exists():
         assert "HERMES_SPOTIFY_CLIENT_ID" not in env_path.read_text()
+
+
+# --- invalid_grant / quarantine tests ---
+
+
+def _make_spotify_state(**overrides):
+    base = {
+        "client_id": "spotify-client",
+        "redirect_uri": "http://127.0.0.1:43827/spotify/callback",
+        "api_base_url": auth_mod.DEFAULT_SPOTIFY_API_BASE_URL,
+        "accounts_base_url": auth_mod.DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL,
+        "scope": auth_mod.DEFAULT_SPOTIFY_SCOPE,
+        "access_token": "expired-token",
+        "refresh_token": "dead-refresh-token",
+        "token_type": "Bearer",
+        "expires_at": "2000-01-01T00:00:00+00:00",
+        "expires_in": 3600,
+        "obtained_at": "1999-01-01T00:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
+
+
+def _make_httpx_response(status_code, json_body=None, text=""):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    resp.json.return_value = json_body
+    return resp
+
+
+def test_refresh_detects_invalid_grant(monkeypatch):
+    """_refresh_spotify_oauth_state raises spotify_refresh_invalid_grant on invalid_grant body."""
+    state = _make_spotify_state()
+    resp = _make_httpx_response(
+        400,
+        json_body={"error": "invalid_grant", "error_description": "Token expired"},
+    )
+    monkeypatch.setattr(auth_mod.httpx, "post", lambda *a, **kw: resp)
+
+    with pytest.raises(auth_mod.AuthError, match="expired or was revoked") as exc_info:
+        auth_mod._refresh_spotify_oauth_state(state)
+
+    assert exc_info.value.code == "spotify_refresh_invalid_grant"
+    assert exc_info.value.relogin_required is True
+
+
+def test_refresh_generic_failure_uses_original_code(monkeypatch):
+    """Non-invalid_grant failures still raise spotify_refresh_failed."""
+    state = _make_spotify_state()
+    resp = _make_httpx_response(500, text="Internal Server Error")
+    monkeypatch.setattr(auth_mod.httpx, "post", lambda *a, **kw: resp)
+
+    with pytest.raises(auth_mod.AuthError, match="token refresh failed") as exc_info:
+        auth_mod._refresh_spotify_oauth_state(state)
+
+    assert exc_info.value.code == "spotify_refresh_failed"
+
+
+def test_refresh_invalid_grant_with_unparseable_body(monkeypatch):
+    """Non-JSON 400 body falls back to generic spotify_refresh_failed."""
+    state = _make_spotify_state()
+    resp = _make_httpx_response(400, text="invalid_grant: token revoked")
+    resp.json.side_effect = ValueError("no json")
+    monkeypatch.setattr(auth_mod.httpx, "post", lambda *a, **kw: resp)
+
+    with pytest.raises(auth_mod.AuthError, match="token refresh failed") as exc_info:
+        auth_mod._refresh_spotify_oauth_state(state)
+
+    assert exc_info.value.code == "spotify_refresh_failed"
+
+
+def test_quarantine_strips_tokens_and_writes_last_auth_error():
+    """_quarantine_spotify_oauth_state removes dead tokens and records the error."""
+    state = _make_spotify_state()
+    error = auth_mod.AuthError(
+        "Spotify refresh token has expired or was revoked.",
+        provider="spotify",
+        code="spotify_refresh_invalid_grant",
+        relogin_required=True,
+    )
+
+    auth_mod._quarantine_spotify_oauth_state(state, error)
+
+    for key in ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at"):
+        assert key not in state, f"{key} should be removed"
+    assert state["client_id"] == "spotify-client"
+    assert state["last_auth_error"]["code"] == "spotify_refresh_invalid_grant"
+    assert state["last_auth_error"]["relogin_required"] is True
+
+
+def test_resolve_quarantines_on_invalid_grant(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """resolve_spotify_runtime_credentials quarantines tokens and re-raises on invalid_grant."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    with auth_mod._auth_store_lock():
+        store = auth_mod._load_auth_store()
+        auth_mod._store_provider_state(
+            store,
+            "spotify",
+            _make_spotify_state(),
+            set_active=False,
+        )
+        auth_mod._save_auth_store(store)
+
+    def _fail_refresh(state, timeout_seconds=20.0):
+        raise auth_mod.AuthError(
+            "Spotify refresh token has expired or was revoked. Run `hermes auth spotify` again.",
+            provider="spotify",
+            code="spotify_refresh_invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "_refresh_spotify_oauth_state", _fail_refresh)
+
+    with pytest.raises(auth_mod.AuthError, match="expired or was revoked") as exc_info:
+        auth_mod.resolve_spotify_runtime_credentials(force_refresh=True)
+
+    assert exc_info.value.code == "spotify_refresh_invalid_grant"
+
+    persisted = auth_mod.get_provider_auth_state("spotify")
+    assert persisted is not None
+    assert "refresh_token" not in persisted
+    assert "access_token" not in persisted
+    assert persisted["last_auth_error"]["code"] == "spotify_refresh_invalid_grant"
+
+
+def test_resolve_does_not_quarantine_on_generic_refresh_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Generic refresh failures propagate without quarantining tokens."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    with auth_mod._auth_store_lock():
+        store = auth_mod._load_auth_store()
+        auth_mod._store_provider_state(
+            store,
+            "spotify",
+            _make_spotify_state(),
+            set_active=False,
+        )
+        auth_mod._save_auth_store(store)
+
+    def _fail_refresh(state, timeout_seconds=20.0):
+        raise auth_mod.AuthError(
+            "Spotify token refresh failed.",
+            provider="spotify",
+            code="spotify_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "_refresh_spotify_oauth_state", _fail_refresh)
+
+    with pytest.raises(auth_mod.AuthError, match="token refresh failed"):
+        auth_mod.resolve_spotify_runtime_credentials(force_refresh=True)
+
+    persisted = auth_mod.get_provider_auth_state("spotify")
+    assert persisted is not None
+    assert persisted["refresh_token"] == "dead-refresh-token"
+    assert "last_auth_error" not in persisted
