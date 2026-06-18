@@ -917,7 +917,6 @@ class MattermostAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
-        requester_user_id: str = "",
     ) -> SendResult:
         """Send an interactive button approval prompt via Mattermost Post Actions."""
         if not self._callback_base_url or not self._hmac_secret:
@@ -993,7 +992,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "session_key": session_key,
             "chat_id": chat_id,
             "message_id": data["id"],
-            "requester_user_id": requester_user_id or "",
+            "requester_user_id": (metadata or {}).get("requester_user_id", ""),
         }
 
         return SendResult(success=True, message_id=data["id"])
