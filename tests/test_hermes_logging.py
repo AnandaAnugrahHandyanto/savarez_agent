@@ -753,6 +753,10 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows chmod does not preserve POSIX 0660 mode bits used in managed/NixOS mode.",
+    )
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         logger = logging.getLogger("_test_rotating_managed_open")
@@ -777,6 +781,10 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows chmod does not preserve POSIX 0660 mode bits used in managed/NixOS mode.",
+    )
     def test_managed_mode_rollover_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-rollover.log"
         logger = logging.getLogger("_test_rotating_managed_rollover")
@@ -865,6 +873,10 @@ class TestExternalRotationRecovery:
         handler.emit(record)
         handler.flush()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows does not allow external rename while this handler holds the file open.",
+    )
     def test_recovers_after_external_rename(self, tmp_path):
         """logrotate-style external rename: ``mv gateway.log gateway.log.1``.
 
@@ -893,6 +905,10 @@ class TestExternalRotationRecovery:
         finally:
             handler.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows does not allow external unlink while this handler holds the file open.",
+    )
     def test_recovers_after_external_unlink(self, tmp_path):
         """``rm gateway.log`` then keep writing — handler recreates the file."""
         log_path = tmp_path / "gateway.log"
@@ -963,6 +979,46 @@ class TestExternalRotationRecovery:
         finally:
             handler.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows uses concurrent-log-handler, which keeps streams lazy/closed and avoids the stdlib blocked-rename path.",
+    )
+    def test_blocked_windows_rollover_degrades_to_append(self, tmp_path):
+        """A Windows peer process can keep the live log locked during rollover.
+
+        In that case ``os.rename(agent.log, agent.log.1)`` raises
+        ``PermissionError``. The handler must not call ``handleError``
+        (which prints noisy "--- Logging error ---" tracebacks to CLI
+        stderr); it should keep appending to the live log and retry rotation
+        on a later record.
+        """
+        log_path = tmp_path / "agent.log"
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=64, backupCount=1, encoding="utf-8",
+        )
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        def fail_if_handle_error(record):
+            raise AssertionError("blocked rollover should not call handleError")
+
+        handler.handleError = fail_if_handle_error  # type: ignore[method-assign]
+
+        try:
+            self._emit(handler, "before blocked rollover")
+
+            with patch.object(handler, "rotate", side_effect=PermissionError("locked by peer process")):
+                self._emit(handler, "record after blocked rollover with enough bytes")
+
+            assert "record after blocked rollover with enough bytes" in log_path.read_text()
+            assert handler.stream is not None
+        finally:
+            handler.close()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows does not allow external rename while handlers hold the file open.",
+    )
     def test_gateway_log_attached_after_external_rotation_then_re_setup(
         self, hermes_home,
     ):

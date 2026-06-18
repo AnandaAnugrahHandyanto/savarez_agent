@@ -495,8 +495,37 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._chmod_if_managed()
         return stream
 
+    def _restore_stream_after_blocked_rollover(self) -> None:
+        """Best-effort recovery after another Windows process blocks rotation.
+
+        ``RotatingFileHandler.doRollover()`` closes ``self.stream`` before it
+        renames ``agent.log`` to ``agent.log.1``.  On Windows, another Hermes
+        process (Desktop/Gateway/CLI) can keep the live file locked and make
+        that rename fail with ``PermissionError`` / WinError 32.  If the
+        exception escapes, stdlib logging calls ``handleError()`` and prints
+        noisy "--- Logging error ---" tracebacks to the CLI.  Instead, keep
+        appending to the live file and let a later record retry rotation.
+        """
+        if self.stream is None:
+            try:
+                self.stream = self._open()
+            except Exception:
+                # If even reopening fails, leave the stream unset; the next
+                # emit will follow the normal FileHandler recovery path.
+                pass
+        self._record_stream_stat()
+
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except PermissionError:
+            self._restore_stream_after_blocked_rollover()
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 32:
+                self._restore_stream_after_blocked_rollover()
+                return
+            raise
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.
