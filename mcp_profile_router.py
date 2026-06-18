@@ -2457,6 +2457,57 @@ def _shape_terminal_subprocess_result(
     }
 
 
+def _terminal_shaped_result_contract(plan: TerminalSubprocessPlan) -> dict:
+    """Describe the private terminal result shape without producing output."""
+
+    return {
+        "shape": "terminal_subprocess_result",
+        "status_values": ["success", "failed", "timeout"],
+        "stdout_stderr_bounded": True,
+        "returncode_included": True,
+        "timed_out_included": True,
+        "max_output_chars": plan.max_output_chars,
+        "working_directory": plan.public_cwd,
+        "root_exposed": False,
+        "argv_values_exposed": False,
+        "env_values_exposed": False,
+        "uses_shell": plan.uses_shell,
+        "llm_calls": 0,
+    }
+
+
+def _terminal_executor_boundary_audit(plan: TerminalSubprocessPlan) -> dict:
+    """Private, non-executing adapter boundary for future terminal execution.
+
+    The boundary intentionally consumes a ``TerminalSubprocessPlan`` but does not
+    invoke ``subprocess.run``. It exists so later real execution has a narrow
+    handoff point and must preserve the already-tested redacted result contract.
+    """
+
+    return {
+        "adapter": "non_executing_terminal_executor_boundary",
+        "implementation_status": "pending_execution_policy_audit_public_exposure_review",
+        "accepts_plan_type": "TerminalSubprocessPlan",
+        "execution_attempted": False,
+        "subprocess_run_allowed": False,
+        "subprocess_run_called": False,
+        "executes": plan.executes,
+        "shell": plan.uses_shell,
+        "timeout_seconds": plan.timeout_seconds,
+        "max_output_chars": plan.max_output_chars,
+        "argv_redacted": True,
+        "argc": len(plan.argv),
+        "env_key_count": len(plan.env),
+        "env_values_exposed": False,
+        "cwd": {
+            "workspace_relative": plan.public_cwd,
+            "root_exposed": False,
+            "resolved_host_path_exposed": False,
+        },
+        "result_contract": _terminal_shaped_result_contract(plan),
+    }
+
+
 def _terminal_execution_plan_audit(
     command: str,
     *,
@@ -2492,6 +2543,9 @@ def _terminal_execution_plan_audit(
         "argv": _terminal_argv_shape(prepared_plan.argv) if prepared_plan else None,
         "argv_redacted": True,
         "env_policy": _terminal_sanitized_env_policy(),
+        "executor_boundary": (
+            _terminal_executor_boundary_audit(prepared_plan) if prepared_plan else None
+        ),
         "cwd": {
             "workspace_relative": public_cwd,
             "root_exposed": False,

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import mcp_profile_router
 from mcp_profile_router import (
     COST_CLASS_CALLS_HERMES_AGENT_MODEL,
     COST_CLASS_NO_MODEL,
@@ -1084,6 +1085,109 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
     assert "terminal_shell_control_not_allowed" in {
         reason["code"] for reason in shell_control["terminal_command"]["reasons"]
     }
+
+
+def test_terminal_executor_boundary_is_non_executing_and_not_public(
+    hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    subprocess_calls = []
+
+    def _forbidden_subprocess_run(*args, **kwargs):
+        subprocess_calls.append((args, kwargs))
+        raise AssertionError("terminal_run must not call subprocess.run yet")
+
+    monkeypatch.setattr(mcp_profile_router.subprocess, "run", _forbidden_subprocess_run)
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "terminal": {
+                    "enabled": True,
+                    "execution": {
+                        "enabled": True,
+                        "allowed_commands": ["pwd"],
+                    },
+                },
+            }
+        },
+    )
+
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    direct = json.loads(terminal_run(workspace_id, "pwd", context_token=token))
+    assert direct["ok"] is False
+    assert direct["error"]["code"] == "tool_disabled"
+    assert subprocess_calls == []
+
+    command = direct["terminal_command"]
+    assert command["decision"] == "disabled_pending_execution_implementation"
+    assert command["audit"]["executes"] is False
+    assert command["audit"]["execution_plan_available"] is True
+    plan = command["execution_plan"]
+    assert plan["available"] is True
+    boundary = plan["executor_boundary"]
+    assert boundary["adapter"] == "non_executing_terminal_executor_boundary"
+    assert boundary["accepts_plan_type"] == "TerminalSubprocessPlan"
+    assert boundary["implementation_status"] == (
+        "pending_execution_policy_audit_public_exposure_review"
+    )
+    assert boundary["execution_attempted"] is False
+    assert boundary["subprocess_run_allowed"] is False
+    assert boundary["subprocess_run_called"] is False
+    assert boundary["executes"] is False
+    assert boundary["shell"] is False
+    assert boundary["argc"] == 1
+    assert boundary["env_values_exposed"] is False
+    assert boundary["cwd"] == {
+        "workspace_relative": ".",
+        "root_exposed": False,
+        "resolved_host_path_exposed": False,
+    }
+    assert boundary["result_contract"] == {
+        "shape": "terminal_subprocess_result",
+        "status_values": ["success", "failed", "timeout"],
+        "stdout_stderr_bounded": True,
+        "returncode_included": True,
+        "timed_out_included": True,
+        "max_output_chars": MAX_TERMINAL_OUTPUT_CHARS,
+        "working_directory": ".",
+        "root_exposed": False,
+        "argv_values_exposed": False,
+        "env_values_exposed": False,
+        "uses_shell": False,
+        "llm_calls": 0,
+    }
+
+    metadata = get_router_tool_metadata()["terminal_run"]
+    assert metadata["enabled_by_default"] is False
+    assert metadata["requires_context"] is True
+    assert metadata["cost_class"] == COST_CLASS_NO_MODEL
+    assert metadata["llm_calls"] == 0
+
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+    server = mcp_serve.create_profile_router_mcp_server()
+    assert "terminal_run" not in server._tool_manager._tools
+    assert "workspace_diff" not in server._tool_manager._tools
+    dumped = json.dumps(direct)
+    assert "pwd" not in dumped
+    assert str(workspace_root) not in dumped
+    assert "/usr/bin" not in dumped
 
 
 def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
