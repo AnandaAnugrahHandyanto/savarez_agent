@@ -1519,6 +1519,42 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_zai_sanitizes_hermes_agent_in_outgoing_system_prompt_only(self, agent):
+        agent.provider = "zai"
+        agent.model = "glm-5.2"
+        agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        messages = [
+            {
+                "role": "system",
+                "content": "You are Hermes Agent. Help debug Hermes Agent.",
+            },
+            {"role": "user", "content": "Explain the phrase Hermes Agent."},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["messages"] is not messages
+        assert (
+            kwargs["messages"][0]["content"]
+            == "You are Hermes framework. Help debug Hermes framework."
+        )
+        assert kwargs["messages"][1]["content"] == "Explain the phrase Hermes Agent."
+        assert messages[0]["content"] == "You are Hermes Agent. Help debug Hermes Agent."
+
+    def test_non_zai_preserves_hermes_agent_system_prompt(self, agent):
+        agent.provider = "custom"
+        agent.model = "llama-3.3"
+        agent.base_url = "https://custom.example.test/v1"
+        messages = [
+            {"role": "system", "content": "You are Hermes Agent."},
+            {"role": "user", "content": "hi"},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["messages"] is messages
+        assert kwargs["messages"][0]["content"] == "You are Hermes Agent."
+
     def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
         """Kimi models should NOT have client-side temperature overrides.
 
@@ -3261,6 +3297,26 @@ class TestHandleMaxIterations:
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
+
+    def test_zai_summary_sanitizes_cached_system_prompt_without_mutating_cache(self, agent):
+        agent.provider = "zai"
+        agent.model = "glm-5.2"
+        agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are Hermes Agent. Debug Hermes Agent."
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "Explain Hermes Agent."}],
+            60,
+        )
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert sent_msgs[0]["role"] == "system"
+        assert sent_msgs[0]["content"] == "You are Hermes framework. Debug Hermes framework."
+        assert sent_msgs[1]["content"] == "Explain Hermes Agent."
+        assert agent._cached_system_prompt == "You are Hermes Agent. Debug Hermes Agent."
 
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"

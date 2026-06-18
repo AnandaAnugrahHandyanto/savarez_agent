@@ -1360,6 +1360,21 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
+        # The max-iterations summary path calls chat.completions.create()
+        # directly instead of going through _build_api_kwargs(), so apply the
+        # same ProviderProfile message hook here. This keeps provider-gated
+        # outbound prompt fixes (for example Z.AI's prompt-sensitive 1305
+        # mitigation) from being bypassed during summary generation.
+        if agent.api_mode == "chat_completions":
+            try:
+                from providers import get_provider_profile
+
+                profile = get_provider_profile(agent.provider)
+                if profile:
+                    api_messages = profile.prepare_messages(api_messages)
+            except Exception as exc:
+                logger.debug("Summary provider message preparation skipped: %s", exc)
+
         summary_extra_body = {}
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
