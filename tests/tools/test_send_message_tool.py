@@ -726,7 +726,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, **_kw):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -736,7 +736,7 @@ class TestSendToPlatformChunking:
             asyncio.run(
                 _send_to_platform(
                     Platform.TELEGRAM,
-                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    SimpleNamespace(enabled=True, token="tok", extra={"rich_messages": False}),
                     "123", long_msg, media_files=media,
                 )
             )
@@ -892,17 +892,52 @@ class TestSendTelegramHtmlDetection:
         assert kwargs["parse_mode"] == "HTML"
         assert kwargs["text"] == "<b>Hello</b> world"
 
-    def test_plain_text_uses_markdown_v2(self, monkeypatch):
+    def test_plain_text_uses_rich_message_when_available(self, monkeypatch):
         bot = self._make_bot()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 42})
         _install_telegram_mock(monkeypatch, bot)
 
-        asyncio.run(
+        result = asyncio.run(
             _send_telegram("tok", "123", "Just plain text, no tags")
         )
 
+        assert result["success"] is True
+        assert result["message_id"] == "42"
+        bot.do_api_request.assert_awaited_once()
+        method = bot.do_api_request.await_args.args[0]
+        payload = bot.do_api_request.await_args.kwargs["api_kwargs"]
+        assert method == "sendRichMessage"
+        assert payload["rich_message"]["markdown"] == "Just plain text, no tags"
+        bot.send_message.assert_not_awaited()
+
+    def test_rich_parse_failure_falls_back_to_markdown_v2(self, monkeypatch):
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(side_effect=Exception("Bad Request: can't parse rich message"))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "Just plain text, no tags")
+        )
+
+        assert result["success"] is True
+        bot.do_api_request.assert_awaited_once()
         bot.send_message.assert_awaited_once()
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_rich_transient_timeout_does_not_legacy_resend(self, monkeypatch):
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(side_effect=Exception("Timed out"))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "Just plain text, no tags")
+        )
+
+        assert "error" in result
+        assert "Timed out" in result["error"]
+        bot.do_api_request.assert_awaited_once()
+        bot.send_message.assert_not_awaited()
 
     def test_disable_link_previews_sets_disable_web_page_preview(self, monkeypatch):
         bot = self._make_bot()
