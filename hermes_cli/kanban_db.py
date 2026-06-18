@@ -4912,6 +4912,8 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    gate_propagations: int = 0
+    """Number of quality-gate verdicts (GO/NO-GO) propagated this tick."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6092,6 +6094,9 @@ def dispatch_once(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    # VDGP propagation
+    from hermes_cli.kanban_vdgp import propagate_all_gate_verdicts
+    result.gate_propagations = propagate_all_gate_verdicts(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

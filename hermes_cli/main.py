@@ -4366,6 +4366,8 @@ _UPDATE_CRITICAL_FILES = (
     "model_tools.py",
     "toolsets.py",
     "hermes_constants.py",
+    "hermes_cli/kanban_db.py",
+    "hermes_cli/kanban.py",
 )
 
 

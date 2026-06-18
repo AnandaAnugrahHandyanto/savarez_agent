@@ -151,3 +151,20 @@ def test_production_tree_passes_syntax_guard():
         f"Critical-path file {failing_path} fails to parse on current main; "
         f"hermes update would brick users. Error: {error}"
     )
+
+
+# ---------------------------------------------------------------------------
+# VDGP guardrail regression — kanban_db.py + kanban.py must stay in the
+# critical files set so a bad update can never silently break the dispatcher.
+# ---------------------------------------------------------------------------
+
+def test_kanban_files_in_critical_files():
+    """kanban_db.py and kanban.py must be in _UPDATE_CRITICAL_FILES (VDGP guardrail)."""
+    assert "hermes_cli/kanban_db.py" in hermes_main._UPDATE_CRITICAL_FILES, (
+        "hermes_cli/kanban_db.py is missing from _UPDATE_CRITICAL_FILES — "
+        "a bad git pull could brick the kanban dispatcher. Re-add it."
+    )
+    assert "hermes_cli/kanban.py" in hermes_main._UPDATE_CRITICAL_FILES, (
+        "hermes_cli/kanban.py is missing from _UPDATE_CRITICAL_FILES — "
+        "a bad git pull could brick the kanban CLI. Re-add it."
+    )
