@@ -750,6 +750,58 @@ class TestSendUpdateNotification:
         assert "finished successfully" in sent_text
 
     @pytest.mark.asyncio
+    async def test_appends_model_health_warning_after_success(self, tmp_path):
+        """A failed post-update model check is surfaced via direct notification."""
+        runner = _make_runner()
+        runner._update_post_health_check_enabled = True
+        runner._provider_routing = {}
+        runner._fallback_model = None
+        runner._service_tier = None
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("claude-fable-5", {"provider": "anthropic", "api_key": "test-key"})
+        )
+        runner._resolve_turn_agent_config = MagicMock(return_value={
+            "model": "claude-fable-5",
+            "runtime": {"provider": "anthropic", "api_key": "test-key"},
+            "request_overrides": {},
+        })
+        runner._run_in_executor_with_context = AsyncMock(return_value={
+            "result": {
+                "final_response": "",
+                "failed": True,
+                "error": 'HTTP 400: "thinking.type.enabled" is not supported for this model',
+            },
+            "resolved_model": "claude-fable-5",
+            "provider": "anthropic",
+            "fallback_activated": False,
+        })
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "telegram",
+            "chat_id": "111",
+            "chat_type": "dm",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "finished successfully" in sent_text
+        assert "Post-update model check failed" in sent_text
+        assert "thinking.type.enabled" in sent_text
+
+    @pytest.mark.asyncio
     async def test_cleans_up_files_after_notification(self, tmp_path):
         """Both marker and output files are deleted after notification."""
         runner = _make_runner()

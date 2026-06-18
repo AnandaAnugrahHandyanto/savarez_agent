@@ -439,6 +439,37 @@ class TestWatchUpdateProgress:
         assert "failed" in all_sent.lower()
 
     @pytest.mark.asyncio
+    async def test_success_exit_code_appends_model_health_warning(self, tmp_path):
+        """Watcher success path surfaces post-update model health failures."""
+        runner = _make_runner()
+        runner._post_update_model_health_warning = AsyncMock(
+            return_value="⚠️ Post-update model check failed. Primary model is unhealthy."
+        )
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("done\n")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+
+        final_text = mock_adapter.send.call_args_list[-1][0][1]
+        assert "Hermes update finished" in final_text
+        assert "Post-update model check failed" in final_text
+        runner._post_update_model_health_warning.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_falls_back_and_delivers_after_reconnect(self, tmp_path):
         """Completion-only fallback waits for the platform to reconnect.
 
