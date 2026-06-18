@@ -77,6 +77,8 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/set",
   "/api/model/auxiliary",
   "/api/model/options",
+  "/api/dashboard/theme",
+  "/api/dashboard/font",
 ];
 
 function withManagementProfile(url: string): string {
