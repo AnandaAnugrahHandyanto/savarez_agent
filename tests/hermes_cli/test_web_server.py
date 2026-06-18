@@ -2959,7 +2959,7 @@ class TestNewEndpoints:
         assert resp.status_code == 200
         assert calls
         assert calls[0][0] == "osascript"
-        assert "coder setup" in " ".join(calls[0])
+        assert "hermes -p coder setup" in " ".join(calls[0])
 
     def test_profile_open_terminal_uses_windows_cmd(self, monkeypatch):
         from hermes_constants import get_hermes_home
