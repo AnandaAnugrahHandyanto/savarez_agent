@@ -768,7 +768,7 @@ export const zh: Translations = {
       removeConfirm: provider => `移除 ${provider}？`,
       removeExternalGeneric: provider => `${provider} 由其自身的 CLI 管理 — 请在那里移除。`,
       removeKeyManaged: provider => `${provider} 由 API 密钥配置。请从 API Keys 中移除。`,
-      removeTerminalConfirm: (provider, command) => `断开 ${provider}？这将在终端中运行 "${command}" 以清除凭据。`,
+      removeTerminalConfirm: (provider, _command) => `断开 ${provider}？这会移除为 ${provider} 保存的凭据。移除命令会在嵌入式终端中运行，方便你核对实际执行的内容。`,
       removeTerminalRunning: provider => `正在终端中断开 ${provider}…`,
       removedTitle: '账号已移除',
       removedMessage: provider => `${provider} 已移除。`,
