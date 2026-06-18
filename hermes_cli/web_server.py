@@ -16,7 +16,6 @@ import base64
 import binascii
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hmac
 import importlib.util
 import json
 import logging
@@ -178,23 +177,12 @@ def _get_event_state(app: "FastAPI"):
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
-# ---------------------------------------------------------------------------
-# Session token for protecting sensitive endpoints (reveal).
-# The desktop shell mints the token and injects it via
-# HERMES_DASHBOARD_SESSION_TOKEN so its main process can authenticate the
-# /api calls it makes on the user's behalf; otherwise we generate one fresh
-# on every server start. Either way it dies when the process exits and is
-# injected into the SPA HTML so only the legitimate web UI can use it.
-# ---------------------------------------------------------------------------
-_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
-_SESSION_HEADER_NAME = "X-Hermes-Session-Token"
-
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
 # `/api/ws` + `/api/pty` WebSockets, so the embedded-chat surface is an
 # unconditional part of the dashboard.  Kept as a module-level constant (rather
-# than inlining ``True`` at every gate) so the WS endpoints and the SPA token
-# injection share a single, testable seam.
+# than inlining ``True`` at every gate) so the WS endpoints and the SPA
+# bootstrap share a single, testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
 # Simple rate limiter for the reveal endpoint
@@ -231,57 +219,20 @@ from hermes_cli.dashboard_auth.public_paths import (
 )
 
 
-def _has_valid_session_token(request: Request) -> bool:
-    """True if the request carries a valid dashboard session token.
-
-    The dedicated session header avoids collisions with reverse proxies that
-    already use ``Authorization`` (for example Caddy ``basic_auth``). We still
-    accept the legacy Bearer path for backward compatibility with older
-    dashboard bundles.
-    """
-    session_header = request.headers.get(_SESSION_HEADER_NAME, "")
-    if session_header and hmac.compare_digest(
-        session_header.encode(),
-        _SESSION_TOKEN.encode(),
-    ):
-        return True
-
-    auth = request.headers.get("authorization", "")
-    expected = f"Bearer {_SESSION_TOKEN}"
-    return hmac.compare_digest(auth.encode(), expected.encode())
-
-
-# Routes that may also authenticate via a ``?token=`` query param, for download
-# links opened by the OS shell or a new browser tab where the session header
-# can't be set. Kept narrow — same query-token tradeoff as the /api/pty WS.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
-
-
-def _has_valid_query_token(request: Request, path: str) -> bool:
-    if path not in _QUERY_TOKEN_API_PATHS:
-        return False
-    token = request.query_params.get("token", "")
-    return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
-
-
 def _require_token(request: Request) -> None:
     """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
 
-    Two auth schemes protect the dashboard, exactly one active per bind:
+    Two regimes, exactly one active per bind:
 
-    * **Loopback / ``--insecure`` mode** (``auth_required`` False): the
-      ephemeral ``_SESSION_TOKEN`` is injected into the SPA HTML and echoed
-      back via ``X-Hermes-Session-Token`` (or the legacy ``Bearer`` header).
-      Validate it here.
-    * **Gated / OAuth mode** (``auth_required`` True): ``_SESSION_TOKEN`` is
-      NOT injected (the SPA authenticates with a session cookie), so there is
-      no token to check. The ``gated_auth_middleware`` has already verified the
-      cookie before the request reached this handler — any non-public ``/api/``
-      route it lets through carries a verified ``request.state.session``. The
-      legacy ``auth_middleware`` likewise short-circuits in this mode. Requiring
-      the (absent) token here would 401 every cookie-authenticated request,
-      making plugin install/enable/disable and the other ``_require_token``
-      endpoints permanently unreachable behind the gate. Defer to the gate.
+    * **Gated / OAuth mode** (``auth_required`` True): the
+      ``gated_auth_middleware`` has already verified the session cookie
+      before the request reached this handler — any non-public ``/api/``
+      route it lets through carries a verified ``request.state.session``.
+      Accept iff that session is present; 401 otherwise.
+    * **Loopback / ``--insecure`` mode** (``auth_required`` False): there is
+      NO identity gate. The loopback bind is the boundary, the CSRF guard
+      blocks cross-origin mutations, and CORS blocks cross-origin reads. A
+      local user is entitled to call these routes, so allow them.
     """
     if getattr(request.app.state, "auth_required", False):
         # Gate is authoritative. It attaches ``request.state.session`` on
@@ -290,8 +241,9 @@ def _require_token(request: Request) -> None:
         if getattr(request.state, "session", None) is not None:
             return
         raise HTTPException(status_code=401, detail="Unauthorized")
-    if not _has_valid_session_token(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    # Loopback / --insecure: no identity gate. CSRF guard + bind boundary
+    # protect these routes; a local user is entitled to call them.
+    return
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks
@@ -396,11 +348,71 @@ async def host_header_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
+# CSRF guard — reject cross-origin state-changing requests via Sec-Fetch-Site.
+#
+# This is the credential-free replacement for the legacy ``_SESSION_TOKEN``'s
+# only robust contribution: blocking drive-by CSRF from a web page the user
+# visits. It applies in BOTH auth regimes (loopback and gated).
+#
+# Middleware order note: ``@app.middleware`` prepends, so the runtime order
+# (outermost→innermost) is auth_middleware → _dashboard_auth_gate →
+# csrf_guard_middleware → host_header_middleware → CORS → route. So an
+# UNAUTHENTICATED cross-site mutation is already rejected by the outer auth
+# layer (401 token in loopback, 401 cookie in gated); the CSRF guard's job is
+# to reject an AUTHENTICATED cross-site mutation (403) — the genuine CSRF
+# case where the victim's own credentials ride along. Both regimes covered.
+# ---------------------------------------------------------------------------
+
+# Methods whose side effects a cross-origin page could trigger WITHOUT a CORS
+# preflight ("simple requests" plus anything the browser will send cross-site).
+# Reads are not guarded here — the CORSMiddleware (localhost-only origin regex,
+# allow_credentials off) already prevents a foreign origin from reading any
+# /api/* response body, so a cross-origin GET leaks nothing.
+_CSRF_GUARDED_METHODS: frozenset = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Sec-Fetch-Site values that indicate a same-origin or user-initiated request.
+# ``Sec-Fetch-Site`` is a forbidden header name (browser-set, JS cannot forge
+# it), Baseline-available since 2023. ``none`` covers user navigation AND the
+# packaged desktop renderer's file:// origin.
+_CSRF_SAFE_FETCH_SITES: frozenset = frozenset({"same-origin", "none"})
+
+
+@app.middleware("http")
+async def csrf_guard_middleware(request: Request, call_next):
+    """Reject cross-origin state-changing requests via Sec-Fetch-Site.
+
+    Fail-open on an ABSENT header so non-browser clients (curl, the NAS
+    liveness probe, the desktop main process) are unaffected — those carry
+    no CSRF risk and the real auth gate (cookie / Origin guard) still
+    applies to them. Only a PRESENT, hostile value (``cross-site`` /
+    ``same-site``) is rejected.
+    """
+    if (
+        request.method in _CSRF_GUARDED_METHODS
+        and request.url.path.startswith("/api/")
+    ):
+        sfs = request.headers.get("sec-fetch-site")
+        if sfs is not None and sfs not in _CSRF_SAFE_FETCH_SITES:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "cross_origin_blocked",
+                    "detail": (
+                        "Cross-origin state-changing request rejected. The "
+                        "dashboard only accepts mutations from its own origin."
+                    ),
+                },
+            )
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
 # Dashboard OAuth auth gate — engaged only when start_server flags the
-# bind as non-loopback-without-insecure.  No-op pass-through in loopback
-# mode so the legacy auth_middleware (below) handles those binds via
-# the injected ``_SESSION_TOKEN``.  Registered between host_header and
-# auth_middleware so the order is: host check → cookie auth → token auth.
+# bind as non-loopback-without-insecure (``app.state.auth_required``). It is
+# a no-op pass-through on a loopback bind, where the dashboard runs no
+# identity gate at all: the loopback bind is the security boundary, the
+# csrf_guard_middleware blocks cross-origin mutations, and the localhost-only
+# CORS policy blocks cross-origin reads.
 # ---------------------------------------------------------------------------
 
 
@@ -408,24 +420,6 @@ async def host_header_middleware(request: Request, call_next):
 async def _dashboard_auth_gate(request: Request, call_next):
     from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
     return await gated_auth_middleware(request, call_next)
-
-
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    """Require the session token on all /api/ routes except the public list."""
-    # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
-    # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
-    # and is skipped here so the gate's session attachment isn't overridden.
-    if getattr(request.app.state, "auth_required", False):
-        return await call_next(request)
-    path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
-        if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Unauthorized"},
-            )
-    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -10219,10 +10213,12 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
 # WebSocket.  The browser renders the ANSI through xterm.js (see
 # web/src/pages/ChatPage.tsx).
 #
-# Auth: ``?token=<session_token>`` query param (browsers can't set
-# Authorization on the WS upgrade).  Same ephemeral ``_SESSION_TOKEN`` as
-# REST.  Localhost-only — we defensively reject non-loopback clients even
-# though uvicorn binds to 127.0.0.1.
+# Auth: loopback binds require no credential on the WS upgrade — the
+# peer-IP loopback gate + Host/Origin guard are the boundary. Gated
+# (non-loopback) binds require a single-use ``?ticket=`` (browser) or the
+# process-lifetime ``?internal=`` credential (server-spawned PTY child);
+# browsers can't set Authorization on a WS upgrade. Localhost-only on a
+# loopback bind — we defensively reject non-loopback clients.
 # ---------------------------------------------------------------------------
 
 # PTY bridge: POSIX uses pty_bridge (fcntl/termios/ptyprocess); native Windows
@@ -10285,9 +10281,10 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Loopback bind: only loopback clients allowed — the legacy
-    ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
-    don't want LAN hosts guessing tokens.
+    Loopback bind: only loopback clients allowed — there is no identity
+    token on a loopback WS upgrade anymore, so the loopback-only peer gate
+    (plus the Host/Origin guard) IS the boundary; we don't want LAN hosts
+    reaching the credential-free loopback WS.
 
     Explicit non-loopback bind (``--host 0.0.0.0``, ``--host ::``, or a
     specific address such as a Tailscale/LAN IP, always with
@@ -10395,11 +10392,12 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     machine-parseable token explaining the rejection (``no_credential``,
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``).
     ``credential`` names which credential type was presented (``ticket``,
-    ``internal``, ``token``, or ``none``) so the accepted path can log *how*
-    a peer authed, not just that it did.
+    ``internal``, or ``none``/``loopback``) so the accepted path can log
+    *how* a peer authed, not just that it did.
 
-    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
-    parameter, constant-time compared.
+    Loopback / ``--insecure``: NO credential is consulted (returns
+    ``(None, "loopback")``). The peer-IP loopback gate + Host/Origin guard
+    are the boundary.
 
     Gated (public bind, no ``--insecure``): one of two credentials —
 
@@ -10416,6 +10414,13 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     The legacy ``?token=`` path is unconditionally rejected in gated mode
     (the SPA bundle isn't carrying the token any longer, and a leaked
     ``_SESSION_TOKEN`` must not grant WS access once the gate is engaged).
+
+    Loopback / ``--insecure``: NO per-connection identity token. The
+    loopback peer-IP gate (``_ws_client_is_allowed``) and the Host/Origin
+    guard (``_ws_host_origin_is_allowed``) are the boundary here — the WS
+    analogue of "the loopback bind is the security boundary" on the HTTP
+    side. There is no token to present (the legacy ``_SESSION_TOKEN`` is
+    being removed).
 
     Audit-logs the rejection so operators can debug "WS keeps closing"
     issues from the log.
@@ -10464,12 +10469,10 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             )
             return "ticket_invalid", "ticket"
 
-    token = ws.query_params.get("token", "")
-    if not token:
-        return "no_credential", "none"
-    if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
-    return "token_mismatch", "token"
+    # Loopback / --insecure: no identity token. The peer-IP loopback gate
+    # and Host/Origin guard (applied by the WS handlers via
+    # _ws_request_is_allowed) are the boundary; there is no token to check.
+    return None, "loopback"
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
@@ -10567,10 +10570,11 @@ def _resolve_chat_argv(
 def _build_gateway_ws_url() -> Optional[str]:
     """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
 
-    Loopback / ``--insecure``: ``?token=<_SESSION_TOKEN>``.
+    Loopback / ``--insecure``: a bare ``/api/ws`` URL with no credential —
+    the child connects from loopback, which the WS peer-IP + Host/Origin
+    guard accepts without a token (there is no identity token anymore).
 
-    Gated mode: the legacy token path is rejected by ``_ws_auth_ok``, so the
-    server-spawned PTY child authenticates with the process-lifetime internal
+    Gated mode: the child authenticates with the process-lifetime internal
     credential (``?internal=``). It must NOT use a single-use browser ticket:
     the child reads this URL once at startup and reuses it on every reconnect,
     and a 30s-TTL ticket can expire before a slow cold boot even dials.
@@ -10591,16 +10595,17 @@ def _build_gateway_ws_url() -> Optional[str]:
         from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
         qs = urllib.parse.urlencode({"internal": internal_ws_credential()})
-    else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
-
-    return f"ws://{netloc}/api/ws?{qs}"
+        return f"ws://{netloc}/api/ws?{qs}"
+    # Loopback: no credential needed (peer-IP + Host/Origin guard is the gate).
+    return f"ws://{netloc}/api/ws"
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
     """ws:// URL the PTY child should publish events to, or None when unbound.
 
-    Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
+    Loopback / ``--insecure``: a bare ``/api/pub`` URL with no credential
+    (the child connects from loopback; the peer-IP + Host/Origin guard is
+    the gate).
 
     Gated mode: authenticates with the process-lifetime internal credential
     (``?internal=``), the same one ``_build_gateway_ws_url`` uses. The PTY
@@ -10627,9 +10632,9 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
         qs = urllib.parse.urlencode(
             {"internal": internal_ws_credential(), "channel": channel}
         )
-    else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
-
+        return f"ws://{netloc}/api/pub?{qs}"
+    # Loopback: no credential; only the channel is needed.
+    qs = urllib.parse.urlencode({"channel": channel})
     return f"ws://{netloc}/api/pub?{qs}"
 
 
@@ -10959,37 +10964,30 @@ def mount_spa(application: FastAPI):
     _index_path = WEB_DIST / "index.html"
 
     def _serve_index(prefix: str = ""):
-        """Return index.html with the session token + base-path injected.
+        """Return index.html with the base-path + auth-mode flag injected.
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
         or empty string when served at root.
 
-        When the OAuth auth gate is active (``app.state.auth_required``),
-        the legacy ``_SESSION_TOKEN`` is NOT injected — the SPA reads
-        identity from ``/api/auth/me`` over cookie auth instead.  The
-        ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
-        auth scheme for /api/pty and /api/ws (ticket vs token).
+        No identity token is injected in either mode. On a loopback bind the
+        SPA needs no credential (the bind is the boundary; the CSRF guard
+        covers mutations). When the OAuth gate is active
+        (``app.state.auth_required``) the SPA reads identity from
+        ``/api/auth/me`` over cookie auth. The ``__HERMES_AUTH_REQUIRED__``
+        flag lets the SPA pick the right WS-auth scheme for /api/pty and
+        /api/ws (ticket in gated mode, no credential on loopback).
         """
         html = _index_path.read_text(encoding="utf-8")
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
-        if gated:
-            bootstrap_script = (
-                f"<script>"
-                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-                f'window.__HERMES_BASE_PATH__="{prefix}";'
-                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
-                f"</script>"
-            )
-        else:
-            bootstrap_script = (
-                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-                f'window.__HERMES_BASE_PATH__="{prefix}";'
-                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
-                f"</script>"
-            )
+        bootstrap_script = (
+            f"<script>"
+            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+            f'window.__HERMES_BASE_PATH__="{prefix}";'
+            f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+            f"</script>"
+        )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.
@@ -12137,10 +12135,13 @@ def start_server(
             ", ".join(p.name for p in list_providers()),
         )
     elif host not in _LOOPBACK_HOST_VALUES and allow_public:
-        # --insecure path — no auth, loud warning.
+        # --insecure path — no identity gate, loud warning.
         _log.warning(
-            "Binding to %s with --insecure — the dashboard has no robust "
-            "authentication. Only use on trusted networks.", host,
+            "Binding to %s with --insecure — no identity authentication. "
+            "The Sec-Fetch-Site CSRF guard and the WebSocket Host/Origin "
+            "guard still apply, but anyone who can reach this address can "
+            "use the dashboard. Rely on network controls; only use on "
+            "trusted networks.", host,
         )
 
     # Record the bound host so host_header_middleware can validate incoming

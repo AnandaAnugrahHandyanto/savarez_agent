@@ -184,35 +184,6 @@ class TestRedactKey:
         assert "not set" in result.lower() or result == "***" or "\x1b" in result
 
 
-class TestSessionTokenInjection:
-    """The desktop shell mints HERMES_DASHBOARD_SESSION_TOKEN and signs its
-    /api + /api/ws calls with it. The backend must adopt that token, else every
-    desktop request 401s ("gateway is offline"). A main-merge once silently
-    dropped this read — this guards the contract, not a literal value.
-    """
-
-    def test_honors_injected_token(self, monkeypatch):
-        import importlib
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        try:
-            importlib.reload(ws)
-            assert ws._SESSION_TOKEN == "desktop-seeded-token"
-        finally:
-            monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-            importlib.reload(ws)
-
-    def test_falls_back_to_random_token(self, monkeypatch):
-        import importlib
-        import hermes_cli.web_server as ws
-
-        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-        importlib.reload(ws)
-
-        assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
-
-
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------
@@ -231,12 +202,12 @@ class TestWebServerEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_get_status(self):
         resp = self.client.get("/api/status")
@@ -305,15 +276,23 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/media", params={"path": str(missing)})
         assert resp.status_code == 404
 
-    def test_get_media_requires_auth(self):
-        from hermes_cli.web_server import _SESSION_HEADER_NAME
+    def test_get_media_no_identity_gate_on_loopback(self):
+        """Loopback has no identity gate after the legacy-token teardown.
 
+        Pre-teardown a wrong/absent session token 401'd this route. Now the
+        loopback bind itself is the security boundary (plus the Sec-Fetch-Site
+        CSRF guard for mutations and CORS for cross-origin reads), so the
+        request reaches the handler regardless of the token. ``/tmp/x.png`` is
+        outside the media roots, so the handler returns 403 — the point is it's
+        no longer 401. Identity is enforced only in gated mode.
+        """
         resp = self.client.get(
             "/api/media",
             params={"path": "/tmp/x.png"},
-            headers={_SESSION_HEADER_NAME: "wrong-token"},
+            headers={"X-Hermes-Session-Token": "wrong-token"},
         )
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 403
 
     # ── Dashboard font override ─────────────────────────────────────────
 
@@ -1358,12 +1337,10 @@ class TestWebServerEndpoints:
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
         save_env_value("TEST_REVEAL_KEY", "super-secret-value-12345")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_KEY"},
-            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -1372,19 +1349,32 @@ class TestWebServerEndpoints:
 
     def test_reveal_env_var_not_found(self):
         """POST /api/env/reveal should 404 for unknown keys."""
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "NONEXISTENT_KEY_XYZ"},
-            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
         )
         assert resp.status_code == 404
 
-    def test_reveal_env_var_no_token(self, tmp_path):
-        """POST /api/env/reveal without token should return 401."""
+    def test_reveal_env_var_no_identity_gate_on_loopback(self, tmp_path):
+        """POST /api/env/reveal has no identity gate on loopback.
+
+        After the legacy-token teardown, loopback ``/api/`` routes are served
+        without an identity check — the loopback bind is the security boundary
+        (plus the Sec-Fetch-Site CSRF guard for mutations and CORS for reads),
+        not a per-request token. So a tokenless loopback request reaches the
+        handler and reveals the value. Identity for this sensitive endpoint is
+        enforced in gated mode (see
+        ``test_reveal_env_var_requires_auth_in_gated_mode`` below).
+        """
         from starlette.testclient import TestClient
+        from hermes_cli import web_server
         from hermes_cli.web_server import app
         from hermes_cli.config import save_env_value
+        # The reveal endpoint's module-global rate limiter (5/30s) is now
+        # exercised by tokenless tests that reach the handler (pre-teardown
+        # they 401'd before it). Reset it so the shared window doesn't bleed
+        # 429s across reveal tests.
+        web_server._reveal_timestamps.clear()
         save_env_value("TEST_REVEAL_NOAUTH", "secret-value")
         # Use a fresh client WITHOUT the dashboard session header
         unauth_client = TestClient(app)
@@ -1392,31 +1382,70 @@ class TestWebServerEndpoints:
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_NOAUTH"},
         )
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
+        assert resp.json()["value"] == "secret-value"
 
-    def test_reveal_env_var_bad_token(self, tmp_path):
-        """POST /api/env/reveal with wrong token should return 401."""
+    def test_reveal_env_var_requires_auth_in_gated_mode(self, tmp_path):
+        """In gated mode (non-loopback bind + registered provider), the
+        sensitive /api/env/reveal endpoint requires a session cookie and 401s
+        without one. This preserves identity coverage for the secret-revealing
+        endpoint that loopback mode intentionally no longer gates.
+        """
+        from starlette.testclient import TestClient
+        from hermes_cli import web_server
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_HEADER_NAME
+        from hermes_cli.dashboard_auth import clear_providers, register_provider
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+        save_env_value("TEST_REVEAL_GATED", "secret-value")
+
+        clear_providers()
+        register_provider(StubAuthProvider())
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_req = getattr(web_server.app.state, "auth_required", None)
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.auth_required = True
+        try:
+            client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+            resp = client.post("/api/env/reveal", json={"key": "TEST_REVEAL_GATED"})
+            assert resp.status_code == 401
+        finally:
+            clear_providers()
+            web_server.app.state.bound_host = prev_host
+            web_server.app.state.auth_required = prev_req
+
+    def test_reveal_env_var_bad_token_no_identity_gate_on_loopback(self, tmp_path):
+        """POST /api/env/reveal with a wrong token still serves on loopback.
+
+        The legacy session token is ignored on loopback (it's slated for
+        removal). Loopback has no identity gate — the bind + CSRF guard are the
+        boundary — so a request with a bogus token reaches the handler instead
+        of 401ing. Identity is enforced only in gated mode.
+        """
+        from hermes_cli.config import save_env_value
         save_env_value("TEST_REVEAL_BADAUTH", "secret-value")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_BADAUTH"},
-            headers={_SESSION_HEADER_NAME: "wrong-token-here"},
+            headers={"X-Hermes-Session-Token": "wrong-token-here"},
         )
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
+        assert resp.json()["value"] == "secret-value"
 
     def test_reveal_env_var_custom_session_header_ignores_proxy_authorization(self, tmp_path):
-        """A valid dashboard session header should coexist with proxy auth."""
+        """A stale dashboard session header should be ignored, not break the
+        request: on loopback there's no identity gate, and a proxy
+        ``Authorization`` header must not interfere with the reveal."""
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         save_env_value("TEST_REVEAL_PROXY_AUTH", "secret-value")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_PROXY_AUTH"},
             headers={
-                _SESSION_HEADER_NAME: _SESSION_TOKEN,
+                "X-Hermes-Session-Token": "stale-token-ignored",
                 "Authorization": "Basic dXNlcjpwYXNz",
             },
         )
@@ -1424,19 +1453,26 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["value"] == "secret-value"
 
-    def test_reveal_env_var_legacy_authorization_header_still_works(self, tmp_path):
-        """Keep old dashboard bundles working while the new header rolls out."""
+    def test_reveal_env_var_legacy_authorization_header_ignored_on_loopback(self, tmp_path):
+        """The legacy ``Authorization: Bearer <token>`` mechanism is being
+        removed. On loopback there is no identity gate, so the request succeeds
+        regardless of the legacy header — it's served because the loopback bind
+        is the security boundary, NOT because the Bearer token authenticated.
+        (Previously this test asserted the legacy header itself authenticated;
+        that token mechanism is slated for deletion.)
+        """
         from hermes_cli.config import save_env_value
-        from hermes_cli.web_server import _SESSION_TOKEN
 
         save_env_value("TEST_REVEAL_LEGACY_AUTH", "secret-value")
         resp = self.client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_LEGACY_AUTH"},
-            headers={"Authorization": f"Bearer {_SESSION_TOKEN}"},
+            headers={"Authorization": "Bearer stale-token-ignored"},
         )
 
+        assert resp.status_code != 401
         assert resp.status_code == 200
+        assert resp.json()["value"] == "secret-value"
 
     def test_get_messaging_platforms(self):
         resp = self.client.get("/api/messaging/platforms")
@@ -1904,23 +1940,37 @@ class TestWebServerEndpoints:
         except Exception:
             pass  # Not JSON — that's fine (SPA HTML)
 
-    def test_unauthenticated_api_blocked(self):
-        """API requests without the session token should be rejected."""
+    def test_api_no_identity_gate_on_loopback(self):
+        """Loopback has no identity gate after the legacy-token teardown.
+
+        Pre-teardown, ``/api/*`` requests without the session token 401'd
+        (except a public allowlist). Now the loopback bind itself is the
+        security boundary — plus the Sec-Fetch-Site CSRF guard for mutations
+        and CORS for cross-origin reads — so a tokenless loopback request
+        reaches the handler. Both the formerly-gated routes and the
+        formerly-public routes now serve. Identity is enforced only in gated
+        mode.
+        """
         from starlette.testclient import TestClient
         from hermes_cli.web_server import app
         # Create a client WITHOUT the dashboard session header
         unauth_client = TestClient(app)
+        # Formerly-gated routes now serve without a token (no identity gate).
         resp = unauth_client.get("/api/env")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
         resp = unauth_client.get("/api/config")
-        assert resp.status_code == 401
-        # Public endpoints should still work
+        assert resp.status_code != 401
+        assert resp.status_code == 200
+        # Public endpoints still work, as before.
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
         resp = unauth_client.get("/api/dashboard/plugins")
         assert resp.status_code == 200
+        # Formerly-gated rescan endpoint now serves on loopback too.
         resp = unauth_client.get("/api/dashboard/plugins/rescan")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
         resp = self.client.get("/api/dashboard/plugins/rescan")
         assert resp.status_code == 200
 
@@ -2461,9 +2511,9 @@ class TestConfigRoundTrip:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_get_config_no_internal_keys(self):
         """GET /api/config should not expose _config_version or _model_meta."""
@@ -2597,12 +2647,12 @@ class TestNewEndpoints:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")
@@ -3939,9 +3989,9 @@ class TestStatusRemoteGateway:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def test_status_falls_back_to_remote_probe(self, monkeypatch):
         """When local PID check fails and remote probe succeeds, gateway shows running."""
@@ -4359,7 +4409,7 @@ class TestBulkDeleteSessionsEndpoint:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         monkeypatch.setattr(
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
@@ -4367,7 +4417,7 @@ class TestBulkDeleteSessionsEndpoint:
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
-        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def _seed(self, ids):
         from hermes_state import SessionDB
@@ -4379,9 +4429,18 @@ class TestBulkDeleteSessionsEndpoint:
         finally:
             db.close()
 
-    def test_requires_auth(self):
+    def test_no_identity_gate_on_loopback(self):
+        """Loopback has no identity gate after the legacy-token teardown.
+
+        Pre-teardown this destructive route 401'd without the session token.
+        Now the loopback bind is the security boundary (the Sec-Fetch-Site CSRF
+        guard blocks cross-origin mutations and CORS blocks cross-origin reads),
+        so a tokenless same-origin loopback request reaches the handler.
+        Identity is enforced only in gated mode.
+        """
         resp = self.client.post("/api/sessions/bulk-delete", json={"ids": ["x"]})
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
 
     def test_deletes_listed_sessions_only(self):
         from hermes_state import SessionDB
@@ -4483,7 +4542,7 @@ class TestDeleteEmptySessionsEndpoint:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         # Pin the SessionDB to the isolated HERMES_HOME so each test
         # starts with a clean state.db.
@@ -4493,7 +4552,7 @@ class TestDeleteEmptySessionsEndpoint:
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
-        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def _seed(self):
         """Build the standard test corpus:
@@ -4524,19 +4583,31 @@ class TestDeleteEmptySessionsEndpoint:
         finally:
             db.close()
 
-    def test_count_endpoint_requires_auth(self):
-        """GET /api/sessions/empty/count must 401 without the session token."""
+    def test_count_endpoint_no_identity_gate_on_loopback(self):
+        """GET /api/sessions/empty/count has no identity gate on loopback.
+
+        After the legacy-token teardown, the loopback bind is the security
+        boundary (plus the Sec-Fetch-Site CSRF guard and CORS), so a tokenless
+        loopback request reaches the handler instead of 401ing. Identity is
+        enforced only in gated mode.
+        """
         resp = self.client.get("/api/sessions/empty/count")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
 
-    def test_delete_endpoint_requires_auth(self):
-        """DELETE /api/sessions/empty must 401 without the session token.
+    def test_delete_endpoint_no_identity_gate_on_loopback(self):
+        """DELETE /api/sessions/empty has no identity gate on loopback.
 
-        Regression guard for issue #19533 — the bulk-delete is a strictly
-        destructive primitive, the middleware must gate it even if a
-        future refactor introduces a non-auth path."""
+        Pre-teardown (issue #19533) this destructive route 401'd without the
+        session token. After the legacy-token teardown, loopback has no
+        identity gate — the loopback bind is the boundary and the
+        Sec-Fetch-Site CSRF guard blocks cross-origin mutations — so a
+        tokenless same-origin loopback request reaches the handler. Identity is
+        enforced only in gated mode.
+        """
         resp = self.client.delete("/api/sessions/empty")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
 
     def test_count_returns_only_empty_ended_unarchived(self):
         """With the standard corpus, the count is exactly 2 — only
@@ -4601,13 +4672,23 @@ class TestDeleteEmptySessionsEndpoint:
 
 
 class TestPluginAPIAuth:
-    """Tests that plugin API routes require the session token (issue #19533)."""
+    """Plugin API routes have no identity gate on loopback (post-teardown).
+
+    Pre-teardown (issue #19533) plugin ``/api/plugins/*`` routes required the
+    session token and 401'd without it. After the legacy-token teardown,
+    loopback has no identity gate — the loopback bind is the security boundary,
+    the Sec-Fetch-Site CSRF guard blocks cross-origin mutations, and CORS blocks
+    cross-origin reads. So tokenless loopback plugin requests now reach the
+    handler (or the router's own 404/422), never 401. Identity is enforced only
+    in gated mode.
+    """
 
     @pytest.fixture(autouse=True)
     def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
         """Create a TestClient without the session token header.
 
-        Pulls in ``_install_example_plugin`` so ``test_plugin_route_allows_auth``
+        Pulls in ``_install_example_plugin`` so
+        ``test_plugin_route_serves_on_loopback_with_or_without_token``
         has the ``/api/plugins/example/hello`` endpoint available — the
         example plugin is no longer a bundled plugin, so the fixture
         installs it into the per-test ``HERMES_HOME``.
@@ -4619,77 +4700,95 @@ class TestPluginAPIAuth:
 
         import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
-        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
-    def test_plugin_route_requires_auth(self):
-        """Plugin API routes should return 401 without a valid session token."""
+    def test_plugin_route_no_identity_gate_on_loopback(self):
+        """Plugin API GET routes serve on loopback without a session token."""
         # Use a known plugin route (kanban board)
         resp = self.client.get("/api/plugins/kanban/board")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
 
-    def test_plugin_route_allows_auth(self):
-        """Plugin API routes should work with a valid session token.
+    def test_plugin_route_serves_on_loopback_with_or_without_token(self):
+        """Plugin API routes serve on loopback regardless of the session token.
 
         Uses ``/api/plugins/example/hello`` from the example-dashboard
         test fixture (installed into HERMES_HOME by the class-level
         ``_install_example_plugin`` fixture) — a stable, side-effect-free
-        GET that's only loaded for tests. With a valid token the handler
-        should run (200); without one the middleware should 401 before
-        the handler is reached.
+        GET that's only loaded for tests. Pre-teardown a tokenless request
+        401'd; now loopback has no identity gate, so the handler runs (200)
+        whether or not the legacy token is present. Identity is enforced only
+        in gated mode.
         """
-        # Without auth: middleware blocks before reaching the handler.
+        # Without a token: loopback has no identity gate, handler runs.
         resp = self.client.get("/api/plugins/example/hello")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 200
 
-        # With auth: handler runs.
+        # With the (now-ignored) token: handler still runs.
         resp = self.auth_client.get("/api/plugins/example/hello")
         assert resp.status_code == 200
 
-    def test_plugin_post_requires_auth(self):
-        """Plugin POST routes should return 401 without a valid session token."""
-        resp = self.client.post("/api/plugins/kanban/tasks", json={"title": "test"})
-        assert resp.status_code == 401
+    def test_plugin_post_no_identity_gate_on_loopback(self):
+        """Plugin POST routes serve on loopback without a session token.
 
-    def test_plugin_patch_requires_auth(self):
-        """Plugin PATCH routes should return 401 without a valid session token.
+        The Sec-Fetch-Site CSRF guard blocks cross-origin mutations, but a
+        same-origin loopback POST has no hostile Sec-Fetch-Site header and
+        reaches the handler.
+        """
+        resp = self.client.post("/api/plugins/kanban/tasks", json={"title": "test"})
+        assert resp.status_code != 401
+        assert resp.status_code == 200
+
+    def test_plugin_patch_no_identity_gate_on_loopback(self):
+        """Plugin PATCH routes serve on loopback without a session token.
 
         PATCH is the mutation method most commonly used by the dashboard for
-        kanban task edits — explicitly cover it so a future middleware
-        regression that whitelists non-GET methods can't sneak through.
+        kanban task edits. Pre-teardown a tokenless PATCH 401'd; now loopback
+        has no identity gate (the bind + Sec-Fetch-Site CSRF guard are the
+        boundary) so the request reaches the handler. ``t_fake`` doesn't exist,
+        so the handler/router responds non-401 (e.g. 404/422) — the point is
+        it's no longer gated. Identity is enforced only in gated mode.
         """
         resp = self.client.patch(
             "/api/plugins/kanban/tasks/t_fake",
             json={"title": "renamed"},
         )
-        assert resp.status_code == 401
+        assert resp.status_code != 401
 
-    def test_plugin_delete_requires_auth(self):
-        """Plugin DELETE routes should return 401 without a valid session token."""
+    def test_plugin_delete_no_identity_gate_on_loopback(self):
+        """Plugin DELETE routes serve on loopback without a session token.
+
+        Loopback has no identity gate; ``t_fake`` doesn't exist so the handler
+        responds non-401 (404). Identity is enforced only in gated mode.
+        """
         resp = self.client.delete("/api/plugins/kanban/tasks/t_fake")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
 
-    def test_non_kanban_plugin_route_requires_auth(self):
-        """Auth must be plugin-agnostic, not kanban-specific.
+    def test_non_kanban_plugin_route_no_identity_gate_on_loopback(self):
+        """The loopback no-identity-gate behavior is plugin-agnostic.
 
-        The middleware fix is at the gate level (no per-plugin allowlist),
+        The gate change is at the middleware level (no per-plugin allowlist),
         so any plugin's API surface — kanban, hermes-achievements, future
-        plugins — must require the session token. Hit a non-kanban plugin
-        path to lock that in.
+        plugins — and even a non-existent plugin namespace are no longer 401'd
+        on loopback. Pre-teardown these 401'd before routing could 404. Now the
+        router decides: a missing route/plugin yields 404 (not 401). Identity is
+        enforced only in gated mode.
         """
         # Real plugin path (hermes-achievements is loaded by default).
         resp = self.client.get("/api/plugins/hermes-achievements/overview")
-        assert resp.status_code == 401
-        # Same for an arbitrary plugin namespace that doesn't even exist —
-        # the middleware should 401 before routing decides 404, so an
-        # attacker can't fingerprint plugin names by status codes.
+        assert resp.status_code != 401
+        # A plugin namespace that doesn't exist: now 404 from the router,
+        # not a 401 from a removed identity gate.
         resp = self.client.get("/api/plugins/_definitely_not_a_plugin_/anything")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
+        assert resp.status_code == 404
 
     def test_plugin_websocket_unaffected_by_http_middleware(self):
         """The kanban /events WebSocket has its own ``?token=`` check;
@@ -4861,7 +4960,9 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
-        self.token = ws._SESSION_TOKEN
+        # Loopback ignores any ?token= on the WS upgrade (no identity gate);
+        # a literal keeps _url() working for the connect tests below.
+        self.token = "ignored"
         self.client = TestClient(ws.app)
 
     def _url(self, token: str | None = None, **params: str) -> str:
@@ -4930,31 +5031,62 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4404
 
-    def test_rejects_missing_token(self, monkeypatch):
+    def test_loopback_accepts_without_token(self, monkeypatch):
+        """Loopback /api/pty needs no token after the legacy-token teardown.
+
+        The peer-IP loopback gate + Host/Origin guard are the boundary
+        (the WS analogue of the loopback bind being the HTTP boundary), so
+        a tokenless upgrade is accepted and the PTY child spawns. WS auth
+        rejection in GATED mode is covered by test_dashboard_auth_ws_auth.py.
+        """
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None, profile=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None, profile=None: (
+                ["/bin/sh", "-c", "printf hermes-ws-ok"],
+                None,
+                None,
+            ),
         )
-        from starlette.websockets import WebSocketDisconnect
+        # No token in the query string at all → still connects on loopback.
+        with self.client.websocket_connect("/api/pty") as conn:
+            import time
 
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with self.client.websocket_connect("/api/pty"):
-                pass
-        assert exc.value.code == 4401
+            buf = b""
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    buf += conn.receive_bytes()
+                except Exception:
+                    break
+                if b"hermes-ws-ok" in buf:
+                    break
+            assert b"hermes-ws-ok" in buf
 
-    def test_rejects_bad_token(self, monkeypatch):
+    def test_loopback_ignores_stale_token(self, monkeypatch):
+        """A stale/garbage ``?token=`` on loopback is ignored, not rejected."""
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None, profile=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None, profile=None: (
+                ["/bin/sh", "-c", "printf hermes-ws-ok"],
+                None,
+                None,
+            ),
         )
-        from starlette.websockets import WebSocketDisconnect
+        with self.client.websocket_connect(self._url(token="wrong")) as conn:
+            import time
 
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with self.client.websocket_connect(self._url(token="wrong")):
-                pass
-        assert exc.value.code == 4401
+            buf = b""
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    buf += conn.receive_bytes()
+                except Exception:
+                    break
+                if b"hermes-ws-ok" in buf:
+                    break
+            assert b"hermes-ws-ok" in buf
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
@@ -5118,7 +5250,9 @@ class TestPtyWebSocket:
         url = captured.get("sidecar_url") or ""
         assert url.startswith("ws://127.0.0.1:9119/api/pub?")
         assert "channel=abc-123" in url
-        assert "token=" in url
+        # Loopback sidecar URL carries no credential — the bind + peer-IP guard
+        # are the boundary (the legacy ?token= is gone).
+        assert "token=" not in url
 
     def test_pub_broadcasts_to_events_subscribers(self):
         """A frame handed to _broadcast_event is sent verbatim to every
@@ -5204,8 +5338,10 @@ def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
 
     assert env is not None
     gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
-    assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
-    assert "token=" in gateway_url
+    # Loopback gateway URL is a bare /api/ws with no credential (the legacy
+    # ?token= is gone; the loopback bind + peer-IP guard are the boundary).
+    assert gateway_url == "ws://127.0.0.1:9119/api/ws"
+    assert "token=" not in gateway_url
 
 
 class TestDashboardPluginStaticAssetAllowlist:
@@ -5331,10 +5467,10 @@ class TestValidateProviderCredential:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.web_server import app
 
         self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        # Loopback bind has no identity gate; no session header needed.
 
     def _post(self, key, value):
         return self.client.post("/api/providers/validate", json={"key": key, "value": value})

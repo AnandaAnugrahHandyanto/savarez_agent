@@ -61,11 +61,10 @@ def client(monkeypatch, isolated_profiles):
 
     import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_cli.web_server import app
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
-    c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return c
 
 
@@ -204,14 +203,20 @@ class TestEditorEndpointsAuth:
             ("put", "/api/skills/content", {"json": {"name": "x", "content": "y"}}),
         ],
     )
-    def test_endpoints_401_without_token(
+    def test_endpoints_no_identity_gate_on_loopback(
         self, client, isolated_profiles, method, path, kwargs
     ):
-        from hermes_cli.web_server import _SESSION_HEADER_NAME
+        """Loopback has no identity gate after the legacy-token teardown.
 
-        client.headers.pop(_SESSION_HEADER_NAME, None)
+        Pre-teardown these endpoints 401'd without the session token. Now
+        the loopback bind + CSRF guard are the boundary, so a tokenless
+        local request is served (reaches the handler — any non-401). The
+        gated (non-loopback) path is where identity is enforced, covered by
+        the dashboard-auth gate tests.
+        """
+        client.headers.pop("X-Hermes-Session-Token", None)
         resp = getattr(client, method)(path, **kwargs)
-        assert resp.status_code == 401
+        assert resp.status_code != 401
 
 
 class TestCronJobSkills:
