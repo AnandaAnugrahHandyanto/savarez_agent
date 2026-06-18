@@ -96,6 +96,7 @@ STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+CODEX_SHARED_STORE_FILENAME = "codex_auth.json"
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -1287,6 +1288,8 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
             if isinstance(entry, dict) else entry
             for entry in entries
         ]
+        if provider_id == "openai-codex":
+            _reconcile_codex_pool_to_shared(auth_store)
         return _save_auth_store(auth_store)
 
 
@@ -3349,25 +3352,379 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 
 
 # =============================================================================
-# OpenAI Codex auth — tokens stored in ~/.hermes/auth.json (not ~/.codex/)
+# OpenAI Codex auth — profile cache + Hermes-owned shared store
 #
 # Hermes maintains its own Codex OAuth session separate from the Codex CLI
-# and VS Code extension. This prevents refresh token rotation conflicts
-# where one app's refresh invalidates the other's session.
+# and VS Code extension.  Codex refresh tokens rotate on refresh, so all
+# Hermes profiles under the same root also share a canonical token chain at
+# <hermes-root>/shared/codex_auth.json. Profile-local auth.json entries are
+# caches for profile isolation/status; the shared store prevents one profile
+# from leaving sibling profiles with stale single-use refresh tokens.
 # =============================================================================
 
+_codex_shared_lock_holder = threading.local()
+
+
+def _codex_shared_auth_dir() -> Path:
+    override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "shared"
+
+
+def _codex_shared_store_path() -> Path:
+    path = _codex_shared_auth_dir() / CODEX_SHARED_STORE_FILENAME
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        from hermes_constants import get_default_hermes_root
+        real_home_shared = (
+            get_default_hermes_root() / "shared" / CODEX_SHARED_STORE_FILENAME
+        ).resolve(strict=False)
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if resolved == real_home_shared:
+            raise RuntimeError(
+                f"Refusing to touch real user shared Codex auth store during test run: "
+                f"{path}. Set HERMES_SHARED_AUTH_DIR to a tmp_path in your test fixture."
+            )
+    return path
+
+
+@contextmanager
+def _codex_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Cross-profile lock for the shared Codex OAuth token chain.
+
+    When this lock is used together with a profile auth lock, acquire the
+    profile ``_auth_store_lock`` first and this shared lock second. Runtime
+    refresh keeps both locks across read -> refresh -> write so only one
+    profile can spend the shared single-use refresh token at a time.
+    """
+    try:
+        lock_path = _codex_shared_store_path().with_suffix(".lock")
+    except RuntimeError:
+        yield
+        return
+    with _file_lock(
+        lock_path,
+        _codex_shared_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for shared Codex auth lock",
+    ):
+        yield
+
+
+def _codex_tokens_usable(tokens: Any) -> bool:
+    return (
+        isinstance(tokens, dict)
+        and bool(str(tokens.get("access_token", "") or "").strip())
+        and bool(str(tokens.get("refresh_token", "") or "").strip())
+    )
+
+
+def _read_shared_codex_state() -> Optional[Dict[str, Any]]:
+    try:
+        path = _codex_shared_store_path()
+    except RuntimeError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.debug("Shared Codex auth store at %s is unreadable: %s", path, exc)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    tokens = payload.get("tokens")
+    if not _codex_tokens_usable(tokens):
+        return None
+    return payload
+
+
+def _codex_shared_state_is_fresher(local_state: Dict[str, Any], shared: Dict[str, Any]) -> bool:
+    shared_tokens = shared.get("tokens") if isinstance(shared, dict) else None
+    local_tokens = local_state.get("tokens") if isinstance(local_state, dict) else None
+    if not _codex_tokens_usable(shared_tokens):
+        return False
+    if not _codex_tokens_usable(local_tokens):
+        return True
+    shared_refresh = str(shared_tokens.get("refresh_token", "") or "").strip()
+    local_refresh = str(local_tokens.get("refresh_token", "") or "").strip()
+    if shared_refresh and shared_refresh != local_refresh:
+        return True
+    shared_last = _parse_iso_timestamp(shared.get("last_refresh") or shared.get("updated_at")) or 0.0
+    local_last = _parse_iso_timestamp(local_state.get("last_refresh")) or 0.0
+    return shared_last > local_last
+
+
+def _merge_shared_codex_state(state: Dict[str, Any]) -> bool:
+    """Copy fresher shared Codex tokens into a profile-local state dict."""
+    shared = _read_shared_codex_state()
+    if not shared or not _codex_shared_state_is_fresher(state, shared):
+        return False
+    tokens = shared.get("tokens")
+    if not _codex_tokens_usable(tokens):
+        return False
+    state["tokens"] = dict(tokens)
+    state["last_refresh"] = shared.get("last_refresh") or shared.get("updated_at")
+    state["auth_mode"] = shared.get("auth_mode") or "chatgpt"
+    if shared.get("label"):
+        state["label"] = shared.get("label")
+    return True
+
+
+def _write_shared_codex_state(
+    tokens: Dict[str, Any],
+    *,
+    last_refresh: Optional[str] = None,
+    label: Optional[str] = None,
+) -> None:
+    """Persist the canonical cross-profile Codex OAuth token chain.
+
+    Best-effort; profile-local auth.json remains the immediate cache. The
+    shared file is intentionally Hermes-owned and separate from ~/.codex/auth.json.
+    """
+    if not _codex_tokens_usable(tokens):
+        return
+    if last_refresh is None:
+        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    shared = {
+        "_schema": 1,
+        "tokens": {
+            "access_token": str(tokens.get("access_token", "") or ""),
+            "refresh_token": str(tokens.get("refresh_token", "") or ""),
+        },
+        "auth_mode": "chatgpt",
+        "last_refresh": last_refresh,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if label and str(label).strip():
+        shared["label"] = str(label).strip()
+    token_type = tokens.get("token_type")
+    if token_type:
+        shared["tokens"]["token_type"] = token_type
+    try:
+        with _codex_shared_store_lock():
+            path = _codex_shared_store_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            secure_parent_dir(path)
+            tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+            fd = os.open(
+                str(tmp),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(shared, indent=2, sort_keys=True) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            finally:
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except OSError:
+                    pass
+    except Exception as exc:
+        logger.debug("Failed to write shared Codex auth store: %s", exc)
+
+
+def _clear_shared_codex_state(reason: str, *, expected_refresh_token: Optional[str] = None) -> None:
+    """Remove shared Codex state after terminal auth failure.
+
+    If ``expected_refresh_token`` is supplied, clear only when the shared file
+    still holds that same refresh token. This avoids process A deleting a fresh
+    token chain after process B already rotated it successfully.
+    """
+    try:
+        with _codex_shared_store_lock():
+            path = _codex_shared_store_path()
+            if expected_refresh_token:
+                current = _read_shared_codex_state()
+                current_tokens = current.get("tokens") if isinstance(current, dict) else None
+                current_refresh = ""
+                if isinstance(current_tokens, dict):
+                    current_refresh = str(current_tokens.get("refresh_token", "") or "").strip()
+                if current_refresh and current_refresh != str(expected_refresh_token).strip():
+                    logger.debug("Skipping shared Codex clear for %s; shared token already rotated", reason)
+                    return
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    except Exception as exc:
+        logger.debug("Failed to clear shared Codex auth store: %s", exc)
+
+
+def _codex_pool_entry_usable_for_promotion(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if not _codex_tokens_usable(entry):
+        return False
+    if entry.get("last_status") == "exhausted":
+        # Do not promote a credential the runtime has already marked bad.  A
+        # rate-limit marker means the account is still valid, but promoting it
+        # would not restore availability; the quota path should stay explicit.
+        return False
+    source = str(entry.get("source") or "").strip()
+    return source in {"device_code", "manual:device_code"}
+
+
+def _codex_pool_entry_last_refresh(entry: Dict[str, Any]) -> float:
+    return (
+        _parse_iso_timestamp(entry.get("last_refresh"))
+        or _parse_iso_timestamp(entry.get("updated_at"))
+        or 0.0
+    )
+
+
+def _latest_codex_pool_state(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    pool = auth_store.get("credential_pool") if isinstance(auth_store, dict) else None
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return None
+    usable = [entry for entry in entries if _codex_pool_entry_usable_for_promotion(entry)]
+    if not usable:
+        return None
+    entry = max(
+        usable,
+        key=lambda e: (
+            _codex_pool_entry_last_refresh(e),
+            int(e.get("priority") or 0),
+            str(e.get("id") or ""),
+        ),
+    )
+    last_refresh = entry.get("last_refresh") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    tokens = {
+        "access_token": str(entry.get("access_token") or ""),
+        "refresh_token": str(entry.get("refresh_token") or ""),
+    }
+    if entry.get("token_type"):
+        tokens["token_type"] = entry.get("token_type")
+    state: Dict[str, Any] = {
+        "tokens": tokens,
+        "last_refresh": last_refresh,
+        "auth_mode": "chatgpt",
+    }
+    if entry.get("label"):
+        state["label"] = entry.get("label")
+    return state
+
+
+def _codex_state_refresh_token(state: Any) -> str:
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    if not isinstance(tokens, dict):
+        return ""
+    return str(tokens.get("refresh_token") or "").strip()
+
+
+def _codex_state_last_refresh(state: Any) -> float:
+    if not isinstance(state, dict):
+        return 0.0
+    return (
+        _parse_iso_timestamp(state.get("last_refresh"))
+        or _parse_iso_timestamp(state.get("updated_at"))
+        or 0.0
+    )
+
+
+def _codex_pool_state_should_promote(candidate: Optional[Dict[str, Any]], *states: Any) -> bool:
+    if not candidate or not _codex_tokens_usable(candidate.get("tokens")):
+        return False
+    candidate_refresh = _codex_state_refresh_token(candidate)
+    candidate_last = _codex_state_last_refresh(candidate)
+    saw_usable_state = False
+    for state in states:
+        tokens = state.get("tokens") if isinstance(state, dict) else None
+        if not _codex_tokens_usable(tokens):
+            continue
+        saw_usable_state = True
+        if candidate_refresh and candidate_refresh == _codex_state_refresh_token(state):
+            return False
+        state_last = _codex_state_last_refresh(state)
+        if candidate_last and state_last and candidate_last <= state_last:
+            return False
+    return True if saw_usable_state else True
+
+
+def _reconcile_codex_pool_to_shared(auth_store: Dict[str, Any]) -> bool:
+    """Promote a newer usable Codex pool credential into the canonical chain.
+
+    This closes the gap where ``hermes auth add openai-codex`` or a pool-level
+    recovery writes a fresh ``credential_pool.openai-codex`` entry but leaves
+    ``providers.openai-codex`` and ``shared/codex_auth.json`` on an older
+    rotating refresh-token chain.  The function mutates ``auth_store`` and
+    writes the shared store; callers remain responsible for saving auth_store.
+    """
+    candidates = []
+    local_candidate = _latest_codex_pool_state(auth_store)
+    if local_candidate:
+        candidates.append(local_candidate)
+    global_store = _load_global_auth_store()
+    global_candidate = _latest_codex_pool_state(global_store) if global_store else None
+    if global_candidate:
+        candidates.append(global_candidate)
+    if not candidates:
+        return False
+    candidate = max(candidates, key=_codex_state_last_refresh)
+
+    providers = auth_store.get("providers") if isinstance(auth_store, dict) else None
+    local_state = providers.get("openai-codex") if isinstance(providers, dict) else None
+    effective_state = _load_provider_state(auth_store, "openai-codex") or local_state or {}
+    shared_state = _read_shared_codex_state() or {}
+    if not _codex_pool_state_should_promote(candidate, effective_state, shared_state):
+        return False
+
+    tokens = dict(candidate["tokens"])
+    last_refresh = candidate.get("last_refresh")
+    label = candidate.get("label")
+    previous_tokens = None
+    if isinstance(local_state, dict) and isinstance(local_state.get("tokens"), dict):
+        previous_tokens = local_state.get("tokens")
+    state = dict(local_state or {})
+    state["tokens"] = tokens
+    state["last_refresh"] = last_refresh
+    state["auth_mode"] = "chatgpt"
+    if label:
+        state["label"] = label
+    _save_provider_state(auth_store, "openai-codex", state)
+    _sync_codex_pool_entries(
+        auth_store,
+        tokens,
+        last_refresh,
+        previous_singleton_tokens=previous_tokens,
+    )
+    _write_shared_codex_state(tokens, last_refresh=last_refresh, label=label)
+    logger.info("Codex auth reconciled newer credential_pool token into shared store")
+    return True
+
+
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
-    """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
+    """Read Codex OAuth tokens from Hermes auth store or shared store.
     
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
-    Raises AuthError if no Codex tokens are stored.
+    Profile-local auth.json is a cache; the Hermes-owned shared Codex store is
+    merged first when it holds a fresher rotating refresh-token chain.
     """
     if _lock:
         with _auth_store_lock():
-            auth_store = _load_auth_store()
-    else:
-        auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "openai-codex")
+            return _read_codex_tokens(_lock=False)
+
+    auth_store = _load_auth_store()
+    if _reconcile_codex_pool_to_shared(auth_store):
+        _save_auth_store(auth_store)
+
+    state = _load_provider_state(auth_store, "openai-codex") or {}
+    if not isinstance(state, dict):
+        state = {}
+
+    if _merge_shared_codex_state(state):
+        _save_provider_state(auth_store, "openai-codex", state)
+        _save_auth_store(auth_store)
+
     if not state:
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
@@ -3532,6 +3889,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             previous_singleton_tokens=previous_singleton_tokens,
         )
         _save_auth_store(auth_store)
+        _write_shared_codex_state(tokens, last_refresh=last_refresh, label=label)
 
 
 def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
@@ -3711,6 +4069,11 @@ def _refresh_codex_auth_tokens(
             f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
         )
         if not imported:
+            if _is_terminal_codex_oauth_refresh_error(exc):
+                _clear_shared_codex_state(
+                    str(getattr(exc, "code", None) or "terminal_refresh_failure"),
+                    expected_refresh_token=str(tokens.get("refresh_token", "") or ""),
+                )
             raise
         return imported
 
@@ -3843,19 +4206,22 @@ def resolve_codex_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        # Re-read under lock to avoid racing with other Hermes processes
+        # Re-read under locks to avoid racing with sibling profiles that share
+        # the single-use Codex refresh token. Lock order is profile auth first,
+        # shared Codex second, matching the shared-store invariant above.
         with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_codex_tokens(_lock=False)
-            tokens = dict(data["tokens"])
-            access_token = str(tokens.get("access_token", "") or "").strip()
-
-            should_refresh = bool(force_refresh)
-            if (not should_refresh) and refresh_if_expiring:
-                should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
-
-            if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+            with _codex_shared_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+                data = _read_codex_tokens(_lock=False)
+                tokens = dict(data["tokens"])
                 access_token = str(tokens.get("access_token", "") or "").strip()
+
+                should_refresh = bool(force_refresh)
+                if (not should_refresh) and refresh_if_expiring:
+                    should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
+
+                if should_refresh:
+                    tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                    access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (
         os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")

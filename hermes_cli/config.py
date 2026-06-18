@@ -1260,6 +1260,11 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "codex_gpt55_autoraise_notice": True,  # When True (default), show the one-time
+                                      # startup notice that explains the gpt-5.5
+                                      # autoraise and the opt-back-out command. Set to
+                                      # False if you want the 85% threshold lift but
+                                      # prefer to suppress the informational notice.
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
