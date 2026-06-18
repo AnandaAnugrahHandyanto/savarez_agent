@@ -886,6 +886,11 @@ DEFAULT_CONFIG = {
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    "attach_light": {
+        # Optional directories scanned by the LLM-free attach pre-router for
+        # messages like "너는 DASHBOARD 세션이야" / "DASHBOARD 붙어".
+        "project_roots": [],
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -1507,6 +1512,11 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        "answer_bell": {
+            "enabled": False,
+            "command": "~/.local/bin/hermes-discord-bell",
+            "message": "끝",
+        },
         "show_reasoning": False,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)

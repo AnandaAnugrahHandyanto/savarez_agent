@@ -534,6 +534,22 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    _usage_counter_fields = {
+        "input_tokens": "session_input_tokens",
+        "output_tokens": "session_output_tokens",
+        "cache_read_tokens": "session_cache_read_tokens",
+        "cache_write_tokens": "session_cache_write_tokens",
+        "reasoning_tokens": "session_reasoning_tokens",
+        "prompt_tokens": "session_prompt_tokens",
+        "completion_tokens": "session_completion_tokens",
+        "total_tokens": "session_total_tokens",
+        "session_api_calls": "session_api_calls",
+    }
+    _turn_usage_start = {
+        key: int(getattr(agent, attr, 0) or 0)
+        for key, attr in _usage_counter_fields.items()
+    }
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None
@@ -1910,6 +1926,53 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+                else:
+                    # Some provider/SDK recovery paths can return a valid
+                    # assistant response without usage metadata (notably Codex
+                    # null-output stream recovery).  Do not invent billable
+                    # token counters, but do keep context-pressure tracking and
+                    # API-call accounting moving from the same preflight request
+                    # estimate used for compression decisions.  Otherwise the
+                    # TUI status bar remains pinned at 0/<ctx> even though a
+                    # real request was just sent.
+                    _estimated_prompt_tokens = max(0, int(approx_request_tokens or approx_tokens or 0))
+                    if _estimated_prompt_tokens:
+                        agent.context_compressor.update_from_response({
+                            "prompt_tokens": _estimated_prompt_tokens,
+                            "completion_tokens": 0,
+                            "total_tokens": _estimated_prompt_tokens,
+                        })
+                    agent.session_api_calls += 1
+                    logger.info(
+                        "API call #%d: model=%s provider=%s usage=missing context_estimate=%d latency=%.1fs",
+                        agent.session_api_calls,
+                        agent.model,
+                        agent.provider or "unknown",
+                        _estimated_prompt_tokens,
+                        api_duration,
+                    )
+                    if agent._session_db and agent.session_id:
+                        try:
+                            if not agent._session_db_created:
+                                agent._ensure_db_session()
+                            agent._session_db.update_token_counts(
+                                agent.session_id,
+                                input_tokens=0,
+                                output_tokens=0,
+                                cache_read_tokens=0,
+                                cache_write_tokens=0,
+                                reasoning_tokens=0,
+                                api_call_count=1,
+                                model=agent.model,
+                                billing_provider=agent.provider,
+                                billing_base_url=agent.base_url,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "No-usage API-call persistence failed (session=%s): %s",
+                                agent.session_id,
+                                e,
+                            )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call
@@ -4473,6 +4536,8 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        _usage_counter_fields=_usage_counter_fields,
+        _turn_usage_start=_turn_usage_start,
     )
 
 

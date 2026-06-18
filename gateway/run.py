@@ -13752,6 +13752,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        # LLM-free attach pre-router. Only first-turn, plain-text attach
+        # phrases are handled here; everything substantive continues through
+        # the normal agent path.
+        if isinstance(message, str) and not history:
+            try:
+                from hermes_cli.attach_light import render_attach_light_status
+                _attach = render_attach_light_status(
+                    message,
+                    config=_load_gateway_config(),
+                    cwd=os.getcwd(),
+                )
+            except Exception:
+                _attach = None
+            if _attach is not None:
+                response = _attach.response
+                return {
+                    "final_response": response,
+                    "messages": [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": response},
+                    ],
+                    "api_calls": 0,
+                    "completed": True,
+                    "tools": [],
+                    "history_offset": 0,
+                    "session_id": session_id,
+                    "attach_light": True,
+                }
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -15060,13 +15089,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
                         for _match in _TOOL_MEDIA_RE.finditer(_hc):
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:
