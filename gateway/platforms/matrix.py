@@ -3653,10 +3653,12 @@ class MatrixAdapter(BasePlatformAdapter):
         *,
         force_refresh: bool = False,
     ) -> MatrixRoomIdentity:
-        """Resolve Matrix room identity without member-count DM heuristics.
+        """Resolve Matrix room identity, using member count as DM tiebreaker.
 
         Matrix ``m.direct`` account data is the authoritative DM signal, but
         explicitly named rooms win over stale/conflicting DM account data.
+        When both ``m.direct`` and an explicit name are present, ``member_count``
+        serves as the tiebreaker: <= 2 members → DM, 3+ members → room.
         """
         cached = self._room_identities.get(room_id)
         cached_at = self._room_identity_cached_at.get(room_id, 0.0)
@@ -3673,8 +3675,14 @@ class MatrixAdapter(BasePlatformAdapter):
         member_count = await self._get_room_member_count(room_id)
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        conflict = bool(is_direct and has_explicit_name)
-        chat_type = "dm" if is_direct and not has_explicit_name else "room"
+        # member_count resolves the conflict: named DM with <=2 people → DM;
+        # named room with 3+ people → room (stale m.direct).
+        is_likely_dm = is_direct and (
+            not has_explicit_name
+            or (member_count is not None and member_count <= 2)
+        )
+        conflict = bool(is_direct and has_explicit_name and (member_count is None or member_count > 2))
+        chat_type = "dm" if is_likely_dm else "room"
         display_name = room_name or canonical_alias or room_id
 
         identity = MatrixRoomIdentity(
