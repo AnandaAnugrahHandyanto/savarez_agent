@@ -109,11 +109,17 @@ class TestRegistration:
         assert entry.toolset == "computer_use"
         assert entry.schema["name"] == "computer_use"
 
-    def test_check_fn_is_false_on_linux(self):
+    def test_check_fn_uses_linux_driver_on_linux(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
         entry = registry._tools["computer_use"]
-        if sys.platform != "darwin":
+        if sys.platform.startswith("linux"):
+            with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": ""}, clear=False):
+                with patch("tools.computer_use.linux_backend.linux_driver_binary_available", return_value=True):
+                    assert entry.check_fn() is True
+                with patch("tools.computer_use.linux_backend.linux_driver_binary_available", return_value=False):
+                    assert entry.check_fn() is False
+        elif sys.platform != "darwin":
             assert entry.check_fn() is False
 
 

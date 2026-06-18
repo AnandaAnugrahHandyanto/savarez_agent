@@ -11963,69 +11963,116 @@ def main():
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
 
     # =========================================================================
-    # computer-use command — manage Computer Use (cua-driver) on macOS
+    # computer-use command — manage Computer Use desktop backends
     # =========================================================================
     computer_use_parser = subparsers.add_parser(
         "computer-use",
-        help="Manage the Computer Use (cua-driver) backend (macOS)",
+        help="Manage Computer Use desktop backends",
         description=(
-            "Install or check the cua-driver binary used by the\n"
-            "`computer_use` toolset. macOS-only.\n\n"
-            "Use `hermes computer-use install` to fetch and run the\n"
-            "upstream cua-driver installer. This is equivalent to the\n"
-            "post-setup hook that `hermes tools` runs when you first\n"
-            "enable the Computer Use toolset, and is a stable target\n"
-            "for re-running the install if it didn't fire (e.g. when\n"
-            "toggling the toolset on a returning-user setup)."
+            "Install or check the desktop driver used by the `computer_use`\n"
+            "toolset. macOS uses cua-driver. Linux uses linux-computer-use.\n\n"
+            "Use `hermes computer-use install` to install the appropriate\n"
+            "driver for this platform. This is equivalent to the post-setup\n"
+            "hook that `hermes tools` runs when you first enable the Computer\n"
+            "Use toolset, and is a stable target for re-running the install."
         ),
     )
     computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
 
     computer_use_install = computer_use_sub.add_parser(
         "install",
-        help="Install or repair the cua-driver binary (macOS)",
+        help="Install or repair the desktop computer-use driver for this platform",
+
     )
     computer_use_install.add_argument(
         "--upgrade",
         action="store_true",
         help=(
-            "Re-run the upstream installer even if cua-driver is already on "
-            "PATH. The upstream install.sh always pulls the latest release, "
-            "so this performs an in-place upgrade."
+            "Re-run the platform installer even if a driver is already on PATH. "
+            "On macOS this refreshes cua-driver; on Linux this upgrades the "
+            "linux-computer-use package when pipx is available."
         ),
     )
     computer_use_sub.add_parser(
         "status",
-        help="Print whether cua-driver is installed and on PATH",
+        help="Print whether the platform computer-use driver is installed and on PATH",
     )
 
     def cmd_computer_use(args):
         action = getattr(args, "computer_use_action", None)
         if action == "install":
-            from hermes_cli.tools_config import install_cua_driver
-            install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
-            return
+            import shutil
+            import subprocess
+            import sys
+
+            upgrade = bool(getattr(args, "upgrade", False))
+            if sys.platform == "darwin":
+                from hermes_cli.tools_config import install_cua_driver
+                install_cua_driver(upgrade=upgrade)
+                return
+            if sys.platform.startswith("linux"):
+                if shutil.which("linux-computer-use") and not upgrade:
+                    print("linux-computer-use: already installed")
+                    print("  Refresh to latest: hermes computer-use install --upgrade")
+                    return
+                pkg = "git+https://github.com/tyy130/linux-computer-use"
+                if shutil.which("pipx"):
+                    cmd = ["pipx", "install", pkg]
+                    if upgrade and shutil.which("linux-computer-use"):
+                        cmd = ["pipx", "upgrade", "linux-computer-use"]
+                    subprocess.run(cmd, check=True)
+                    return
+                if shutil.which("uv"):
+                    cmd = ["uv", "tool", "install", pkg]
+                    if upgrade:
+                        cmd.insert(3, "--upgrade")
+                    subprocess.run(cmd, check=True)
+                    return
+                print("linux-computer-use install requires pipx or uv on PATH.")
+                print(f"  pipx install {pkg}")
+                print(f"  uv tool install {pkg}")
+                raise SystemExit(1)
+            print("computer-use install is currently supported on macOS and Linux.")
+            raise SystemExit(1)
         if action == "status":
             import shutil
             import subprocess
-            path = shutil.which("cua-driver")
-            if path:
-                version = ""
-                try:
-                    version = subprocess.run(
-                        ["cua-driver", "--version"],
-                        capture_output=True, text=True, timeout=5,
-                    ).stdout.strip()
-                except Exception:
-                    pass
-                if version:
-                    print(f"cua-driver: installed at {path} ({version})")
-                else:
-                    print(f"cua-driver: installed at {path}")
-                print("  Refresh to latest: hermes computer-use install --upgrade")
+            import sys
+
+            def _print_binary(name, refresh_cmd):
+                path = shutil.which(name)
+                if path:
+                    version = ""
+                    try:
+                        version = subprocess.run(
+                            [name, "--version"],
+                            capture_output=True, text=True, timeout=5,
+                        ).stdout.strip()
+                    except Exception:
+                        pass
+                    if version:
+                        print(f"{name}: installed at {path} ({version})", flush=True)
+                    else:
+                        print(f"{name}: installed at {path}", flush=True)
+                    print(f"  Refresh to latest: {refresh_cmd}", flush=True)
+                    return True
+                print(f"{name}: not installed")
+                return False
+
+            if sys.platform == "darwin":
+                if not _print_binary("cua-driver", "hermes computer-use install --upgrade"):
+                    print("  Run: hermes computer-use install")
                 return
-            print("cua-driver: not installed")
-            print("  Run: hermes computer-use install")
+            if sys.platform.startswith("linux"):
+                if _print_binary("linux-computer-use", "hermes computer-use install --upgrade"):
+                    try:
+                        subprocess.run(["linux-computer-use", "status"], check=False, timeout=10)
+                    except Exception:
+                        pass
+                else:
+                    print("  Run: hermes computer-use install")
+                return
+            print("computer_use backend: unsupported platform")
             return
         # No subcommand → show help
         computer_use_parser.print_help()
