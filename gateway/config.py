@@ -963,6 +963,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "exclusive_bot_mentions" in platform_cfg:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
+                if plat == Platform.TELEGRAM and "secretary_mode" in platform_cfg:
+                    bridged["secretary_mode"] = platform_cfg["secretary_mode"]
                 if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
                     bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
                 if "dm_policy" in platform_cfg:

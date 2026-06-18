@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import BusinessConnection
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -34,6 +35,7 @@ try:
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
+        TypeHandler as _TypeHandler,
     )
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
@@ -54,6 +56,8 @@ except ImportError:
     filters = None
     ParseMode = None
     ChatType = None
+    BusinessConnection = Any
+    TypeHandler = Any
 
     # Mock ContextTypes so type annotations using ContextTypes.DEFAULT_TYPE
     # don't crash during class definition when the library isn't installed.
@@ -121,6 +125,7 @@ def check_telegram_requirements() -> bool:
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
+    global BusinessConnection, TypeHandler
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -131,6 +136,7 @@ def check_telegram_requirements() -> bool:
     try:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+        from telegram import BusinessConnection as _BizConn
         try:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
@@ -140,6 +146,7 @@ def check_telegram_requirements() -> bool:
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
+            TypeHandler as _TH,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
@@ -148,6 +155,7 @@ def check_telegram_requirements() -> bool:
     Update = _Update
     Bot = _Bot
     Message = _Message
+    BusinessConnection = _BizConn
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
     LinkPreviewOptions = _LPO
@@ -157,6 +165,7 @@ def check_telegram_requirements() -> bool:
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
+    TypeHandler = _TH
     ParseMode = _PM
     ChatType = _CtT
     HTTPXRequest = _HR
@@ -500,6 +509,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Secretary Mode (Business API) — enabled via config.extra.secretary_mode
+        self._secretary_mode: bool = self.config.extra.get("secretary_mode", False)
+        # Map of business_connection_id → BusinessConnection metadata
+        self._business_connections: Dict[str, dict] = {}
+        # Map of chat_id → business_connection_id (for Secretary Mode replies)
+        self._business_chat_to_conn: Dict[str, str] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -2098,7 +2113,34 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+
+            # Secretary Mode (Business API) handlers
+            if self._secretary_mode:
+                self._app.add_handler(TypeHandler(
+                    BusinessConnection if BusinessConnection else Update,
+                    self._handle_business_connection,
+                ), group=0)
+                # Business messages arrive as update.business_message.
+                # PTB v22+ has filters.UpdateType.BUSINESS_MESSAGE for this.
+                _biz_msg_filter = getattr(filters.UpdateType, "BUSINESS_MESSAGE", None)
+                if _biz_msg_filter is not None:
+                    self._app.add_handler(TelegramMessageHandler(
+                        _biz_msg_filter,
+                        self._handle_business_message,
+                    ))
+                else:
+                    # Fallback: catch-all TypeHandler for older PTB versions
+                    self._app.add_handler(TypeHandler(
+                        Update,
+                        self._handle_business_message,
+                    ), group=1)
+                _edit_biz_filter = getattr(filters.UpdateType, "EDITED_BUSINESS_MESSAGE", None)
+                if _edit_biz_filter is not None:
+                    self._app.add_handler(TelegramMessageHandler(
+                        _edit_biz_filter,
+                        self._handle_business_message,
+                    ))
+
             # Start polling — retry initialize() for transient TLS resets
             try:
                 from telegram.error import NetworkError, TimedOut
@@ -2388,6 +2430,10 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            # Secretary Mode — look up business_connection_id for this chat
+            _biz_conn_id = self._business_chat_to_conn.get(str(chat_id)) if self._secretary_mode else None
+            _biz_kwargs = {"business_connection_id": _biz_conn_id} if _biz_conn_id else {}
+
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
@@ -2444,6 +2490,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **_biz_kwargs,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -2458,6 +2505,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    **_biz_kwargs,
                                 )
                             else:
                                 raise
@@ -3144,6 +3192,13 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             raise RuntimeError("Not connected")
+
+        # Inject business_connection_id for Secretary Mode when applicable
+        chat_id = kwargs.get("chat_id")
+        if self._secretary_mode and chat_id is not None and "business_connection_id" not in kwargs:
+            _biz_conn_id = self._business_chat_to_conn.get(str(chat_id))
+            if _biz_conn_id:
+                kwargs["business_connection_id"] = _biz_conn_id
 
         message_thread_id = kwargs.get("message_thread_id")
         try:
@@ -5894,8 +5949,17 @@ class TelegramAdapter(BasePlatformAdapter):
         than ``update.message``.  MessageHandler filters can still dispatch
         those updates, so handlers must use ``effective_message`` to avoid
         consuming channel posts without ever building a gateway event.
+
+        Also handles ``update.business_message`` (Secretary Mode) — when
+        the user has connected the bot to their account, business messages
+        arrive alongside the business_connection_id needed for replies.
         """
-        return getattr(update, "effective_message", None) or getattr(update, "message", None)
+        msg = (
+            getattr(update, "effective_message", None)
+            or getattr(update, "message", None)
+            or getattr(update, "business_message", None)
+        )
+        return msg
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
@@ -6572,6 +6636,78 @@ class TelegramAdapter(BasePlatformAdapter):
                 return {"name": topic_name}
 
         return None
+
+    # ── Secretary Mode (Business API) ─────────────────────────────────
+    # Telegram Secretary Bots let users connect the bot to their account
+    # so it can process incoming messages and respond on their behalf in
+    # specified chats.
+    #
+    # Enable via config.extra.secretary_mode: true.
+    # Docs: https://core.telegram.org/bots/features#secretary-bots
+
+    async def _handle_business_connection(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle BusinessConnection updates (user connects/disconnects bot)."""
+        bc = getattr(update, "business_connection", None)
+        if not bc:
+            return
+        conn_id = str(getattr(bc, "id", ""))
+        user = getattr(bc, "user", None)
+        user_id = str(getattr(user, "id", "")) if user else None
+
+        if not getattr(bc, "is_enabled", False):
+            self._business_connections.pop(conn_id, None)
+            logger.info(
+                "[%s] Business connection closed: id=%s user=%s",
+                self.name, conn_id, user_id,
+            )
+            return
+
+        self._business_connections[conn_id] = {
+            "user_id": user_id,
+            "can_reply": bool(getattr(bc, "can_reply", False)),
+        }
+        logger.info(
+            "[%s] Business connection established: id=%s user=%s can_reply=%s",
+            self.name, conn_id, user_id,
+            self._business_connections[conn_id]["can_reply"],
+        )
+
+    async def _handle_business_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle business_message updates from connected chats.
+
+        A Secretary Mode bot receives ``business_message`` from chats the
+        user has authorised.  Each message carries a ``business_connection_id``
+        that must be forwarded to outgoing ``sendMessage`` calls so the reply
+        is sent on behalf of the account owner.
+        """
+        msg = update.business_message
+        if not msg:
+            return
+
+        # Track which chat this business_connection covers
+        chat_id = str(getattr(getattr(msg, "chat", None), "id", ""))
+        biz_conn_id = str(getattr(msg, "business_connection_id", ""))
+        if chat_id and biz_conn_id:
+            self._business_chat_to_conn[chat_id] = biz_conn_id
+
+        # Route through the standard text/command/media handlers by
+        # injecting business_connection_id into the update so downstream
+        # path (send, _build_message_event) can use it.
+        if not hasattr(update, "_hermes_business_connection_id"):
+            object.__setattr__(update, "_hermes_business_connection_id", biz_conn_id)
+
+        # Process as a regular message — the existing handlers work
+        # because _effective_update_message falls back to business_message.
+        if msg.text and (not msg.text.startswith("/")):
+            await self._handle_text_message(update, context)
+        elif msg.text and msg.text.startswith("/"):
+            await self._handle_command(update, context)
+        elif msg.photo or msg.video or msg.audio or msg.voice or msg.document or msg.sticker:
+            await self._handle_media_message(update, context)
 
     def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
         """Cache a thread_id -> topic_name mapping discovered from an incoming message."""
