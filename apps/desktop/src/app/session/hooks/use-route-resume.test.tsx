@@ -12,7 +12,8 @@ interface HarnessProps {
   freshDraftReady: boolean
   gatewayState: string
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, profileHint?: string | null) => Promise<unknown>
+  routeProfile?: string | null
   routedSessionId: null | string
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
@@ -135,7 +136,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined)
   })
 
   it('resumes when pathname changes to a routed session', () => {
@@ -185,7 +186,38 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-2', true, undefined)
+  })
+
+  it('passes the secondary window profile hint into routed resume', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/session-2"
+        resumeSession={resumeSession}
+        routeProfile="research"
+        routedSessionId="session-2"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-2', true, 'research')
   })
 
   it('resumes the selected route again when the gateway reconnects', () => {
@@ -253,6 +285,6 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined)
   })
 })

@@ -10,7 +10,8 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, profileHint?: string | null) => Promise<unknown>
+  routeProfile?: string | null
   routedSessionId: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
@@ -49,6 +50,7 @@ export function useRouteResume({
   gatewayState,
   locationPathname,
   resumeSession,
+  routeProfile,
   routedSessionId,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
@@ -110,7 +112,7 @@ export function useRouteResume({
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
       // a dead id ("session not found"). Otherwise keep skipping when already active.
       if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
-        void resumeSession(routedSessionId, true)
+        void resumeSession(routedSessionId, true, routeProfile)
       }
 
       return
@@ -133,6 +135,7 @@ export function useRouteResume({
     gatewayState,
     locationPathname,
     resumeSession,
+    routeProfile,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
