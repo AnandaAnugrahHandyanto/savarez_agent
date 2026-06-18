@@ -37,6 +37,13 @@ const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
   [60_000, 'ageMin']
 ]
 
+function isNestedSessionRowDragHandleTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    Boolean(target.closest('[data-session-row-actions], [data-session-row-main]'))
+  )
+}
+
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const delta = Math.max(0, Date.now() - seconds * 1000)
 
@@ -80,6 +87,31 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const rowDragActivationProps =
+    reorderable && dragHandleProps
+      ? {
+          onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
+            if (!isNestedSessionRowDragHandleTarget(event.target)) {
+              dragHandleProps.onKeyDown?.(event)
+            }
+          },
+          onMouseDown: (event: React.MouseEvent<HTMLElement>) => {
+            if (!isNestedSessionRowDragHandleTarget(event.target)) {
+              dragHandleProps.onMouseDown?.(event)
+            }
+          },
+          onPointerDown: (event: React.PointerEvent<HTMLElement>) => {
+            if (!isNestedSessionRowDragHandleTarget(event.target)) {
+              dragHandleProps.onPointerDown?.(event)
+            }
+          },
+          onTouchStart: (event: React.TouchEvent<HTMLElement>) => {
+            if (!isNestedSessionRowDragHandleTarget(event.target)) {
+              dragHandleProps.onTouchStart?.(event)
+            }
+          }
+        }
+      : undefined
 
   return (
     <SessionContextMenu
@@ -101,12 +133,16 @@ export function SidebarSessionRow({
           dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
           className
         )}
+        data-session-row-chrome
         data-working={isWorking ? 'true' : undefined}
-        draggable
+        draggable={!reorderable}
         onDragStart={event => {
           // Reorder drags belong to dnd-kit (the grab handle) — cancel the
-          // native drag so the two DnD systems don't fight.
-          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
+          // native drag so the two DnD systems don't fight. Reorderable rows
+          // can now start from the visible row chrome, not only the tiny
+          // grabber, so suppress native session-reference drags for the whole
+          // reorderable row.
+          if (reorderable || (event.target as HTMLElement).closest('[data-reorder-handle]')) {
             event.preventDefault()
 
             return
@@ -120,11 +156,14 @@ export function SidebarSessionRow({
         }}
         ref={ref}
         style={style}
+        {...rowDragActivationProps}
         {...rest}
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
+          {...(reorderable ? dragHandleProps : undefined)}
           className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          data-session-row-main
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -225,6 +264,7 @@ export function SidebarSessionRow({
             <Button
               aria-label={r.actionsFor(title)}
               className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+              data-session-row-actions
               size="icon"
               title={r.sessionActions}
               variant="ghost"
