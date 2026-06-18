@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 MODELS_DEV_URL = "https://models.dev/api.json"
 _MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory
+_MODELS_DEV_HEADERS = {
+    "Accept": "application/json",
+    "User-Agent": "HermesAgent/1.0 (+https://github.com/NousResearch/hermes-agent)",
+}
 
 # In-memory cache
 _models_dev_cache: Dict[str, Any] = {}
@@ -290,7 +294,7 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
 
     # Stage 3: network fetch.
     try:
-        response = requests.get(MODELS_DEV_URL, timeout=15)
+        response = requests.get(MODELS_DEV_URL, timeout=15, headers=_MODELS_DEV_HEADERS)
         response.raise_for_status()
         data = response.json()
         if isinstance(data, dict) and data:
