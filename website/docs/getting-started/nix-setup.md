@@ -679,6 +679,15 @@ services.hermes-agent = {
 };
 ```
 
+```nix
+# Enable the bundled Langfuse observability plugin
+services.hermes-agent = {
+  extraDependencyGroups = [ "langfuse" ];
+  settings.plugins.enabled = [ "observability/langfuse" ];
+  environmentFiles = [ "/run/secrets/hermes-langfuse.env" ];
+};
+```
+
 This is resolved by uv alongside core dependencies — no PYTHONPATH patching, no collision risk. Available groups:
 
 | Group | What it enables |
@@ -693,6 +702,7 @@ This is resolved by uv alongside core dependencies — no PYTHONPATH patching, n
 | `anthropic` | Native Anthropic SDK (not needed via OpenRouter) |
 | `bedrock` | AWS Bedrock (boto3) |
 | `azure-identity` | Azure Entra ID auth |
+| `langfuse` | Langfuse observability plugin SDK |
 | `honcho` | Honcho memory provider |
 | `hindsight` | Hindsight memory provider |
 | `modal` | Modal terminal backend |
