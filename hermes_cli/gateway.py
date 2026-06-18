@@ -2441,6 +2441,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+EnvironmentFile=-{hermes_home}/gateway.env
 User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
@@ -2479,6 +2480,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+EnvironmentFile=-{hermes_home}/gateway.env
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
