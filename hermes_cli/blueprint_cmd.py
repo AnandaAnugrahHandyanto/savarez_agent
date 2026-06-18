@@ -186,8 +186,16 @@ def build_blueprint_seed(blueprint) -> str:
             bits.append(f" — {s.help}")
         lines.append("".join(bits))
 
+    extra_job_fields: List[str] = []
+    if getattr(blueprint, "skills", None):
+        extra_job_fields.append(f"skills={list(blueprint.skills)!r}")
+    for key, value in getattr(blueprint, "job_options", {}).items():
+        extra_job_fields.append(f"{key}={value!r}")
+    for key, template in getattr(blueprint, "job_template_options", {}).items():
+        extra_job_fields.append(f"{key} rendered from `{template}` if non-empty")
+
     lines.append("")
-    lines.append(
+    create_instruction = (
         "Once you have my answers, create the job by calling the cronjob tool "
         "with action='create'. Build the schedule as a cron expression from "
         f"this template: `{blueprint.schedule_template}` "
@@ -195,8 +203,11 @@ def build_blueprint_seed(blueprint) -> str:
         f"choice using {dict(WEEKDAY_PRESETS)}, {{interval_min}} from any "
         "interval). Use this exact prompt for the job (substituting my "
         f"answers into any {{slot}} placeholders): \"{blueprint.prompt_template}\". "
-        "Confirm the schedule and what it will do before you create it."
     )
+    if extra_job_fields:
+        create_instruction += "Also pass these cronjob fields: " + ", ".join(extra_job_fields) + ". "
+    create_instruction += "Confirm the schedule and what it will do before you create it."
+    lines.append(create_instruction)
     return "\n".join(lines)
 
 

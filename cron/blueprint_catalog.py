@@ -96,6 +96,12 @@ class AutomationBlueprint:
     slots: List[BlueprintSlot] = field(default_factory=list)
     deliver_default: str = "origin"
     skills: tuple = ()        # skills the job loads before running
+    job_options: Dict[str, Any] = field(default_factory=dict)
+    # Extra create_job kwargs whose values are rendered from slot values.
+    # Empty rendered strings are omitted, so optional slots can drive optional
+    # job fields such as ``workdir`` without forcing every blueprint user to
+    # provide them.
+    job_template_options: Dict[str, str] = field(default_factory=dict)
     tags: tuple = ()
 
 
@@ -429,6 +435,64 @@ CATALOG: List[AutomationBlueprint] = [
         tags=("learning", "daily"),
     ),
     AutomationBlueprint(
+        key="documentation-maintainer",
+        title="Documentation maintainer",
+        description="A scheduled codebase docs agent: checks documentation "
+        "against source-of-truth code, fixes small high-confidence drift, and "
+        "reports what it verified.",
+        category="developer",
+        schedule_template="{minute} {hour} * * {dow}",
+        prompt_template=(
+            "Act as the documentation maintenance agent for this repository. "
+            "Repository root path, if configured as this cron job's workdir: "
+            "{repo_path}. Focus area: {focus}. Mandatory "
+            "preflight before any docs audit: inspect git status, fetch "
+            "origin/main, ensure the run is on latest main with a clean tree, "
+            "then run Auggie indexing with --wait-for-indexing and run "
+            "CocoIndex. If latest-main checkout, Auggie indexing, or CocoIndex "
+            "cannot complete, stop and report the blocker. Treat documentation "
+            "as a build artifact and living system map. Run a two-pass scan: "
+            "first structural evidence (README, manifests, CI, docs indexes, "
+            "entry points, route/command registries, generated-doc scripts), then "
+            "semantic evidence (APIs, services, schemas, migrations, feature "
+            "flags, platform adapters, and behavior tests). Refresh the docs so "
+            "new engineers and agents can answer: overview, architecture, tech "
+            "stack, project structure, entry points, systems/features, request "
+            "and data flows, contribution paths, and references. Find stale "
+            "commands, missing feature docs, broken links, and mismatches between "
+            "code/config/tests and documentation. Keep an evidence ledger mapping "
+            "each proposed edit to source paths and commands/tests. Make only "
+            "small, high-confidence documentation edits; do not change product "
+            "code unless a docs test or generator requires it. Use search_files "
+            "and read_file before editing, cite exact paths in the final summary, "
+            "and run the narrowest relevant docs or test command. If there are no "
+            "safe edits, report what you checked and leave the tree unchanged."
+        ),
+        slots=[
+            BlueprintSlot(
+                name="repo_path", type="text", label="Repository path",
+                default="", optional=True,
+                help="absolute repository path; sets the cron job workdir when provided",
+            ),
+            BlueprintSlot(
+                name="focus", type="text", label="Docs focus?",
+                default="recent code and documentation drift",
+                help="area to audit, e.g. CLI docs, config docs, desktop docs",
+            ),
+            _TIME("09:30"),
+            BlueprintSlot(
+                name="day", type="enum", label="Which day?",
+                default="monday",
+                options=("monday", "tuesday", "wednesday", "thursday", "friday"),
+            ),
+            _DELIVER,
+        ],
+        skills=("documentation-maintainer",),
+        job_options={"enabled_toolsets": ["terminal", "file"]},
+        job_template_options={"workdir": "{repo_path}"},
+        tags=("documentation", "developer", "maintenance"),
+    ),
+    AutomationBlueprint(
         key="gratitude-journal",
         title="Gratitude & reflection prompt",
         description="A gentle evening prompt to reflect on the day and note "
@@ -694,9 +758,13 @@ def fill_blueprint(
 
     schedule = _resolve_schedule(blueprint, resolved)
 
-    # Render the prompt with whatever slots it references.
+    # Render the prompt with whatever slots it references. Optional blank slots
+    # remain available as empty strings so a prompt can mention an optional
+    # field without forcing the user to fill it.
+    format_values = {s.name: "" for s in blueprint.slots}
+    format_values.update(resolved)
     try:
-        prompt = blueprint.prompt_template.format(**resolved)
+        prompt = blueprint.prompt_template.format(**format_values)
     except KeyError as e:
         raise BlueprintFillError(f"blueprint prompt missing value for {e}") from e
 
@@ -708,6 +776,15 @@ def fill_blueprint(
     }
     if blueprint.skills:
         spec["skills"] = list(blueprint.skills)
+    if blueprint.job_options:
+        spec.update(blueprint.job_options)
+    for key, template in blueprint.job_template_options.items():
+        try:
+            rendered = template.format(**format_values).strip()
+        except KeyError as e:
+            raise BlueprintFillError(f"blueprint job option {key!r} missing value for {e}") from e
+        if rendered:
+            spec[key] = rendered
     if origin is not None:
         spec["origin"] = origin
     return spec

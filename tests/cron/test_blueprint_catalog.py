@@ -72,6 +72,47 @@ class TestScheduleResolution:
         spec = fill_blueprint(get_blueprint("morning-brief"), {})
         assert spec["schedule"] == "0 8 * * *"
 
+    def test_documentation_maintainer_schedules_with_skill(self):
+        blueprint = get_blueprint("documentation-maintainer")
+        assert blueprint is not None
+        spec = fill_blueprint(
+            blueprint,
+            {
+                "repo_path": "/tmp/repo",
+                "focus": "CLI docs",
+                "time": "09:30",
+                "day": "monday",
+                "deliver": "origin",
+            },
+        )
+
+        assert spec["schedule"] == "30 9 * * 1"
+        assert spec["skills"] == ["documentation-maintainer"]
+        assert spec["enabled_toolsets"] == ["terminal", "file"]
+        assert spec["workdir"] == "/tmp/repo"
+        assert "Repository root path" in spec["prompt"]
+        assert "Focus area: CLI docs" in spec["prompt"]
+        assert "latest main" in spec["prompt"]
+        assert "Auggie indexing" in spec["prompt"]
+        assert "CocoIndex" in spec["prompt"]
+        assert "build artifact" in spec["prompt"]
+        assert "two-pass scan" in spec["prompt"]
+        assert "evidence ledger" in spec["prompt"]
+        assert "small, high-confidence documentation edits" in spec["prompt"]
+
+    def test_documentation_maintainer_can_omit_workdir(self):
+        blueprint = get_blueprint("documentation-maintainer")
+        assert blueprint is not None
+
+        spec = fill_blueprint(
+            blueprint,
+            {"focus": "CLI docs", "time": "09:30", "day": "monday", "deliver": "origin"},
+        )
+
+        assert "workdir" not in spec
+        assert spec["enabled_toolsets"] == ["terminal", "file"]
+        assert "Focus area: CLI docs" in spec["prompt"]
+
 
 class TestValidation:
     def test_invalid_time_rejected(self):
@@ -153,6 +194,17 @@ class TestRenderers:
         assert entry["scheduleHuman"]
         assert "fields" in entry
 
+    def test_documentation_maintainer_catalog_entry(self):
+        blueprint = get_blueprint("documentation-maintainer")
+        assert blueprint is not None
+        entry = blueprint_catalog_entry(blueprint)
+
+        assert entry["category"] == "developer"
+        field_names = [field["name"] for field in entry["fields"]]
+        assert "repo_path" in field_names
+        assert "focus=" in entry["command"]
+        assert entry["scheduleHuman"] == "monday at 09:30"
+
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
@@ -185,6 +237,17 @@ class TestCommandHandler:
         assert "cronjob tool" in res.agent_seed
         # the schedule template is handed to the agent to build the cron expr
         assert "* * *" in res.agent_seed
+
+    def test_documentation_maintainer_seed_preserves_job_fields(self, isolated_home):
+        from hermes_cli.blueprint_cmd import handle_blueprint_command
+
+        res = handle_blueprint_command("documentation-maintainer")
+
+        assert res.agent_seed is not None
+        assert "repo_path" in res.agent_seed
+        assert "skills=['documentation-maintainer']" in res.agent_seed
+        assert "enabled_toolsets=['terminal', 'file']" in res.agent_seed
+        assert "workdir rendered from `{repo_path}` if non-empty" in res.agent_seed
 
     def test_name_match_is_forgiving(self, isolated_home):
         from hermes_cli.blueprint_cmd import handle_blueprint_command, match_blueprint
