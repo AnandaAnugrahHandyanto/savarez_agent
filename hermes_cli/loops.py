@@ -175,7 +175,16 @@ def create_loop(
     created = False
     if state_path.exists():
         state = load_loop_state(loop_dir)
-        state["last_opened_at"] = _now_iso()
+        now = _now_iso()
+        state["last_opened_at"] = now
+        if str(state.get("status", "")).lower() == "closed":
+            closed_at = state.pop("closed_at", None)
+            if closed_at:
+                state["last_closed_at"] = closed_at
+            state["status"] = "planning"
+            state["phase"] = "reopened"
+            state["reopened_at"] = now
+            state["next_steps"] = ["Review status, then run `/loop run next` or `/loop close`."]
     else:
         now = _now_iso()
         created = True
@@ -923,6 +932,36 @@ def _run_dir(loop_dir: Path, story_id: str) -> Path:
     return loop_dir / "runs" / slugify(str(story_id), fallback="story")
 
 
+_ENGINE_GENERATED_EVIDENCE_FILES = {
+    "loop.json",
+    "stories.json",
+    "status.md",
+    "project.md",
+    "docs.md",
+    "decisions.md",
+    "prd.md",
+    "closeout.md",
+    ".active",
+    ".gitignore",
+}
+
+
+def _is_engine_generated_evidence(path: Path, loop_dir: Path) -> bool:
+    """Return True when *path* is `/loop` bookkeeping, not user evidence."""
+    loop_root = loop_dir.resolve()
+    resolved = path.resolve()
+    try:
+        rel = resolved.relative_to(loop_root)
+    except ValueError:
+        return False
+    parts = rel.parts
+    if len(parts) == 1 and rel.name in _ENGINE_GENERATED_EVIDENCE_FILES:
+        return True
+    if len(parts) >= 3 and parts[0] == "runs" and rel.name in {"prompt.md", "run.json"}:
+        return True
+    return False
+
+
 def run_next_story(
     cwd: str | Path | None = None,
     *,
@@ -1032,6 +1071,8 @@ def _resolve_evidence_path(
             break
     if found is None:
         return None, f"evidence path not found: {raw}"
+    if not found.is_file():
+        return None, f"evidence path is not a file: {found}"
     if not any(found == root or root in found.parents for root in roots):
         return None, (
             f"evidence path is outside the loop/workspace boundary: {found}"
@@ -1073,6 +1114,12 @@ def complete_story(
     if evidence_path is None:
         return (
             f"Refusing to complete {story_id}: {reason}.\n"
+            "Completion requires real evidence (command/test output, changed-file diff summary, "
+            "screenshot, log excerpt, or review packet). A model assertion is not evidence."
+        )
+    if _is_engine_generated_evidence(evidence_path, loop_dir):
+        return (
+            f"Refusing to complete {story_id}: evidence path is `/loop` bookkeeping, not a verification artifact: {evidence_path}.\n"
             "Completion requires real evidence (command/test output, changed-file diff summary, "
             "screenshot, log excerpt, or review packet). A model assertion is not evidence."
         )

@@ -177,6 +177,28 @@ def test_complete_refuses_evidence_outside_boundary(tmp_path):
     assert "outside" in message
 
 
+def test_complete_refuses_loop_scaffold_as_evidence(tmp_path):
+    home, loop_path = _plan(tmp_path)
+    run_next_story(cwd=tmp_path, hermes_home=home)
+
+    for evidence in (loop_path / "prd.md", loop_path / "runs" / "s1" / "prompt.md"):
+        message = complete_story("S1", str(evidence), cwd=tmp_path, hermes_home=home)
+        manifest = json.loads((loop_path / "stories.json").read_text(encoding="utf-8"))
+        assert "Refusing to complete S1" in message
+        assert "bookkeeping" in message
+        assert manifest["stories"][0]["status"] == "running"
+
+
+def test_complete_refuses_directory_evidence(tmp_path):
+    home, loop_path = _plan(tmp_path)
+    run_next_story(cwd=tmp_path, hermes_home=home)
+
+    message = complete_story("S1", str(loop_path), cwd=tmp_path, hermes_home=home)
+
+    assert "Refusing to complete S1" in message
+    assert "not a file" in message
+
+
 def test_complete_succeeds_with_existing_evidence(tmp_path):
     home, loop_path = _plan(tmp_path)
     run_next_story(cwd=tmp_path, hermes_home=home)
@@ -276,6 +298,24 @@ def test_closed_loop_refuses_run_complete_block(tmp_path):
     assert "closed" in run_next_story(cwd=tmp_path, hermes_home=home).lower()
     assert "closed" in complete_story("S1", "x", cwd=tmp_path, hermes_home=home).lower()
     assert "closed" in block_story("S1", "reason", cwd=tmp_path, hermes_home=home).lower()
+
+
+def test_start_reopens_closed_loop(tmp_path):
+    home, loop_path = _plan(tmp_path)
+    close_loop(cwd=tmp_path, hermes_home=home, force=True)
+
+    reopened = create_loop("Engine Loop", cwd=tmp_path, hermes_home=home)
+    state = json.loads((loop_path / "loop.json").read_text(encoding="utf-8"))
+
+    assert reopened["created"] is False
+    assert state["status"] == "planning"
+    assert state["phase"] == "reopened"
+    assert "closed_at" not in state
+    assert state["last_closed_at"]
+    message = run_next_story(cwd=tmp_path, hermes_home=home)
+    manifest = json.loads((loop_path / "stories.json").read_text(encoding="utf-8"))
+    assert "This loop is closed" not in message
+    assert manifest["stories"][0]["status"] == "running"
 
 
 def test_no_active_loop_refusals_are_human_readable(tmp_path):
