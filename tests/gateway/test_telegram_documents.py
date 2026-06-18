@@ -113,6 +113,7 @@ def _make_update(msg):
     """Wrap a message in a mock Update."""
     update = MagicMock()
     update.message = msg
+    update.effective_message = msg
     return update
 
 
@@ -231,6 +232,47 @@ class TestDocumentDownloadBlock:
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
         assert "# Title" in event.text
+
+    @pytest.mark.asyncio
+    async def test_supported_vcf_document_injects_content(self, adapter):
+        content = b"BEGIN:VCARD\nFN:Test Contact\nTEL:+155****4567\nEND:VCARD"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="contacts.vcf", mime_type="text/vcard",
+            file_size=len(content), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_types == ["text/vcard"]
+        assert "BEGIN:VCARD" in event.text
+        assert "FN:Test Contact" in event.text
+        assert "[Content of contacts.vcf]" in event.text
+
+    @pytest.mark.asyncio
+    async def test_contact_share_preserves_vcard_as_document(self, adapter):
+        contact = MagicMock()
+        contact.first_name = "Ada"
+        contact.last_name = "Lovelace"
+        contact.phone_number = "+441234"
+        contact.user_id = 12345
+        contact.vcard = "BEGIN:VCARD\nFN:Ada Lovelace\nTEL:+441234\nEND:VCARD"
+        msg = _make_message()
+        msg.contact = contact
+        update = _make_update(msg)
+        update.update_id = 77
+
+        await adapter._handle_contact_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["text/vcard"]
+        assert event.media_urls and event.media_urls[0].endswith(".vcf")
+        assert "The user shared a contact: Ada Lovelace" in event.text
+        assert "Phone: +441234" in event.text
+        assert "BEGIN:VCARD" in event.text
+        assert "FN:Ada Lovelace" in event.text
 
     @pytest.mark.asyncio
     async def test_caption_preserved_with_injection(self, adapter):

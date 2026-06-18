@@ -1144,6 +1144,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+    ".vcf": "text/vcard",
 }
 
 
