@@ -8449,13 +8449,14 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
+    light_mode = getattr(args, "light", False) or gateway_mode
 
     # Protect against mid-update terminal disconnects (SIGHUP) and tolerate
     # writes to a closed stdout.  No-op in gateway mode.  See
     # _install_hangup_protection for rationale.
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
     try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
+        _cmd_update_impl(args, gateway_mode=gateway_mode, light=light_mode)
     finally:
         _finalize_update_output(_update_io_state)
 
@@ -8521,7 +8522,7 @@ def _cmd_update_pip(args):
     print("✓ Update complete! Restart hermes to use the new version.")
 
 
-def _cmd_update_impl(args, gateway_mode: bool):
+def _cmd_update_impl(args, gateway_mode: bool, light: bool = False):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
     # In gateway mode, use file-based IPC for prompts instead of stdin
@@ -9000,28 +9001,32 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _refresh_active_lazy_features()
 
-        _update_node_dependencies()
-        _build_web_ui(PROJECT_ROOT / "web")
+        if light:
+            print("  ✓ Light mode: skipped npm install, web UI, and desktop rebuild")
+            print("    (run 'cd web && npm install && npm run build' if you need the dashboard)")
+        else:
+            _update_node_dependencies()
+            _build_web_ui(PROJECT_ROOT / "web")
 
-        # Rebuild the desktop app if the source tree changed since the last
-        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
-        # internally, so this is effectively a no-op when nothing changed.
-        # Only bother if the user has a desktop app installed (indicated by
-        # an existing packaged executable or desktop dist); people who have
-        # never run ``hermes desktop`` shouldn't be forced into a full
-        # Electron build by ``hermes update``.
-        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
-        if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
-            print("→ Checking if desktop app needs rebuilding...")
-            _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-            # Stream the build output live (long Electron builds otherwise
-            # look hung). On the rare nonzero exit, retry once after waiting
-            # again for the venv — this covers a still-settling rebuild window
-            # the first wait didn't fully catch.
-            build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0:
+            # Rebuild the desktop app if the source tree changed since the last
+            # build.  ``hermes desktop --build-only`` uses the content-hash stamp
+            # internally, so this is effectively a no-op when nothing changed.
+            # Only bother if the user has a desktop app installed (indicated by
+            # an existing packaged executable or desktop dist); people who have
+            # never run ``hermes desktop`` shouldn't be forced into a full
+            # Electron build by ``hermes update``.
+            desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+            has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+            if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
+                print("→ Checking if desktop app needs rebuilding...")
+                _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+                # Stream the build output live (long Electron builds otherwise
+                # look hung). On the rare nonzero exit, retry once after waiting
+                # again for the venv — this covers a still-settling rebuild window
+                # the first wait didn't fully catch.
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
+                if build_result.returncode != 0:
+                    build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
