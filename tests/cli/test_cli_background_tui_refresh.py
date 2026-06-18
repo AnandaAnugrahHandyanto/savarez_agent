@@ -130,6 +130,61 @@ class TestBackgroundProcessNotificationDraining:
         assert completion_queue.empty()
         assert pending_input.empty()
 
+    def test_error_mode_suppresses_deliberate_process_kill(self):
+        completion_queue = queue.Queue()
+        completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_kill",
+            "exit_code": -15,
+            "completion_reason": "killed",
+            "termination_source": "process.kill",
+            "command": "node dist/server/index.js",
+            "output": "",
+        })
+        registry = SimpleNamespace(
+            completion_queue=completion_queue,
+            is_completion_consumed=lambda _sid: False,
+        )
+        pending_input = queue.Queue()
+
+        drained = _drain_process_notifications_to_pending_input(
+            registry,
+            pending_input,
+            notification_mode="error",
+        )
+
+        assert drained == 1
+        assert completion_queue.empty()
+        assert pending_input.empty()
+
+    def test_error_mode_keeps_unexpected_sigterm(self):
+        completion_queue = queue.Queue()
+        completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_sigterm",
+            "exit_code": -15,
+            "completion_reason": "exited",
+            "termination_source": "",
+            "command": "python worker.py",
+            "output": "terminated\n",
+        })
+        registry = SimpleNamespace(
+            completion_queue=completion_queue,
+            is_completion_consumed=lambda _sid: False,
+        )
+        pending_input = queue.Queue()
+
+        drained = _drain_process_notifications_to_pending_input(
+            registry,
+            pending_input,
+            notification_mode="error",
+        )
+
+        assert drained == 1
+        synth = pending_input.get_nowait()
+        assert "marked" not in synth
+        assert "exit code -15" in synth
+
     def test_completion_event_queues_sanitized_observation_when_enabled(self):
         completion_queue = queue.Queue()
         completion_queue.put({

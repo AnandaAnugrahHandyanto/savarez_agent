@@ -12754,10 +12754,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 # --- Normal text-only notification ---
                 # Decide whether to notify based on mode
-                should_notify = (
-                    notify_mode in {"all", "result"}
-                    or (notify_mode == "error" and session.exit_code not in {0, None})
-                )
+                should_notify = should_queue_process_notification(completion_evt, notify_mode)
                 if should_notify:
                     new_output = session.output_buffer[-1000:] if session.output_buffer else ""
                     message_text = (

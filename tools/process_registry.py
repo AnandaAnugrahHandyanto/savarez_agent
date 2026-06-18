@@ -1549,6 +1549,19 @@ def normalize_background_notification_mode(raw: object) -> str:
     return mode
 
 
+def _is_deliberate_process_termination(evt: dict) -> bool:
+    """Return True for user/tool-requested background-process stops.
+
+    A SIGTERM from ``process.kill`` / ``kill_all`` is an expected cleanup path
+    for long-lived servers.  In ``error`` notification mode it should not be
+    treated like a crashed bounded task.
+    """
+    return (
+        evt.get("completion_reason") == "killed"
+        and evt.get("termination_source") in {"process.kill", "kill_all"}
+    )
+
+
 def should_queue_process_notification(evt: dict, notification_mode: object = "all") -> bool:
     """Return whether a queued process event should produce an agent wakeup."""
     mode = normalize_background_notification_mode(notification_mode)
@@ -1557,7 +1570,11 @@ def should_queue_process_notification(evt: dict, notification_mode: object = "al
     evt_type = evt.get("type", "completion")
     if evt_type == "completion":
         exit_code = evt.get("exit_code")
-        return mode in {"all", "result"} or (mode == "error" and exit_code not in {0, None})
+        return mode in {"all", "result"} or (
+            mode == "error"
+            and exit_code not in {0, None}
+            and not _is_deliberate_process_termination(evt)
+        )
     if evt_type in {"watch_match", "watch_disabled", "watch_overflow_released", "watch_overflow_tripped"}:
         return mode == "all"
     return False

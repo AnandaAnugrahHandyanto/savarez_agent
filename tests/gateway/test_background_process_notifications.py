@@ -275,6 +275,73 @@ async def test_notifications_off_suppresses_notify_on_complete_agent_wakeup(monk
 
 
 @pytest.mark.asyncio
+async def test_error_mode_suppresses_deliberate_process_kill_agent_wakeup(monkeypatch, tmp_path):
+    """Mode error should not report an intentional process.kill SIGTERM."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="",
+            exited=True,
+            exit_code=-15,
+            command="node dist/server/index.js",
+            completion_reason="killed",
+            termination_source="process.kill",
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "error")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    watcher["session_key"] = "agent:main:telegram:dm:123:24296"
+    watcher["thread_id"] = "24296"
+
+    await runner._run_process_watcher(watcher)
+
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_error_mode_keeps_unexpected_sigterm_agent_wakeup(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="terminated\n",
+            exited=True,
+            exit_code=-15,
+            command="python worker.py",
+            completion_reason="exited",
+            termination_source="",
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "error")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    watcher["session_key"] = "agent:main:telegram:dm:123:24296"
+    watcher["thread_id"] = "24296"
+
+    await runner._run_process_watcher(watcher)
+
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
     """thread_id from watcher dict is forwarded as metadata to adapter.send()."""
     import tools.process_registry as pr_module

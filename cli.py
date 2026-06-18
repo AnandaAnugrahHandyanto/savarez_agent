@@ -2497,6 +2497,13 @@ def _load_background_notifications_mode(config: "dict | None" = None) -> str:
     return _normalize_background_notifications_mode(mode)
 
 
+def _is_deliberate_process_termination(evt: dict) -> bool:
+    return (
+        evt.get("completion_reason") == "killed"
+        and evt.get("termination_source") in {"process.kill", "kill_all"}
+    )
+
+
 def _should_queue_process_notification(evt: dict, notification_mode: str) -> bool:
     """Return whether a drained process event should wake the CLI agent."""
     mode = _normalize_background_notifications_mode(notification_mode)
@@ -2505,7 +2512,11 @@ def _should_queue_process_notification(evt: dict, notification_mode: str) -> boo
     evt_type = evt.get("type", "completion")
     if evt_type == "completion":
         exit_code = evt.get("exit_code")
-        return mode in ("all", "result") or (mode == "error" and exit_code not in (0, None))
+        return mode in ("all", "result") or (
+            mode == "error"
+            and exit_code not in (0, None)
+            and not _is_deliberate_process_termination(evt)
+        )
     if evt_type in {"watch_match", "watch_disabled", "watch_overflow_released", "watch_overflow_tripped"}:
         return mode == "all"
     return False
