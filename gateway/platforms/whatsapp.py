@@ -309,6 +309,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Most recent inbound message id per chat — lets add_reaction()/
+        # remove_reaction() default to the message the agent is responding to
+        # when no explicit message_id is supplied (mirrors the photon adapter).
+        self._last_inbound_by_chat: Dict[str, str] = {}
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
@@ -758,6 +762,85 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+        *,
+        from_me: bool = False,
+    ) -> SendResult:
+        """Send a reaction (emoji) to a specific message via the WhatsApp bridge."""
+        if not self._running or not self._http_session:
+            return SendResult(success=False, error="Not connected")
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return SendResult(success=False, error=bridge_exit)
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json={
+                    "chatId": chat_id,
+                    "messageId": message_id,
+                    "emoji": emoji,
+                    "fromMe": from_me,
+                },
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status == 200:
+                    return SendResult(success=True, message_id=message_id)
+                else:
+                    error = await resp.text()
+                    return SendResult(success=False, error=error)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """React with ``emoji`` to a message in ``chat_id`` via the bridge.
+
+        Without ``message_id``, targets the chat's most recent inbound message
+        (typically the one the agent is responding to). Conforms to the
+        ``add_reaction(chat_id, emoji, message_id)`` interface that
+        ``send_message`` action='react' dispatches to.
+        """
+        target = message_id or getattr(self, "_last_inbound_by_chat", {}).get(chat_id)
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to react to — pass message_id (no inbound "
+                "message seen in this chat since the gateway started)",
+            }
+        result = await self.send_reaction(chat_id, target, emoji)
+        if result.success:
+            return {"success": True}
+        return {"success": False, "error": result.error or "reaction failed"}
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retract our reaction from a message (WhatsApp removes a reaction
+        when re-reacting with an empty emoji). Without ``message_id``, targets
+        the chat's most recent inbound message.
+        """
+        target = message_id or getattr(self, "_last_inbound_by_chat", {}).get(chat_id)
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to unreact — pass message_id",
+            }
+        result = await self.send_reaction(chat_id, target, "")
+        if result.success:
+            return {"success": True}
+        return {"success": False, "error": result.error or "unreact failed"}
+
     async def edit_message(
         self,
         chat_id: str,
@@ -1084,6 +1167,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 chat_type=chat_type,
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
+                message_id=data.get("messageId"),
             )
             
             # Download media URLs to the local cache so agent tools
@@ -1179,6 +1263,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            # Remember this as the chat's most recent inbound message so
+            # add_reaction()/remove_reaction() can default to it. getattr guards
+            # tests that build the adapter via __new__ (bypassing __init__).
+            inbound_chat_id = data.get("chatId")
+            inbound_message_id = data.get("messageId")
+            last_inbound = getattr(self, "_last_inbound_by_chat", None)
+            if last_inbound is not None and inbound_chat_id and inbound_message_id:
+                last_inbound[inbound_chat_id] = inbound_message_id
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1187,6 +1280,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                reply_to_message_id=data.get("quotedMessageId"),
+                reply_to_text=data.get("quotedText"),
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
