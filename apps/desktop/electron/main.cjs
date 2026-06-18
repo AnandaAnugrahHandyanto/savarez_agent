@@ -6037,6 +6037,16 @@ function disposeTerminalSession(id) {
 
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
+ipcMain.handle('hermes:fs:isDirectory', async (_event, filePath) => {
+  try {
+    const resolvedPath = resolveRequestedPathForIpc(filePath, { purpose: 'Path stat' })
+    const stat = await fs.promises.stat(resolvedPath)
+    return stat.isDirectory()
+  } catch {
+    return false
+  }
+})
+
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
 ipcMain.handle('hermes:fs:worktrees', async (_event, cwds) => worktreesForIpc(cwds))

@@ -70,6 +70,7 @@ declare global {
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
+      isDirectory?: (path: string) => Promise<boolean>
       gitRoot?: (path: string) => Promise<string | null>
       // Resolve git-worktree identity for a batch of session cwds, reading git's
       // on-disk metadata locally. Returns null per cwd that isn't inside a
