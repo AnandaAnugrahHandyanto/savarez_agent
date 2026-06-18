@@ -161,6 +161,12 @@ TOOLSETS = {
         "tools": ["mixture_of_agents"],
         "includes": []
     },
+
+    "fusion": {
+        "description": "OpenRouter Fusion multi-model deliberation for high-stakes verification and research (opt-in; external API cost)",
+        "tools": ["openrouter_fusion"],
+        "includes": []
+    },
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",

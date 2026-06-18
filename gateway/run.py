@@ -7759,6 +7759,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "fusion":
+            return await self._handle_fusion_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -10135,6 +10138,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return raw.guild.id
         return None
 
+
+    async def _handle_fusion_command(self, event: MessageEvent) -> str:
+        """Handle /fusion <prompt> — run OpenRouter Fusion multi-model deliberation.
+
+        Sends the prompt through OpenRouter's Fusion server tool (a panel of
+        models deliberate, a judge synthesises).  Useful for high-stakes
+        verification, research claims, and expensive-to-be-wrong questions.
+        """
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return (
+                "🧬 **OpenRouter Fusion** — multi-model deliberation panel\n\n"
+                "Usage: `/fusion <prompt>`\n\n"
+                "Example: `/fusion 核實這篇文的內容`\n\n"
+                "Fusion sends your prompt to a panel of models (Gemini Flash, "
+                "DeepSeek V3.2, Kimi) and a judge (Claude Opus) synthesises "
+                "the final answer.  Use for verification, research claims, "
+                "or expensive-to-be-wrong questions.\n\n"
+                "Requires: `OPENROUTER_API_KEY` in ~/.hermes/.env"
+            )
+
+        # Defer import so the gateway boots even if the tool module has issues.
+        try:
+            from tools.openrouter_fusion_tool import openrouter_fusion_tool
+        except ImportError:
+            return "❌ Fusion tool module not found.  Run `hermes update` and try again."
+
+        try:
+            raw = await openrouter_fusion_tool(prompt=prompt, preset="budget")
+            data = json.loads(raw)
+        except Exception as exc:
+            logger.error("Fusion command failed: %s", exc, exc_info=True)
+            return f"❌ Fusion failed: {exc}"
+
+        if not data.get("success"):
+            error = data.get("error", "unknown error")
+            return (
+                f"❌ Fusion failed: `{error}`\n\n"
+                "Falling back to normal single-model research."
+            )
+
+        response = data.get("response", "")
+        usage = data.get("usage") or {}
+        elapsed = data.get("processing_time_seconds", 0)
+        outer_model = data.get("outer_model", "?")
+        tokens = usage.get("total_tokens", "?")
+
+        # Format for Discord (Markdown-safe).
+        header = (
+            f"🧬 **Fusion verdict** · `{elapsed:.1f}s` · "
+            f"judge: `{outer_model}` · tokens: `{tokens}`\n\n"
+        )
+        return header + response
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""

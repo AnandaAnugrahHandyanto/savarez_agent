@@ -206,6 +206,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("fusion", "Run OpenRouter Fusion multi-model panel for verification/research",
+               "Tools & Skills", args_hint="<prompt>"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
