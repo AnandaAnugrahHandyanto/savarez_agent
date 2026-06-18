@@ -883,6 +883,18 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "bob": {
+        "routing": {
+            "experiment": {
+                "enabled": False,
+                "mode": "shadow",
+                "rollout": 0.5,
+                "seed": "",
+                "treatment_model": "anthropic/claude-sonnet-4.6",
+                "include_platforms": None,
+            },
+        },
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
