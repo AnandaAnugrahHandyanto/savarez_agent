@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -21,6 +22,53 @@ from typing import Any, Optional
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(token|secret|api[_-]?key|key|authorization|password|passwd|pwd)\b\s*[:=]\s*\S+"
+)
+_AUTH_HEADER_RE = re.compile(r"(?i)\bauthorization\s*:\s*\S+(?:\s+\S+)?")
+
+
+def _kanban_mask_identifier(value: Any) -> str:
+    """Return a log-safe chat/open/webhook identifier."""
+    text = "" if value is None else str(value)
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return "***"
+    return f"{text[:3]}…{text[-3:]}"
+
+
+def _kanban_sanitize_summary(value: Any, *, limit: int = 160) -> str:
+    """Compact a human-facing reason/comment while redacting secrets."""
+    text = "" if value is None else str(value)
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    text = _AUTH_HEADER_RE.sub("authorization: [REDACTED]", text)
+    text = _SECRET_ASSIGNMENT_RE.sub("[REDACTED]", text)
+    return text[:limit]
+
+
+def _kanban_is_human_decision_event(kind: str, payload: Optional[dict]) -> bool:
+    """True for child events that should escalate to an ancestor subscriber."""
+    if kind in {"gave_up"}:
+        return True
+    if kind != "blocked":
+        return False
+    reason = ""
+    if payload:
+        reason = str(payload.get("reason") or payload.get("error") or "")
+    lowered = reason.casefold()
+    return (
+        not reason
+        or "review-required" in lowered
+        or "credential-needed" in lowered
+        or "credential needed" in lowered
+        or "missing credential" in lowered
+        or "blocked" in lowered
+    )
 
 
 class GatewayKanbanWatchersMixin:
@@ -204,18 +252,65 @@ class GatewayKanbanWatchersMixin:
                                     thread_id=sub.get("thread_id") or "",
                                     kinds=TERMINAL_KINDS,
                                 )
-                                if not events:
-                                    continue
                                 task = _kb.get_task(conn, sub["task_id"])
-                                logger.debug(
-                                    "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                                    len(events), sub["task_id"], slug, old_cursor, cursor,
+                                escalated_events = _kb.claim_escalated_child_events_for_sub(
+                                    conn,
+                                    root_task_id=sub["task_id"],
+                                    platform=sub["platform"],
+                                    chat_id=sub["chat_id"],
+                                    thread_id=sub.get("thread_id") or "",
+                                    kinds=("blocked", "gave_up"),
                                 )
+                                escalated_events = [
+                                    item for item in escalated_events
+                                    if _kanban_is_human_decision_event(item.event.kind, item.event.payload)
+                                ]
+                                if escalated_events:
+                                    synthetic_events = []
+                                    for item in escalated_events:
+                                        child_title = (item.source_title or item.source_task_id)[:120]
+                                        child_tag = f"child {item.source_task_id} — {child_title}"
+                                        if item.event.kind == "blocked":
+                                            raw_reason = ""
+                                            if item.event.payload and item.event.payload.get("reason"):
+                                                raw_reason = item.event.payload.get("reason")
+                                            reason = _kanban_sanitize_summary(raw_reason)
+                                            payload = {"reason": f"{child_tag} blocked: {reason}" if reason else f"{child_tag} blocked"}
+                                        elif item.event.kind == "gave_up":
+                                            raw_error = ""
+                                            if item.event.payload and item.event.payload.get("error"):
+                                                raw_error = item.event.payload.get("error")
+                                            error = _kanban_sanitize_summary(raw_error, limit=200)
+                                            payload = {"error": f"{child_tag}: {error}" if error else child_tag}
+                                        else:
+                                            continue
+                                        synthetic_events.append(_kb.Event(
+                                            id=item.event.id,
+                                            task_id=sub["task_id"],
+                                            kind=item.event.kind,
+                                            payload=payload,
+                                            created_at=item.event.created_at,
+                                            run_id=item.event.run_id,
+                                        ))
+                                    events = list(events) + synthetic_events
+                                if not events and not escalated_events:
+                                    continue
+                                if events:
+                                    logger.debug(
+                                        "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
+                                        len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    )
+                                if escalated_events:
+                                    logger.debug(
+                                        "kanban notifier: claimed %d child escalation event(s) for root %s on board %s",
+                                        len(escalated_events), sub["task_id"], slug,
+                                    )
                                 deliveries.append({
                                     "sub": sub,
                                     "old_cursor": old_cursor,
                                     "cursor": cursor,
                                     "events": events,
+                                    "escalated_events": escalated_events,
                                     "task": task,
                                     "board": slug,
                                 })
@@ -251,6 +346,13 @@ class GatewayKanbanWatchersMixin:
                             d.get("old_cursor", 0),
                             board_slug,
                         )
+                        if d.get("escalated_events"):
+                            await asyncio.to_thread(
+                                self._kanban_rewind_escalations,
+                                sub,
+                                d["escalated_events"],
+                                board_slug,
+                            )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
                     for ev in d["events"]:
@@ -391,6 +493,13 @@ class GatewayKanbanWatchersMixin:
                                 d.get("old_cursor", 0),
                                 board_slug,
                             )
+                            if d.get("escalated_events"):
+                                await asyncio.to_thread(
+                                    self._kanban_rewind_escalations,
+                                    sub,
+                                    d["escalated_events"],
+                                    board_slug,
+                                )
                             # Rewind the pre-send claim on delivery failure so
                             # a later tick can retry. Even after repeated
                             # failures, keep the subscription instead of
@@ -480,6 +589,27 @@ class GatewayKanbanWatchersMixin:
                 thread_id=sub.get("thread_id") or "",
                 claimed_cursor=claimed_cursor,
                 old_cursor=old_cursor,
+            )
+        finally:
+            conn.close()
+
+    def _kanban_rewind_escalations(
+        self,
+        sub: dict,
+        events: list,
+        board: Optional[str] = None,
+    ) -> None:
+        """Sync helper: undo claimed child-escalation action-log rows."""
+        from hermes_cli import kanban_db as _kb
+        conn = _kb.connect(board=board)
+        try:
+            _kb.rewind_escalated_child_events_for_sub(
+                conn,
+                root_task_id=sub["task_id"],
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or "",
+                events=events,
             )
         finally:
             conn.close()

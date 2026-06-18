@@ -368,7 +368,7 @@ class GatewaySlashCommandsMixin:
                             from hermes_cli import kanban_db as _kb
                             conn = _kb.connect(board=requested_board)
                             try:
-                                _kb.add_notify_sub(
+                                _kb.repair_root_notify_sub(
                                     conn, task_id=task_id,
                                     platform=platform_str, chat_id=chat_id,
                                     thread_id=thread_id or None,

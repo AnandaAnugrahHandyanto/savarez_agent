@@ -55,6 +55,27 @@ def _create_completed_subscription(summary="done once"):
         conn.close()
 
 
+def _create_root_only_blocked_child(reason="review-required: needs human eyes"):
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="root task", assignee="planner")
+        child = kb.create_task(
+            conn,
+            title="child task",
+            assignee="worker",
+            parents=[root],
+            initial_status="running",
+        )
+        kb.add_notify_sub(conn, task_id=root, platform="telegram", chat_id="chat-1")
+        assert kb.list_notify_subs(conn, child) == []
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'running' WHERE id = ?", (child,))
+        assert kb.block_task(conn, child, reason=reason)
+        return root, child
+    finally:
+        conn.close()
+
+
 def _unseen_terminal_events(tid):
     conn = kb.connect()
     try:
@@ -372,3 +393,180 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def test_follow_up_child_inherits_completed_parent_subscription_idempotently(tmp_path, monkeypatch):
+    db_path = tmp_path / "post-completion-child-inherit.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="entry", assignee="planner")
+        kb.add_notify_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="topic-1",
+            user_id="user-1",
+            notifier_profile="default",
+        )
+        kb.complete_task(conn, root, summary="root done")
+        child = kb.create_task(conn, title="follow up", assignee="worker", parents=[root])
+        assert kb.inherit_notify_subs_from_completed_parents(
+            conn, child_task_id=child, parent_task_ids=[root]
+        ) == 0
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat-1"
+    assert subs[0]["thread_id"] == "topic-1"
+    assert subs[0]["user_id"] == "user-1"
+    assert subs[0]["notifier_profile"] == "default"
+
+    conn = kb.connect()
+    try:
+        # Dispatcher workers complete tasks from running state; simulate that
+        # so this focused notifier test exercises the actual terminal event.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'running' WHERE id = ?", (child,))
+        assert kb.complete_task(conn, child, summary="follow-up done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 2
+    child_delivery = [item for item in adapter.sent if child in item["text"]]
+    assert len(child_delivery) == 1
+    assert child_delivery[0]["chat_id"] == "chat-1"
+    assert child_delivery[0]["metadata"] == {"thread_id": "topic-1"}
+
+
+def test_live_parent_child_does_not_inherit_subscription(tmp_path, monkeypatch):
+    db_path = tmp_path / "live-parent-child-no-inherit.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="live root", assignee="planner")
+        kb.add_notify_sub(conn, task_id=root, platform="telegram", chat_id="chat-1")
+        child = kb.create_task(conn, title="ordinary child", assignee="worker", parents=[root])
+        assert kb.list_notify_subs(conn, child) == []
+    finally:
+        conn.close()
+
+
+def test_repair_root_notify_sub_only_subscribes_roots_and_is_idempotent(tmp_path, monkeypatch):
+    db_path = tmp_path / "root-sub-repair.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="entry", assignee="planner")
+        assert kb.repair_root_notify_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="topic-1",
+            user_id="user-1",
+            notifier_profile="gateway-a",
+        ) is True
+        assert kb.repair_root_notify_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="topic-1",
+            user_id="user-1",
+            notifier_profile="gateway-a",
+        ) is True
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[root])
+        assert kb.repair_root_notify_sub(
+            conn,
+            task_id=child,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="topic-1",
+            user_id="user-1",
+            notifier_profile="gateway-a",
+        ) is False
+        root_subs = kb.list_notify_subs(conn, root)
+        child_subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    assert len(root_subs) == 1
+    assert root_subs[0]["notifier_profile"] == "gateway-a"
+    assert child_subs == []
+
+
+def test_kanban_notifier_escalates_root_only_child_block_to_root_subscriber(tmp_path, monkeypatch):
+    """A root-only subscriber must see a child review/block decision.
+
+    Child tasks often have no direct notify row. Without an ancestor/root
+    escalation path, root subscribers miss child ``blocked`` /
+    ``review-required`` decisions and the workflow waits silently.
+    """
+    db_path = tmp_path / "root-child-escalation.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    root, child = _create_root_only_blocked_child(
+        "review-required: verify token=SECRET123 before merge"
+    )
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert root in text
+    assert child in text
+    assert "review-required" in text
+    assert "SECRET123" not in text
+    assert "token=" not in text
+
+
+def test_kanban_notifier_child_escalation_is_idempotent_across_ticks(tmp_path, monkeypatch):
+    db_path = tmp_path / "root-child-escalation-dedup.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _root, child = _create_root_only_blocked_child()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert child in adapter.sent[0]["text"]
+
+
+def test_kanban_notifier_child_escalation_retries_after_send_failure(tmp_path, monkeypatch):
+    db_path = tmp_path / "root-child-escalation-retry.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _root, child = _create_root_only_blocked_child()
+
+    failing = FailingAdapter()
+    runner = _make_runner(failing)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert failing.attempts == 1
+
+    recording = RecordingAdapter()
+    runner.adapters = {Platform.TELEGRAM: recording}
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(recording.sent) == 1
+    assert child in recording.sent[0]["text"]

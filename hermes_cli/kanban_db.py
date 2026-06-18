@@ -966,6 +966,15 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass
+class EscalatedEvent:
+    root_task_id: str
+    source_task_id: str
+    source_title: str
+    source_assignee: Optional[str]
+    event: Event
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1125,6 +1134,17 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+CREATE TABLE IF NOT EXISTS kanban_notify_escalations (
+    root_task_id    TEXT NOT NULL,
+    source_task_id  TEXT NOT NULL,
+    source_event_id INTEGER NOT NULL,
+    platform        TEXT NOT NULL,
+    chat_id         TEXT NOT NULL,
+    thread_id       TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL,
+    PRIMARY KEY (root_task_id, source_task_id, source_event_id, platform, chat_id, thread_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1135,6 +1155,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_notify_escalations_root ON kanban_notify_escalations(root_task_id);
 """
 
 
@@ -1733,6 +1754,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS kanban_notify_escalations ("
+        " root_task_id TEXT NOT NULL, source_task_id TEXT NOT NULL,"
+        " source_event_id INTEGER NOT NULL, platform TEXT NOT NULL,"
+        " chat_id TEXT NOT NULL, thread_id TEXT NOT NULL DEFAULT '',"
+        " created_at INTEGER NOT NULL,"
+        " PRIMARY KEY (root_task_id, source_task_id, source_event_id, platform, chat_id, thread_id))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notify_escalations_root "
+        "ON kanban_notify_escalations(root_task_id)"
+    )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2279,6 +2312,13 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
                     },
+                )
+                # Follow-up/downstream cards created under an already completed
+                # parent need the same entry-chat notifier row as the parent/root
+                # so their later terminal events still reach the original chat.
+                # Ordinary children under live parents are intentionally skipped.
+                inherit_notify_subs_from_completed_parents(
+                    conn, child_task_id=task_id, parent_task_ids=parents,
                 )
             return task_id
         except sqlite3.IntegrityError:
@@ -7237,26 +7277,144 @@ def add_notify_sub(
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
     now = int(time.time())
     with write_txn(conn):
+        _insert_notify_sub_row(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=notifier_profile,
+            created_at=now,
+        )
+
+
+def _insert_notify_sub_row(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+    created_at: Optional[int] = None,
+) -> None:
+    """Insert one notify subscription row inside the caller's transaction.
+
+    The primary key makes writes idempotent; repeated repair/inheritance paths
+    must not duplicate rows or reset cursors, otherwise gateway restarts can
+    create notification storms.
+    """
+    thread = thread_id or ""
+    now = int(time.time()) if created_at is None else int(created_at)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (task_id, platform, chat_id, thread, user_id, notifier_profile, now),
+    )
+    if notifier_profile:
+        # Self-heal legacy rows that predate notifier ownership by backfilling
+        # only when the existing value is unset. Do not overwrite another
+        # gateway/profile's explicit ownership.
         conn.execute(
             """
-            INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            UPDATE kanban_notify_subs
+               SET notifier_profile = ?
+             WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+               AND (notifier_profile IS NULL OR notifier_profile = '')
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (notifier_profile, task_id, platform, chat_id, thread),
         )
-        if notifier_profile:
-            # Self-heal legacy rows that predate notifier ownership by
-            # backfilling only when the existing value is unset.
-            conn.execute(
-                """
-                UPDATE kanban_notify_subs
-                   SET notifier_profile = ?
-                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
-                   AND (notifier_profile IS NULL OR notifier_profile = '')
-                """,
-                (notifier_profile, task_id, platform, chat_id, thread_id or ""),
-            )
+
+
+def repair_root_notify_sub(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> bool:
+    """Ensure a newly-created root task has the entry-chat subscription.
+
+    Returns True when ``task_id`` is root and the repair path was eligible. The
+    insert itself is idempotent, so True does not imply a new row was created.
+    Non-root tasks are deliberately ignored: ordinary children should not be
+    subscribed by the gateway entry repair path.
+    """
+    with write_txn(conn):
+        if not conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone():
+            return False
+        if not is_root_task(conn, task_id):
+            return False
+        _insert_notify_sub_row(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=notifier_profile,
+        )
+        return True
+
+
+def inherit_notify_subs_from_completed_parents(
+    conn: sqlite3.Connection,
+    *,
+    child_task_id: str,
+    parent_task_ids: Iterable[str],
+) -> int:
+    """Copy parent/root notify subscriptions to a post-completion child.
+
+    This is for follow-up/downstream cards added after their parent work is
+    already done. It intentionally does nothing unless every listed parent is
+    currently ``done``; decomposition children under live roots remain
+    unsubscribed so root fan-in/escalation stays the only notification path.
+    """
+    parents = tuple(dict.fromkeys(p for p in parent_task_ids if p))
+    if not parents:
+        return 0
+    placeholders = ",".join("?" * len(parents))
+    rows = conn.execute(
+        f"SELECT id, status FROM tasks WHERE id IN ({placeholders})",
+        parents,
+    ).fetchall()
+    if len(rows) != len(parents) or any(r["status"] != "done" for r in rows):
+        return 0
+
+    source_sql = (
+        "WITH RECURSIVE ancestors(id) AS ("
+        + " UNION ".join(["SELECT ?"] * len(parents))
+        + " UNION "
+        + "SELECT l.parent_id FROM task_links l JOIN ancestors a ON l.child_id = a.id) "
+        + "SELECT DISTINCT s.platform, s.chat_id, s.thread_id, s.user_id, s.notifier_profile "
+        + "FROM ancestors a JOIN kanban_notify_subs s ON s.task_id = a.id"
+    )
+    source_rows = conn.execute(source_sql, list(parents)).fetchall()
+    now = int(time.time())
+    inserted = 0
+    for row in source_rows:
+        before = conn.total_changes
+        _insert_notify_sub_row(
+            conn,
+            task_id=child_task_id,
+            platform=row["platform"],
+            chat_id=row["chat_id"],
+            thread_id=row["thread_id"],
+            user_id=row["user_id"],
+            notifier_profile=row["notifier_profile"],
+            created_at=now,
+        )
+        if conn.total_changes > before:
+            inserted += 1
+    return inserted
 
 
 def list_notify_subs(
@@ -7269,6 +7427,134 @@ def list_notify_subs(
     else:
         rows = conn.execute("SELECT * FROM kanban_notify_subs").fetchall()
     return [dict(r) for r in rows]
+
+
+def is_root_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when ``task_id`` has no parents on this board."""
+    return conn.execute(
+        "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1", (task_id,)
+    ).fetchone() is None
+
+
+def claim_escalated_child_events_for_sub(
+    conn: sqlite3.Connection,
+    *,
+    root_task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> list[EscalatedEvent]:
+    """Atomically claim descendant events for a root-task subscription.
+
+    Direct subscriptions are cursored by ``kanban_notify_subs.last_event_id``.
+    Root-only child escalation is cross-task, so it uses
+    ``kanban_notify_escalations`` as a per-subscription action log. A claimed
+    event is inserted before delivery; callers should delete those action rows
+    with :func:`rewind_escalated_child_events_for_sub` if sending fails.
+    """
+    thread = thread_id or ""
+    kind_list = list(kinds) if kinds else None
+    with write_txn(conn):
+        # Only root subscriptions fan in child decisions. Intermediate parent
+        # subscriptions continue to receive their own task's direct events only.
+        if not is_root_task(conn, root_task_id):
+            return []
+        if not conn.execute(
+            "SELECT 1 FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (root_task_id, platform, chat_id, thread),
+        ).fetchone():
+            return []
+        kind_filter = (
+            "AND e.kind IN (" + ",".join("?" * len(kind_list)) + ") "
+            if kind_list else ""
+        )
+        params: list[Any] = [root_task_id, root_task_id, platform, chat_id, thread]
+        if kind_list:
+            params.extend(kind_list)
+        rows = conn.execute(
+            """
+            WITH RECURSIVE descendants(id) AS (
+                SELECT child_id FROM task_links WHERE parent_id = ?
+                UNION
+                SELECT l.child_id FROM task_links l
+                JOIN descendants d ON d.id = l.parent_id
+            )
+            SELECT e.*, t.title AS source_title, t.assignee AS source_assignee
+              FROM descendants d
+              JOIN task_events e ON e.task_id = d.id
+              JOIN tasks t ON t.id = e.task_id
+              LEFT JOIN kanban_notify_escalations log
+                ON log.root_task_id = ?
+               AND log.source_task_id = e.task_id
+               AND log.source_event_id = e.id
+               AND log.platform = ?
+               AND log.chat_id = ?
+               AND log.thread_id = ?
+             WHERE log.source_event_id IS NULL
+            """ + kind_filter + " ORDER BY e.id ASC",
+            params,
+        ).fetchall()
+        claimed: list[EscalatedEvent] = []
+        now = int(time.time())
+        for r in rows:
+            try:
+                payload = json.loads(r["payload"]) if r["payload"] else None
+            except Exception:
+                payload = None
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO kanban_notify_escalations
+                    (root_task_id, source_task_id, source_event_id,
+                     platform, chat_id, thread_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (root_task_id, r["task_id"], int(r["id"]), platform, chat_id, thread, now),
+            )
+            if cur.rowcount != 1:
+                continue
+            claimed.append(EscalatedEvent(
+                root_task_id=root_task_id,
+                source_task_id=r["task_id"],
+                source_title=r["source_title"] or "",
+                source_assignee=r["source_assignee"],
+                event=Event(
+                    id=r["id"], task_id=r["task_id"], kind=r["kind"],
+                    payload=payload, created_at=r["created_at"],
+                    run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+                ),
+            ))
+        return claimed
+
+
+def rewind_escalated_child_events_for_sub(
+    conn: sqlite3.Connection,
+    *,
+    root_task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    events: Iterable[EscalatedEvent],
+) -> int:
+    """Delete previously claimed escalation action-log rows after send failure."""
+    thread = thread_id or ""
+    removed = 0
+    with write_txn(conn):
+        for item in events:
+            cur = conn.execute(
+                """
+                DELETE FROM kanban_notify_escalations
+                 WHERE root_task_id = ? AND source_task_id = ? AND source_event_id = ?
+                   AND platform = ? AND chat_id = ? AND thread_id = ?
+                """,
+                (
+                    root_task_id, item.source_task_id, int(item.event.id),
+                    platform, chat_id, thread,
+                ),
+            )
+            removed += cur.rowcount
+    return removed
 
 
 def remove_notify_sub(
