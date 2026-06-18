@@ -96,6 +96,13 @@ def _reply_anchor_for_event(event) -> str | None:
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
+    raw_message = getattr(event, "raw_message", None)
+    if platform == "slack" and isinstance(raw_message, dict) and raw_message.get("_hermes_no_thread_response"):
+        # Slack reaction handoffs into a configured target channel are meant to
+        # create a new top-level message there. Returning the synthetic event's
+        # message_id as reply_to would make SlackAdapter._resolve_thread_ts()
+        # treat it as a thread anchor and reply in a thread anyway.
+        return None
     if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
         # Reply to the triggering user message. Replying to Telegram's earlier
         # topic seed/anchor can render the bot response outside the active lane.
