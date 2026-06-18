@@ -2592,6 +2592,32 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             err_str = str(e).lower()
+            partial_message_ids = list(locals().get("message_ids") or [])
+            if partial_message_ids:
+                # At least one chunk of this oversized response already reached
+                # Telegram.  Returning retryable=True would make
+                # BasePlatformAdapter._send_with_retry send the entire payload
+                # again from chunk 1, producing repeated "(1/N)" messages when
+                # Telegram flood-control rejects a later chunk.  Surface a
+                # partial-send marker so the shared retry layer stops instead of
+                # duplicating visible content.
+                logger.warning(
+                    "[%s] Telegram send failed after %d chunk(s); not retrying full payload to avoid duplicates: %s",
+                    self.name,
+                    len(partial_message_ids),
+                    e,
+                )
+                return SendResult(
+                    success=False,
+                    message_id=partial_message_ids[-1],
+                    error=f"partial_send_failed:{e}",
+                    retryable=False,
+                    raw_response={
+                        "partial_send": True,
+                        "message_ids": tuple(partial_message_ids),
+                    },
+                    continuation_message_ids=tuple(partial_message_ids[1:]),
+                )
             # Message too long — content exceeded 4096 chars. Return failure so
             # stream consumer enters fallback mode and sends the remainder.
             if "message_too_long" in err_str or "too long" in err_str:

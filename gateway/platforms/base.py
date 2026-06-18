@@ -3449,6 +3449,23 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
+
+        # Some adapters can fail after sending one or more chunks of an
+        # oversized response.  Retrying or plain-text fallback from the
+        # beginning would duplicate the already-visible first chunk(s) — the
+        # exact Telegram spam pattern where users see many repeated "(1/2)"
+        # fragments.  Treat partial sends as terminal delivery failures and let
+        # the caller/user retry explicitly instead of amplifying the damage.
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict) and raw_response.get("partial_send"):
+            logger.warning(
+                "[%s] Partial send failure after %d chunk(s); suppressing automatic retry/fallback to avoid duplicate chunks: %s",
+                self.name,
+                len(raw_response.get("message_ids") or ()),
+                error_str,
+            )
+            return result
+
         is_network = result.retryable or self._is_retryable_error(error_str)
 
         # Timeout errors are not safe to retry (message may have been

@@ -96,6 +96,44 @@ async def test_edit_overflow_split_reports_partial_failure_when_continuation_fai
 
 
 @pytest.mark.asyncio
+async def test_telegram_send_partial_chunk_failure_is_not_retryable(telegram_adapter):
+    """If final delivery fails after chunk 1, report partial_send so callers do not resend chunk 1."""
+    content = "word " * 120
+    telegram_adapter._bot.send_message = AsyncMock(
+        side_effect=[_message(301), RuntimeError("Flood control exceeded. Retry in 10 seconds")]
+    )
+
+    result = await telegram_adapter.send("12345", content)
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.message_id == "301"
+    assert result.raw_response["partial_send"] is True
+    assert result.raw_response["message_ids"] == ("301",)
+    assert telegram_adapter._bot.send_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_does_not_resend_after_partial_send_marker(telegram_adapter):
+    """The shared retry layer must not amplify a partial Telegram split into duplicate chunks."""
+    telegram_adapter.send = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            message_id="301",
+            error="partial_send_failed:flood_control",
+            retryable=False,
+            raw_response={"partial_send": True, "message_ids": ("301",)},
+        )
+    )
+
+    result = await telegram_adapter._send_with_retry("12345", "long final response")
+
+    assert result.success is False
+    assert result.raw_response["partial_send"] is True
+    telegram_adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     """A partial overflow edit enters fallback instead of marking final delivered."""
     adapter = MagicMock()
