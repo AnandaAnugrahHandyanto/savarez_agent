@@ -1039,6 +1039,15 @@ class APIServerAdapter(BasePlatformAdapter):
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
+        configured_ephemeral = GatewayRunner._load_ephemeral_system_prompt()
+        effective_ephemeral = "\n\n".join(
+            part
+            for part in (
+                configured_ephemeral.strip() if isinstance(configured_ephemeral, str) else "",
+                str(ephemeral_system_prompt or "").strip(),
+            )
+            if part
+        )
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1055,7 +1064,7 @@ class APIServerAdapter(BasePlatformAdapter):
             max_iterations=max_iterations,
             quiet_mode=True,
             verbose_logging=False,
-            ephemeral_system_prompt=ephemeral_system_prompt or None,
+            ephemeral_system_prompt=effective_ephemeral,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
             platform="api_server",

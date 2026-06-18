@@ -1923,6 +1923,34 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+def _resolve_personality_prompt(value: Any) -> str:
+    """Accept string or dict personality value; return system prompt string."""
+    if isinstance(value, dict):
+        parts = [value.get("system_prompt", "")]
+        if value.get("tone"):
+            parts.append(f'Tone: {value["tone"]}')
+        if value.get("style"):
+            parts.append(f'Style: {value["style"]}')
+        return "\n".join(str(p) for p in parts if p).strip()
+    return str(value or "").strip()
+
+
+def _resolve_display_personality_prompt(cfg: dict) -> str:
+    """Resolve display.personality to an agent.personalities prompt, if valid."""
+    name = str(cfg_get(cfg, "display", "personality", default="") or "").strip()
+    if not name or name.lower() in {"none", "default", "neutral"}:
+        return ""
+    personalities = cfg_get(cfg, "agent", "personalities", default={})
+    if not isinstance(personalities, dict):
+        return ""
+    value = personalities.get(name)
+    if value is None:
+        value = personalities.get(name.lower())
+    if value is None:
+        return ""
+    return _resolve_personality_prompt(value)
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -3517,15 +3545,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
         """Load ephemeral system prompt from config or env var.
-        
-        Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        agent.system_prompt in ~/.hermes/config.yaml.
+
+        Precedence: HERMES_EPHEMERAL_SYSTEM_PROMPT, explicit agent.system_prompt,
+        then display.personality resolved through agent.personalities.
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
             return prompt
         cfg = _load_gateway_runtime_config()
-        return str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
+        prompt = str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
+        if prompt:
+            return prompt
+        return _resolve_display_personality_prompt(cfg)
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
@@ -10637,6 +10668,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            background_ephemeral = self._load_ephemeral_system_prompt()
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -10664,6 +10696,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
+                    ephemeral_system_prompt=background_ephemeral,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -12776,7 +12809,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "threshold"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        ("agent", "system_prompt"),
+        ("agent", "personalities"),
+        ("agent", "tool_use_enforcement"),
+        ("agent", "task_completion_guidance"),
         ("agent", "disabled_toolsets"),
+        ("display", "personality"),
         ("memory", "provider"),
     )
 
@@ -14588,6 +14626,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
             
+            # Re-read .env/config before resolving prompt-sensitive runtime
+            # settings. Gateway processes are long-lived, and manual edits to
+            # config.yaml / personalities should take effect on the next turn
+            # rather than waiting for a restart or cache eviction.
+            _reload_runtime_env_preserving_config_authority()
+            self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
+
             # Combine platform context, per-channel context, and the user-configured
             # ephemeral system prompt.
             combined_ephemeral = context_prompt or ""
@@ -14596,11 +14641,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-
-            # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart). Keep config.yaml authoritative for
-            # runtime budget settings bridged into env vars.
-            _reload_runtime_env_preserving_config_authority()
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
