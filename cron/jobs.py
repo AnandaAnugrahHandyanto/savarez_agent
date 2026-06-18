@@ -976,11 +976,23 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
-                
-                # Increment completed count
-                if job.get("repeat"):
+
+                # A delivery failure means the user never actually received this
+                # run's output (the platform was down / unreachable, a network
+                # blip, or the gateway adapter was unavailable). Such a run must
+                # NOT be counted toward the repeat limit and must NOT trigger the
+                # auto-delete below: there is no delivery-retry path anywhere, so
+                # consuming the slot would permanently remove a one-shot (or any
+                # repeat-limited) job whose output survives only as a local .md
+                # the user has no reason to open — silently losing the report.
+                delivery_failed = bool(delivery_error)
+
+                # Increment completed count — but only for runs that reached the
+                # user. An undelivered run does not consume a repeat slot, so the
+                # job stays around to retry (recurring) or be retriggered (once).
+                if job.get("repeat") and not delivery_failed:
                     job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                    
+
                     # Check if we've hit the repeat limit
                     times = job["repeat"].get("times")
                     completed = job["repeat"]["completed"]
@@ -989,7 +1001,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         jobs.pop(i)
                         save_jobs(jobs)
                         return
-                
+
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
 
@@ -1015,6 +1027,21 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                             "job is not silently disabled.",
                             job.get("name", job["id"]),
                             kind,
+                        )
+                    elif delivery_failed:
+                        # One-shot whose output never reached the user. Do NOT
+                        # mark it completed — that would hide an undelivered
+                        # report behind a "done" state and disable the job.
+                        # Surface it as state=error (with last_delivery_error
+                        # set) so the operator notices and can retrigger it once
+                        # the platform recovers.
+                        job["state"] = "error"
+                        logger.warning(
+                            "Job '%s': one-shot output produced but delivery "
+                            "failed (%s); keeping the job (state=error) instead "
+                            "of deleting it so the report is not lost.",
+                            job.get("name", job["id"]),
+                            delivery_error,
                         )
                     else:
                         job["enabled"] = False
