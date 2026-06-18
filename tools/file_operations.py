@@ -2148,7 +2148,9 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
+        # Add pattern and path ("--" stops flag parsing so patterns
+        # beginning with "-" are not misread as options)
+        cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
@@ -2278,7 +2280,9 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # Add pattern and path
+        # Add pattern and path ("--" stops flag parsing so patterns
+        # beginning with "-" are not misread as options)
+        cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
