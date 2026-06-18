@@ -2111,7 +2111,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
         for elem in msg_body:
             if elem.get("msg_type") != "TIMCustomElem":
                 continue
-            data_str = elem.get("msg_content", {}).get("data", "")
+            data_str = (elem.get("msg_content") or {}).get("data", "")
             if not data_str:
                 continue
             try:
@@ -2130,7 +2130,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
         for elem in msg_body:
             if elem.get("msg_type") != "TIMCustomElem":
                 continue
-            data_str = elem.get("msg_content", {}).get("data", "")
+            data_str = (elem.get("msg_content") or {}).get("data", "")
             if not data_str:
                 continue
             try:
