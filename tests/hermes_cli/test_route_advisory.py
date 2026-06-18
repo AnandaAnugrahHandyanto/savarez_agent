@@ -28,17 +28,25 @@ def test_classify_route_advisory_normalizes_and_logs(monkeypatch, tmp_path):
         "is_live": True,
     }
 
+    captured = {}
+
     def fake_run(args, **kwargs):
-        assert args[:2] == ["/bin/hermes-route-test", "--json"]
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        assert args == ["/bin/hermes-route-test", "--json", "--stdin"]
         return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
 
     monkeypatch.setattr("hermes_cli.route_advisory.subprocess.run", fake_run)
 
+    confidential_text = "Use Bearer abcdefghijklmnopqrstuvwxyz123456 for confidential BMI radio registration notes"
     advisory = classify_route_advisory(
-        "Use Bearer abcdefghijklmnopqrstuvwxyz123456 for BMI radio registration",
+        confidential_text,
         surface="cron:create",
         command="/bin/hermes-route-test",
     )
+
+    assert confidential_text not in captured["args"]
+    assert captured["kwargs"]["input"] == confidential_text
 
     assert advisory["route_id"] == "business-growth"
     assert advisory["profile"] == "business-growth"
@@ -53,8 +61,9 @@ def test_classify_route_advisory_normalizes_and_logs(monkeypatch, tmp_path):
     assert records[0]["surface"] == "cron:create"
     assert records[0]["route_id"] == "business-growth"
     assert records[0]["prompt_sha256"]
-    assert "Bearer abc" not in records[0]["prompt_preview"]
-    assert "[REDACTED]" in records[0]["prompt_preview"]
+    assert records[0]["prompt_length"] == len(confidential_text)
+    assert "prompt_preview" not in records[0]
+    assert "confidential BMI radio registration notes" not in json.dumps(records[0])
 
 
 def test_classify_route_advisory_timeout_falls_back_to_macos(monkeypatch, tmp_path):

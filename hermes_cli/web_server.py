@@ -649,7 +649,7 @@ class ConfigUpdate(BaseModel):
 class RouteAdvisoryRequest(BaseModel):
     prompt: str
     surface: str = "dashboard"
-    log: bool = True
+    log: bool = False
 
 
 class EnvVarUpdate(BaseModel):

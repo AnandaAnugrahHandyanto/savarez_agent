@@ -688,7 +688,7 @@ export function getRouteAdvisory(prompt: string, surface = 'desktop'): Promise<R
     ...profileScoped(),
     path: '/api/route',
     method: 'POST',
-    body: { prompt, surface }
+    body: { prompt, surface, log: false }
   })
 }
 

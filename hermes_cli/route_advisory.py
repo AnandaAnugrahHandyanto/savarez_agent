@@ -1,7 +1,7 @@
 """Profile route advisory helpers for safe Hermes routing surfaces.
 
 R1 is advisory-only: this module classifies a prompt with the local
-``hermes-route`` command, normalizes the result, and writes a sanitized audit
+``hermes-route`` command, normalizes the result, and writes a metadata-only audit
 record. It never switches profiles or executes work in a specialist lane.
 """
 
@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -21,15 +20,6 @@ from hermes_constants import get_hermes_home
 
 DEFAULT_ROUTE_COMMAND = "/usr/local/bin/hermes-route"
 DEFAULT_TIMEOUT_SECS = 2.0
-
-_SECRET_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"),
-    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
-    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
-)
 
 
 def _utc_now() -> str:
@@ -48,24 +38,12 @@ def _route_command() -> str | None:
     return None
 
 
-def _redact(text: str) -> str:
-    value = str(text or "")
-    for pattern in _SECRET_PATTERNS:
-        value = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", value)
-    return value
-
-
 def _prompt_fingerprint(prompt: str) -> dict[str, str | int]:
+    """Return metadata-only prompt fingerprints without retaining prompt text."""
     text = str(prompt or "")
-    normalized = " ".join(text.split())
-    redacted = _redact(normalized)
-    preview = redacted[:160]
-    if len(redacted) > 160:
-        preview += "…"
     return {
         "prompt_sha256": hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest(),
         "prompt_length": len(text),
-        "prompt_preview": preview,
     }
 
 
@@ -144,7 +122,7 @@ def normalize_route_payload(payload: Mapping[str, Any], *, surface: str) -> dict
 
 
 def log_route_decision(advisory: Mapping[str, Any], prompt: str, *, log_path: Path | None = None) -> Path:
-    """Append a sanitized JSONL route-decision record and return its path."""
+    """Append a metadata-only JSONL route-decision record and return its path."""
     target = log_path or (get_hermes_home() / "logs" / "routing_decisions.jsonl")
     target.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -194,7 +172,8 @@ def classify_route_advisory(
         else:
             try:
                 completed = subprocess.run(
-                    [route_command, "--json", prompt_text],
+                    [route_command, "--json", "--stdin"],
+                    input=prompt_text,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
