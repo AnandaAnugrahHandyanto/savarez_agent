@@ -1773,6 +1773,7 @@ def run_conversation(
                         }
                 
                 # Track actual token usage from response for context management
+                api_tokens = None
                 if hasattr(response, 'usage') and response.usage:
                     canonical_usage = normalize_usage(
                         response.usage,
@@ -1818,6 +1819,11 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+                    api_tokens = {
+                        "api_input_tokens": canonical_usage.input_tokens,
+                        "api_output_tokens": canonical_usage.output_tokens,
+                        "api_cache_read_tokens": canonical_usage.cache_read_tokens,
+                    }
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""
@@ -3754,6 +3760,8 @@ def run_conversation(
                         }
 
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    if api_tokens:
+                        assistant_msg.update(api_tokens)
                     messages.append(assistant_msg)
                     for tc in assistant_message.tool_calls:
                         _tc_name = tc.function.name
@@ -3894,6 +3902,8 @@ def run_conversation(
                 )
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                if api_tokens:
+                    assistant_msg.update(api_tokens)
                 
                 # If this turn has both content AND tool_calls, capture the content
                 # as a fallback final response. Common pattern: model delivers its
@@ -4375,6 +4385,8 @@ def run_conversation(
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                if api_tokens:
+                    final_msg.update(api_tokens)
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending the final response.  These

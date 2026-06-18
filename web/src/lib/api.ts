@@ -1619,6 +1619,8 @@ export interface SessionInfo {
   tool_call_count: number;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
 }
@@ -1688,6 +1690,9 @@ export interface SessionMessage {
   tool_name?: string;
   tool_call_id?: string;
   timestamp?: number;
+  api_input_tokens?: number;
+  api_output_tokens?: number;
+  api_cache_read_tokens?: number;
 }
 
 export interface SessionMessagesResponse {
@@ -1787,6 +1792,7 @@ export interface AnalyticsResponse {
     total_actual_cost: number;
     total_sessions: number;
     total_api_calls: number;
+    total_tokens: number;
   };
   skills: {
     summary: AnalyticsSkillsSummary;
