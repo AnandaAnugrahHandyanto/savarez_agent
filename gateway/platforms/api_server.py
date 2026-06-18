@@ -42,6 +42,7 @@ import re
 import sqlite3
 import time
 import uuid
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -3557,7 +3558,8 @@ class APIServerAdapter(BasePlatformAdapter):
             finally:
                 clear_session_vars(tokens)
 
-        return await loop.run_in_executor(None, _run)
+        ctx = copy_context()
+        return await loop.run_in_executor(None, ctx.run, _run)
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
