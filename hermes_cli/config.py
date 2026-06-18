@@ -2289,6 +2289,23 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Notification kinds allowlist for the kanban notifier. When unset
+        # (None), the notifier uses the default terminal set (completed,
+        # blocked, gave_up, crashed, timed_out) — backward compatible.
+        # Set to a list to override: e.g. [completed, blocked, ready]
+        # to also get pings on blocked→ready unblocks, or add
+        # review-required to surface block reasons prefixed
+        # "review-required:".
+        "notify_kinds": None,
+        # Presence windows for the real-time presence view (§3.1 of the
+        # local-realtime-presence arch). These control how the dashboard
+        # classifies profile liveness — active / idle / stale / offline.
+        # The STALE window must not exceed dispatch_stale_timeout_seconds
+        # (the dispatcher's own reclaim threshold), otherwise the UI will
+        # show a profile as "active" after the dispatcher has already
+        # reclaimed its task. That invariant is asserted at load time.
+        "presence_heartbeat_fresh_seconds": 90,
+        "presence_heartbeat_stale_seconds": 300,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

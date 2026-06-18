@@ -40,7 +40,7 @@ import json
 import logging
 import sqlite3
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -2091,6 +2091,246 @@ def switch_board(slug: str):
 
 
 # ---------------------------------------------------------------------------
+# Presence — real-time profile liveness view
+# ---------------------------------------------------------------------------
+
+# The liveness state machine derives each profile's status from a single
+# aggregate query over ``task_runs`` (joined to ``tasks`` for titles).
+# The windows are defined in config.yaml under ``kanban.presence_*`` —
+# never as HERMES_* env vars (secrets-only rule per AGENTS.md).
+#
+# HARD INVARIANT: the stale window must never exceed the dispatcher's
+# own reclaim threshold (``dispatch_stale_timeout_seconds``).  If it
+# did, the UI would show a profile as "active" or "idle" after the
+# dispatcher had already reclaimed its task — the dashboard would lie.
+# This is asserted on every presence_snapshot() call.
+
+@dataclass
+class PresenceState:
+    """Per-profile liveness, derived from ``task_runs``.
+
+    Computed server-side by :func:`presence_snapshot` and emitted as a
+    ``{type: "presence", ...}`` frame on the WS (or fetched via
+    ``GET /presence``).
+    """
+
+    profile: str
+    online: bool
+    status: str  # "active" | "idle" | "stale" | "offline"
+    current_task_id: Optional[str]
+    current_task_title: Optional[str]
+    run_id: Optional[int]
+    pid: Optional[int]
+    last_heartbeat_at: Optional[int]
+    since: Optional[int]  # run.started_at — "active for Nm"
+
+
+def _resolve_presence_windows() -> tuple[int, int, int]:
+    """Return ``(fresh_s, stale_s, dispatch_stale_s)`` from config.
+
+    Falls back to hardcoded defaults when config.yaml doesn't specify
+    the keys or when the config loader isn't available (tests).
+    """
+    _DEFAULT_FRESH = 90
+    _DEFAULT_STALE = 300
+    _DEFAULT_DISPATCH_STALE = 14400
+
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        kcfg = cfg.get("kanban", {})
+        fresh = int(kcfg.get("presence_heartbeat_fresh_seconds", _DEFAULT_FRESH))
+        stale = int(kcfg.get("presence_heartbeat_stale_seconds", _DEFAULT_STALE))
+        dispatch_stale = int(kcfg.get("dispatch_stale_timeout_seconds", _DEFAULT_DISPATCH_STALE))
+    except Exception:
+        fresh = _DEFAULT_FRESH
+        stale = _DEFAULT_STALE
+        dispatch_stale = _DEFAULT_DISPATCH_STALE
+
+    # INVARIANT: stale <= dispatch_stale (otherwise UI lies about liveness)
+    if stale > dispatch_stale:
+        log.warning(
+            "presence_heartbeat_stale_seconds (%d) > dispatch_stale_timeout_seconds (%d); "
+            "capping stale to dispatch_stale to preserve liveness invariant",
+            stale, dispatch_stale,
+        )
+        stale = dispatch_stale
+
+    return fresh, stale, dispatch_stale
+
+
+def _classify_liveness(
+    *,
+    run_status: str,
+    last_heartbeat_at: Optional[int],
+    worker_pid: Optional[int],
+    now: int,
+    fresh_s: int,
+    stale_s: int,
+) -> str:
+    """Classify a profile's liveness into one of four states.
+
+    ``active``  — running run + heartbeat within ``fresh_s``.
+    ``idle``    — running run + heartbeat within ``stale_s`` (but
+                  past fresh) + PID still alive.
+    ``stale``   — running run but heartbeat older than ``stale_s``
+                  or PID dead. About to be reclaimed.
+    ``offline`` — no running run for the profile.
+    """
+    if run_status != "running":
+        return "offline"
+
+    hb = last_heartbeat_at
+    if hb is None:
+        # No heartbeat ever sent — treat as stale (likely just spawned
+        # and hasn't heartbeated yet, or the run is wedged).
+        return "stale"
+
+    elapsed = now - int(hb)
+    if elapsed <= fresh_s:
+        return "active"
+    if elapsed <= stale_s:
+        # Idle only if the PID is still alive. If the PID is dead,
+        # the worker is gone — classify as stale (dispatcher will
+        # reclaim on next tick).
+        if worker_pid and kanban_db._pid_alive(worker_pid):
+            return "idle"
+        return "stale"
+    # Heartbeat older than stale window
+    return "stale"
+
+
+def presence_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Return the current presence state for every profile with a task.
+
+    ONE aggregate query over ``task_runs`` joined to ``tasks`` — no N+1.
+    Profiles without a running run appear as ``offline``.
+
+    The result shape matches the ``PresenceState`` contract (§3.1 of the
+    local-realtime-presence architecture doc):
+    ``{profile, online, status, current_task_id, current_task_title,
+      run_id, pid, last_heartbeat_at, since}``.
+
+    ``since`` is the run's ``started_at`` so the UI can render
+    "active for 3m" style labels.
+    """
+    fresh_s, stale_s, _ = _resolve_presence_windows()
+    now = int(time.time())
+
+    # One aggregate query: for each profile with a running run, pick
+    # the latest run (most recent started_at). Join tasks for the title.
+    rows = conn.execute(
+        "SELECT "
+        "  r.profile AS profile, "
+        "  r.id AS run_id, "
+        "  r.task_id AS task_id, "
+        "  r.status AS run_status, "
+        "  r.worker_pid AS worker_pid, "
+        "  r.last_heartbeat_at AS last_heartbeat_at, "
+        "  r.started_at AS started_at, "
+        "  t.title AS task_title "
+        "FROM task_runs r "
+        "LEFT JOIN tasks t ON t.id = r.task_id "
+        "WHERE r.status = 'running' "
+        "GROUP BY r.profile "
+        "HAVING r.started_at = MAX(r.started_at) "
+        # The GROUP BY + HAVING picks the most recent running run per
+        # profile (in case a profile has multiple concurrent running
+        # tasks — unusual but possible with max_in_progress_per_profile>1).
+        # For the common case (one running run per profile) this returns
+        # exactly one row per active profile.
+    ).fetchall()
+
+    # Also collect profiles that have any task assigned (even if not
+    # currently running) so we can report them as "offline" rather
+    # than missing from the snapshot entirely.
+    all_profiles = set()
+    for r in conn.execute(
+        "SELECT DISTINCT assignee FROM tasks "
+        "WHERE assignee IS NOT NULL AND status != 'archived'"
+    ).fetchall():
+        all_profiles.add(r["assignee"])
+
+    # Build the running-run map.
+    running_by_profile: dict[str, dict] = {}
+    for r in rows:
+        p = r["profile"]
+        if p:
+            running_by_profile[p] = dict(r)
+
+    results: list[dict[str, Any]] = []
+
+    # Profiles with a running run.
+    for profile, run_row in running_by_profile.items():
+        all_profiles.discard(profile)
+        status = _classify_liveness(
+            run_status=run_row["run_status"],
+            last_heartbeat_at=run_row["last_heartbeat_at"],
+            worker_pid=run_row["worker_pid"],
+            now=now,
+            fresh_s=fresh_s,
+            stale_s=stale_s,
+        )
+        results.append({
+            "profile": profile,
+            "online": status in ("active", "idle"),
+            "status": status,
+            "current_task_id": run_row["task_id"],
+            "current_task_title": run_row["task_title"],
+            "run_id": run_row["run_id"],
+            "pid": run_row["worker_pid"],
+            "last_heartbeat_at": run_row["last_heartbeat_at"],
+            "since": run_row["started_at"],
+        })
+
+    # Profiles without a running run — offline.
+    for profile in sorted(all_profiles):
+        results.append({
+            "profile": profile,
+            "online": False,
+            "status": "offline",
+            "current_task_id": None,
+            "current_task_title": None,
+            "run_id": None,
+            "pid": None,
+            "last_heartbeat_at": None,
+            "since": None,
+        })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# GET /presence
+# ---------------------------------------------------------------------------
+
+@router.get("/presence")
+def get_presence(board: Optional[str] = Query(None)):
+    """Return the real-time presence snapshot for every profile.
+
+    Computed from ``task_runs`` + ``tasks`` using the liveness state
+    machine defined in §3.1 of the local-realtime-presence architecture.
+    Also available via the ``/events`` WebSocket (``{type: "presence"}``
+    frames).
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        profiles = presence_snapshot(conn, board=board)
+        return {
+            "type": "presence",
+            "profiles": profiles,
+            "computed_at": int(time.time()),
+        }
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # WebSocket: /events?since=<event_id>
 # ---------------------------------------------------------------------------
 
@@ -2432,10 +2672,66 @@ async def stream_events(ws: WebSocket):
             finally:
                 conn.close()
 
+        # Fetch presence snapshot in the same thread context as
+        # the event tail. Used on initial connect and periodically
+        # so the UI has current liveness without a separate WS or
+        # polling loop.
+        def _fetch_presence() -> dict[str, Any]:
+            conn = kanban_db.connect(board=ws_board)
+            try:
+                profiles = presence_snapshot(conn, board=ws_board)
+                return {
+                    "type": "presence",
+                    "profiles": profiles,
+                    "computed_at": int(time.time()),
+                }
+            finally:
+                conn.close()
+
+        # Emit a presence snapshot on initial connect so the UI can
+        # immediately render profile avatars/halos without waiting
+        # for the next periodic tick.
+        try:
+            presence_frame = await asyncio.to_thread(_fetch_presence)
+            await ws.send_json(presence_frame)
+        except Exception:
+            log.debug("Initial presence snapshot failed (non-fatal)")
+
+        # Floor interval for presence refreshes even when no relevant
+        # events arrive. 5s keeps the UI responsive without hammering
+        # SQLite (each snapshot is one aggregate query over task_runs).
+        _PRESENCE_FLOOR_SECONDS = 5
+        _last_presence_at = time.monotonic()
+
+        # Kinds that affect profile liveness (claimed/spawned = new
+        # worker started; completed/blocked/reclaimed = worker left;
+        # heartbeat = still alive). When any of these appear in the
+        # event batch, we immediately recompute presence.
+        _PRESENCE_RELEVANT_KINDS = frozenset({
+            "claimed", "spawned", "completed", "blocked", "reclaimed",
+            "heartbeat",
+        })
+
         while True:
             cursor, events = await asyncio.to_thread(_fetch_new, cursor)
             if events:
                 await ws.send_json({"events": events, "cursor": cursor})
+
+            # Recompute presence when a relevant event arrived, or
+            # every _PRESENCE_FLOOR_SECONDS as a floor (so idle→stale
+            # transitions happen even without new events).
+            elapsed_since_presence = time.monotonic() - _last_presence_at
+            has_relevant = any(
+                e.get("kind") in _PRESENCE_RELEVANT_KINDS for e in events
+            )
+            if has_relevant or elapsed_since_presence >= _PRESENCE_FLOOR_SECONDS:
+                try:
+                    presence_frame = await asyncio.to_thread(_fetch_presence)
+                    await ws.send_json(presence_frame)
+                    _last_presence_at = time.monotonic()
+                except Exception:
+                    log.debug("Periodic presence snapshot failed (non-fatal)")
+
             await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
         return
