@@ -47,4 +47,5 @@ def test_build_apikey_providers_list_includes_non_dedicated_providers():
 
     names = {entry[0] for entry in entries}
     assert "DeepSeek" in names
-    assert "Z.AI / GLM" in names
+    assert "Z.AI / GLM Direct API" in names
+    assert "Z.AI / GLM Coding Plan API" in names

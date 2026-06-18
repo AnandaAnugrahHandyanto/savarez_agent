@@ -1,5 +1,6 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
@@ -171,6 +172,8 @@ class TestProviderLabel:
         assert provider_label("stepfun") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("zai") == "Z.AI / GLM Direct API"
+        assert provider_label("zai-coding") == "Z.AI / GLM Coding Plan API"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -194,6 +197,37 @@ class TestProviderModelIds:
 
     def test_unknown_provider_returns_empty(self):
         assert provider_model_ids("some-unknown-provider") == []
+
+    def test_zai_returns_glm_models(self):
+        assert "glm-5" in provider_model_ids("zai")
+
+    def test_zai_coding_returns_coding_plan_models(self):
+        assert provider_model_ids("zai-coding")[:5] == [
+            "glm-5.2",
+            "glm-5-turbo",
+            "glm-5.1",
+            "glm-4.7",
+            "glm-4.5-air",
+        ]
+
+    def test_zai_catalogs_do_not_probe_runtime_credentials(self):
+        def _fail(*args, **kwargs):
+            raise AssertionError("picker catalog lookup must not resolve Z.AI credentials")
+
+        def _mdev(provider):
+            return ["glm-4.7", "glm-5", "glm-extra"]
+
+        with patch.dict(os.environ, {"GLM_API_KEY": "glm-key"}, clear=False), \
+             patch("hermes_cli.auth.resolve_api_key_provider_credentials", side_effect=_fail), \
+             patch("agent.models_dev.list_agentic_models", side_effect=_mdev):
+            assert provider_model_ids("zai-coding") == [
+                "glm-5.2",
+                "glm-5-turbo",
+                "glm-5.1",
+                "glm-4.7",
+                "glm-4.5-air",
+            ]
+            assert provider_model_ids("zai")[:3] == ["glm-4.7", "glm-5", "glm-extra"]
 
     def test_stepfun_prefers_live_catalog(self):
         with patch(
@@ -556,6 +590,26 @@ class TestValidateApiNotFound:
         assert result["accepted"] is False
         assert result["persist"] is False
         assert "not found" in result["message"]
+
+    def test_zai_curated_model_accepted_when_live_listing_omits_it(self):
+        result = _validate(
+            "glm-5.2",
+            provider="zai",
+            api_models=["glm-5.1", "glm-5", "glm-4.7"],
+        )
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+
+    def test_zai_coding_curated_model_accepted_when_live_listing_omits_it(self):
+        result = _validate(
+            "glm-5.2",
+            provider="zai-coding",
+            api_models=["glm-5-turbo", "glm-5.1", "glm-4.7"],
+        )
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
 
     def test_warning_includes_suggestions(self):
         result = _validate("anthropic/claude-opus-4.5")

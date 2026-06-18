@@ -152,6 +152,10 @@ class TestDerivedDicts:
         assert "/reload_mcp" in COMMANDS
         assert "/gateway" in COMMANDS
 
+    def test_provider_alias_stays_hidden(self):
+        assert resolve_command("provider") is None
+        assert "/provider" not in COMMANDS
+
     def test_commands_by_category_covers_all_categories(self):
         registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
         assert set(COMMANDS_BY_CATEGORY.keys()) == registry_categories

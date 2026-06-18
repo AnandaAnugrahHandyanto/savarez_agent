@@ -107,6 +107,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "zai-coding": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        base_url_override="https://api.z.ai/api/coding/paas/v4",
+        base_url_env_var="GLM_BASE_URL",
+    ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
@@ -377,6 +383,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+    "zai": "Z.AI / GLM Direct API",
+    "zai-coding": "Z.AI / GLM Coding Plan API",
 }
 
 

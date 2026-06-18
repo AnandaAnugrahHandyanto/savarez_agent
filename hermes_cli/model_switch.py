@@ -1234,14 +1234,19 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        endpoint_family_providers,
+        shared_credential_provider_ids,
+    )
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
-        get_curated_nous_model_ids,
+        get_curated_nous_model_ids, provider_label,
     )
 
     results: List[dict] = []
+    endpoint_provider_ids = endpoint_family_providers()
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
@@ -1275,6 +1280,27 @@ def list_authenticated_providers(
         normed = _norm_url(url)
         if normed:
             _builtin_endpoints.add(normed)
+
+    def _has_auth_store_credentials(*slugs: str) -> bool:
+        try:
+            from hermes_cli.auth import _load_auth_store
+            store = _load_auth_store()
+            providers_store = store.get("providers", {}) if store else {}
+            pool_store = store.get("credential_pool", {}) if store else {}
+            return any(slug in providers_store or slug in pool_store for slug in slugs)
+        except Exception:
+            return False
+
+    def _has_credential_pool_credentials(*slugs: str) -> bool:
+        try:
+            from agent.credential_pool import load_pool
+            for slug in dict.fromkeys(slugs):
+                pool = load_pool(slug)
+                if pool.has_credentials():
+                    return True
+        except Exception as exc:
+            logger.debug("Credential pool check failed for %s: %s", slugs, exc)
+        return False
 
     def _has_fast_aws_sdk_signal() -> bool:
         """Return True when explicit AWS auth config is present.
@@ -1405,13 +1431,9 @@ def list_authenticated_providers(
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
-            try:
-                from hermes_cli.auth import _load_auth_store
-                store = _load_auth_store()
-                if store and store.get("credential_pool", {}).get(hermes_id):
-                    has_creds = True
-            except Exception:
-                pass
+            has_creds = _has_auth_store_credentials(
+                *shared_credential_provider_ids(hermes_id)
+            )
         if not has_creds:
             continue
 
@@ -1429,7 +1451,10 @@ def list_authenticated_providers(
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
-        display_name = pinfo.name if pinfo else mdev_id
+        if hermes_id in endpoint_provider_ids:
+            display_name = provider_label(hermes_id)
+        else:
+            display_name = pinfo.name if pinfo else mdev_id
 
         results.append({
             "slug": slug,
@@ -1458,7 +1483,7 @@ def list_authenticated_providers(
             continue
 
         # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
-        hermes_slug = _mdev_to_hermes.get(pid, pid)
+        hermes_slug = pid if pid in _auth_registry else _mdev_to_hermes.get(pid, pid)
         if hermes_slug.lower() in seen_slugs:
             continue
 
@@ -1481,26 +1506,18 @@ def list_authenticated_providers(
         # support OAuth (e.g. anthropic supports both API key and Claude Code
         # OAuth via external credential files).
         if not has_creds:
-            try:
-                from hermes_cli.auth import _load_auth_store
-                store = _load_auth_store()
-                providers_store = store.get("providers", {})
-                if store and (pid in providers_store or hermes_slug in providers_store):
-                    has_creds = True
-            except Exception as exc:
-                logger.debug("Auth store check failed for %s: %s", pid, exc)
+            has_creds = _has_auth_store_credentials(
+                pid,
+                *shared_credential_provider_ids(hermes_slug),
+            )
         # Fallback: check the credential pool with full auto-seeding.
         # This catches credentials that exist in external stores (e.g.
         # Codex CLI ~/.codex/auth.json) which _seed_from_singletons()
         # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
-            try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(hermes_slug)
-                if pool.has_credentials():
-                    has_creds = True
-            except Exception as exc:
-                logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
+            has_creds = _has_credential_pool_credentials(
+                *shared_credential_provider_ids(hermes_slug)
+            )
         # Fallback: check external credential files directly.
         # The credential pool gates anthropic behind
         # is_provider_explicitly_configured() to prevent auxiliary tasks
@@ -1623,22 +1640,13 @@ def list_authenticated_providers(
             _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
         # Also check auth store and credential pool
         if not _cp_has_creds:
-            try:
-                from hermes_cli.auth import _load_auth_store
-                _cp_store = _load_auth_store()
-                _cp_providers_store = _cp_store.get("providers", {})
-                if _cp_store and _cp.slug in _cp_providers_store:
-                    _cp_has_creds = True
-            except Exception:
-                pass
+            _cp_has_creds = _has_auth_store_credentials(
+                *shared_credential_provider_ids(_cp.slug)
+            )
         if not _cp_has_creds:
-            try:
-                from agent.credential_pool import load_pool
-                _cp_pool = load_pool(_cp.slug)
-                if _cp_pool.has_credentials():
-                    _cp_has_creds = True
-            except Exception:
-                pass
+            _cp_has_creds = _has_credential_pool_credentials(
+                *shared_credential_provider_ids(_cp.slug)
+            )
 
         # Special case: aws_sdk auth (bedrock) — no API key env vars,
         # credentials come from the boto3 credential chain (env vars,

@@ -2284,11 +2284,99 @@ def _model_flow_bedrock(config, current_model=""):
     else:
         print("  No change.")
 
+
+def _endpoint_options_for_provider(provider_id: str) -> list[tuple[str, str]]:
+    from hermes_cli.auth import endpoint_family_candidates
+
+    return [(label, base_url) for _, base_url, _, label in endpoint_family_candidates(provider_id)]
+
+
+def _prompt_custom_endpoint_family_base_url(
+    provider_id: str,
+    provider_label: str,
+    current_base: str,
+    fallback_base: str,
+) -> str:
+    from hermes_cli.auth import provider_base_url_matches_endpoint_family
+
+    try:
+        override = input(f"Custom {provider_label} base URL [{current_base}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return fallback_base
+    if not override:
+        return fallback_base
+    if not override.startswith(("http://", "https://")):
+        print(
+            "  Invalid URL — must start with http:// or https://. Ignoring custom value."
+        )
+        return fallback_base
+    if not provider_base_url_matches_endpoint_family(provider_id, override):
+        print(
+            "  Official provider URL does not match this endpoint family. Ignoring custom value."
+        )
+        return fallback_base
+    return override.rstrip("/")
+
+
+def _select_endpoint_family_base_url(provider_id: str, current_base: str) -> str:
+    from hermes_cli.main import _prompt_provider_choice
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        provider_base_url_matches_endpoint_family,
+    )
+
+    options = _endpoint_options_for_provider(provider_id)
+    if not options:
+        return current_base
+
+    provider_label = PROVIDER_REGISTRY[provider_id].name
+    normalized_current = str(current_base or "").strip().rstrip("/")
+    current_matches_family = (
+        provider_base_url_matches_endpoint_family(provider_id, normalized_current)
+        if normalized_current
+        else True
+    )
+    fallback_base = current_base if current_matches_family else options[0][1]
+    default_idx = 0
+    if normalized_current and current_matches_family:
+        for idx, (_, url) in enumerate(options):
+            if normalized_current == url.rstrip("/"):
+                default_idx = idx
+                break
+        else:
+            default_idx = len(options)
+
+    choices = [f"{label} ({url})" for label, url in options]
+    choices.append("Custom proxy URL")
+    selected = _prompt_provider_choice(
+        choices,
+        default=default_idx,
+        title=f"Select {provider_label} endpoint:",
+    )
+    if selected is None:
+        return fallback_base
+    if selected == len(options):
+        return _prompt_custom_endpoint_family_base_url(
+            provider_id,
+            provider_label,
+            current_base,
+            fallback_base,
+        )
+    return options[selected][1]
+
+
+def _select_zai_endpoint(provider_id: str, current_base: str) -> str:
+    """Compatibility wrapper for Z.AI endpoint-selection tests."""
+    return _select_endpoint_family_base_url(provider_id, current_base)
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.main import _prompt_api_key
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
+        endpoint_family_providers,
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
@@ -2398,19 +2486,25 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             pass
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        if not override.startswith(("http://", "https://")):
-            print(
-                "  Invalid URL — must start with http:// or https://. Keeping current value."
-            )
-        else:
-            save_env_value(base_url_env, override)
-            effective_base = override
+    if provider_id in endpoint_family_providers():
+        chosen_base = _select_endpoint_family_base_url(provider_id, effective_base)
+        if chosen_base and chosen_base != effective_base and base_url_env:
+            save_env_value(base_url_env, chosen_base)
+        effective_base = chosen_base
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            if not override.startswith(("http://", "https://")):
+                print(
+                    "  Invalid URL — must start with http:// or https://. Keeping current value."
+                )
+            else:
+                save_env_value(base_url_env, override)
+                effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
@@ -2496,16 +2590,27 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             # Merge models.dev with curated list so newly added models
             # (not yet in models.dev) still appear in the picker.
             if curated:
-                seen = {m.lower() for m in mdev_models}
-                merged = list(mdev_models)
-                for m in curated:
-                    if m.lower() not in seen:
-                        merged.append(m)
-                        seen.add(m.lower())
+                if provider_id == "zai-coding":
+                    # Coding Plan has a separate billing path and explicit
+                    # supported model set; don't inherit direct API catalog
+                    # breadth into this setup picker.
+                    merged = list(curated)
+                else:
+                    seen = {m.lower() for m in mdev_models}
+                    merged = list(mdev_models)
+                    for m in curated:
+                        if m.lower() not in seen:
+                            merged.append(m)
+                            seen.add(m.lower())
                 model_list = merged
             else:
                 model_list = mdev_models
-            print(f"  Found {len(model_list)} model(s) from models.dev registry")
+            if provider_id == "zai-coding":
+                print(
+                    f'  Showing {len(model_list)} Coding Plan models — use "Enter custom model name" for others.'
+                )
+            else:
+                print(f"  Found {len(model_list)} model(s) from models.dev registry")
         elif curated and len(curated) >= 8:
             # Curated list is substantial — use it directly, skip live probe
             model_list = curated

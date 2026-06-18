@@ -133,7 +133,8 @@ def show_status(args):
         "DeepSeek": "DEEPSEEK_API_KEY",
         "xAI / Grok": "XAI_API_KEY",
         "NVIDIA NIM": "NVIDIA_API_KEY",
-        "Z.AI / GLM": "GLM_API_KEY",
+        "Z.AI / GLM Direct API": "GLM_API_KEY",
+        "Z.AI / GLM Coding Plan API": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "StepFun Step Plan": "STEPFUN_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
@@ -357,7 +358,8 @@ def show_status(args):
     print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
 
     apikey_providers = {
-        "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        "Z.AI / GLM Direct API": ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        "Z.AI / GLM Coding Plan API": ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         "Kimi / Moonshot":  ("KIMI_API_KEY",),
         "StepFun Step Plan": ("STEPFUN_API_KEY",),
         "MiniMax":          ("MINIMAX_API_KEY",),

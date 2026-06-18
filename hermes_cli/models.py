@@ -286,6 +286,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
+    "zai-coding": [
+        "glm-5.2",
+        "glm-5-turbo",
+        "glm-5.1",
+        "glm-4.7",
+        "glm-4.5-air",
+    ],
     "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
@@ -1031,7 +1038,9 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
-    ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
+    ProviderEntry("zai",            "Z.AI / GLM Direct API",    "Z.AI / GLM Direct API endpoint (/api/paas/v4)"),
+    ProviderEntry("zai-coding",     "Z.AI / GLM Coding Plan API",
+                  "Z.AI / GLM Coding Plan API endpoint (/api/coding/paas/v4)"),
     ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com & Moonshot API)"),
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Domestic direct API)"),
     ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (Agent / coding models via Step Plan API)"),
@@ -1096,6 +1105,9 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 # Member order is the order shown inside the group submenu.
 # ---------------------------------------------------------------------------
 PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
+    "zai":      ("Z.AI / GLM API endpoints",
+                 "Direct API and Coding Plan API billing paths",
+                 ["zai", "zai-coding"]),
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
@@ -2222,6 +2234,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return get_codex_model_ids(access_token=access_token)
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+    if normalized == "zai":
+        return _merge_with_models_dev(normalized, list(_PROVIDER_MODELS.get(normalized, [])))
+    if normalized == "zai-coding":
+        return list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -3944,6 +3960,19 @@ def validate_requested_model(
             # the user may have access to models not shown in the public
             # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
             # endpoints even though it's not in /models).  Warn but allow.
+            if normalized in {"zai", "zai-coding"}:
+                try:
+                    catalog_models = cached_provider_model_ids(normalized)
+                except Exception:
+                    catalog_models = []
+                catalog_lower = {m.lower(): m for m in catalog_models}
+                if requested_for_lookup.lower() in catalog_lower:
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "message": None,
+                    }
 
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)

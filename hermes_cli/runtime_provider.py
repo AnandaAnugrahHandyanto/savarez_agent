@@ -102,6 +102,16 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _config_base_url_allowed_for_provider(provider: str, base_url: str) -> bool:
+    """Return whether a persisted model.base_url may override provider defaults."""
+    candidate = (base_url or "").strip()
+    if not candidate:
+        return False
+    if provider in auth_mod.endpoint_family_providers():
+        return auth_mod.provider_base_url_matches_endpoint_family(provider, candidate)
+    return True
+
+
 def _host_derived_api_key(base_url: str) -> str:
     """Look up `<VENDOR>_API_KEY` in the env, derived from the base URL host.
 
@@ -380,7 +390,7 @@ def _resolve_runtime_from_pool_entry(
         pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
         if configured_provider == provider and pool_url_is_default:
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
+            if cfg_base_url and _config_base_url_allowed_for_provider(provider, cfg_base_url):
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         if provider in {"opencode-zen", "opencode-go"}:
@@ -1329,10 +1339,19 @@ def _resolve_explicit_runtime(
             env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
 
         base_url = explicit_base_url
+        if base_url and not _config_base_url_allowed_for_provider(provider, base_url):
+            base_url = ""
         if not base_url:
             if provider in {"kimi-coding", "kimi-coding-cn"}:
                 creds = resolve_api_key_provider_credentials(provider)
                 base_url = creds.get("base_url", "").rstrip("/")
+            elif provider in auth_mod.endpoint_family_providers():
+                base_url = auth_mod.resolve_provider_endpoint_family_base_url(
+                    provider,
+                    explicit_api_key,
+                    pconfig.inference_base_url,
+                    env_url,
+                )
             else:
                 base_url = env_url or pconfig.inference_base_url
 
@@ -1781,7 +1800,9 @@ def resolve_runtime_provider(
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == provider:
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            candidate_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if _config_base_url_allowed_for_provider(provider, candidate_base_url):
+                cfg_base_url = candidate_base_url
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":

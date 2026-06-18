@@ -47,7 +47,7 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "zai-coding", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
@@ -472,6 +472,9 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
         return None
     parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
     host = parsed.netloc.lower() or parsed.path.lower()
+    path = parsed.path.lower()
+    if ("api.z.ai" in host or "open.bigmodel.cn" in host) and "/coding/" in path:
+        return "zai-coding"
     for url_part, provider in _URL_TO_PROVIDER.items():
         if url_part in host:
             return provider
