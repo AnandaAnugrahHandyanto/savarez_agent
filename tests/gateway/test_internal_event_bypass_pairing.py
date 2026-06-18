@@ -300,7 +300,14 @@ async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path)
 @pytest.mark.asyncio
 async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monkeypatch, tmp_path):
     import tools.process_registry as pr_module
+    import gateway.run as gateway_run
     from gateway.session import SessionSource
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  background_process_notifications: all\n",
+        encoding="utf-8",
+    )
 
     sessions = [
         SimpleNamespace(
