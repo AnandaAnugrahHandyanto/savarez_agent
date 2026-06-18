@@ -1038,19 +1038,20 @@ export function usePromptActions({
             return
           }
 
-          const render = (text: string) =>
-            appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, text) : text)
+          const render = (sessionId: string, text: string) =>
+            appendSessionTextMessage(sessionId, 'system', recordInput ? slashStatusText(command, text) : text)
 
           try {
-            render(deep ? `archiving…` : `compressing…`)
+            render(sid, deep ? `archiving…` : `compressing…`)
 
             const result = await requestGateway<SessionCompressResponse>('session.compress', {
               session_id: sid,
               ...(focusArg ? { focus_topic: focusArg } : {}),
               ...(deep ? { deep: true } : {})
             })
-            const compressedSessionId =
+            let compressedSessionId =
               typeof result.new_session_id === 'string' && result.new_session_id ? result.new_session_id : sid
+            let statsSessionId = compressedSessionId
 
             // Re-fetch messages from the REST API to get the compressed transcript.
             // The gateway updates state.db after compression, so the REST API has
@@ -1065,6 +1066,8 @@ export function usePromptActions({
                 selectedStoredSessionIdRef.current = storedSessionId
                 navigate(sessionRoute(storedSessionId))
               }
+              compressedSessionId = storedSessionId
+              statsSessionId = storedSessionId
 
               updateSessionState(sid, state => ({
                 ...state,
@@ -1078,37 +1081,38 @@ export function usePromptActions({
             if (result.summary?.headline) {
               const prefix = result.summary.noop ? '' : '✓ '
 
-              render(`${prefix}${deep ? 'Archived: ' : ''}${result.summary.headline}`)
+              render(statsSessionId, `${prefix}${deep ? 'Archived: ' : ''}${result.summary.headline}`)
 
               if (result.summary.token_line) {
-                render(`  ${result.summary.token_line}`)
+                render(statsSessionId, `  ${result.summary.token_line}`)
               }
 
               if (deep) {
-                render(`  Live model context: ${result.after_messages ?? 'unknown'} messages`)
+                render(statsSessionId, `  Live model context: ${result.after_messages ?? 'unknown'} messages`)
               }
 
               if (result.summary.note) {
-                render(`  ${result.summary.note}`)
+                render(statsSessionId, `  ${result.summary.note}`)
               }
 
               return
             }
 
             if ((result.removed ?? 0) <= 0) {
-              render('nothing to compress')
+              render(statsSessionId, 'nothing to compress')
 
               return
             }
 
             render(
+              statsSessionId,
               `${deep ? 'archived' : 'compressed'} ${result.removed} messages${result.usage?.total ? ` · ${result.usage.total} tok` : ''}`
             )
             if (deep) {
-              render(`live model context: ${result.after_messages ?? 'unknown'} messages`)
+              render(statsSessionId, `live model context: ${result.after_messages ?? 'unknown'} messages`)
             }
           } catch (err) {
-            render(`error: ${err instanceof Error ? err.message : String(err)}`)
+            render(sid, `error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval
