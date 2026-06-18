@@ -547,7 +547,7 @@ export function DesktopController() {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
+  const { autoTtsEnabled, refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
     activeSessionIdRef,
     refreshProjectBranch
   })
@@ -1030,6 +1030,7 @@ export function DesktopController() {
 
   const chatView = (
     <ChatView
+      autoTtsEnabled={autoTtsEnabled}
       gateway={gatewayRef.current}
       maxVoiceRecordingSeconds={voiceMaxRecordingSeconds}
       modelMenuContent={modelMenuContent}
