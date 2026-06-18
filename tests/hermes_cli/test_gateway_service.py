@@ -962,6 +962,7 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_launchd_service_is_loaded", lambda: False)
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd == ["launchctl", "kickstart", target]:
@@ -1032,6 +1033,7 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
         monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(gateway_cli, "_launchd_service_is_loaded", lambda: False)
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd == ["launchctl", "kickstart", "-k", target]:

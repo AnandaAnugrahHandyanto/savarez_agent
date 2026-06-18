@@ -3267,6 +3267,25 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
     return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
 
 
+def _launchd_service_is_loaded() -> bool:
+    """Check whether the gateway launchd service is currently loaded in the domain.
+
+    Returns True when ``launchctl list <label>`` succeeds, meaning the service
+    definition is loaded even if kickstart failed transiently (e.g. exit 5 on
+    macOS 26).  Used to avoid unnecessary fallback to a detached process.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", get_launchd_label()],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def _gateway_run_command() -> list[str]:
     """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
 
@@ -3615,6 +3634,19 @@ def launchd_start():
         except subprocess.CalledProcessError as e:
             if not _launchctl_domain_unsupported(e.returncode):
                 raise
+            # Service might be loaded despite kickstart failure — try
+            # launchctl start before falling back to detached (see #42524).
+            if _launchd_service_is_loaded():
+                try:
+                    subprocess.run(
+                        ["launchctl", "start", f"{_launchd_domain()}/{label}"],
+                        check=True,
+                        timeout=30,
+                    )
+                    print("✓ Service started (via launchctl start)")
+                    return
+                except subprocess.CalledProcessError:
+                    pass
             _launchd_fallback_to_detached(f"launchctl exit {e.returncode}")
             return
         print("✓ Service started")
@@ -3644,10 +3676,23 @@ def launchd_start():
                 timeout=30,
             )
         except subprocess.CalledProcessError as e2:
-            # Even a fresh bootstrap can't manage the domain on this host —
-            # degrade to a detached background process (issue #23387).
+            # Even a fresh bootstrap can't manage the domain on this host.
+            # Check whether the service is actually loaded before degrading —
+            # exit 5 can be transient on macOS 26 even when launchd CAN
+            # supervise the service.  If loaded, try `launchctl start`.
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise
+            if _launchd_service_is_loaded():
+                try:
+                    subprocess.run(
+                        ["launchctl", "start", f"{_launchd_domain()}/{label}"],
+                        check=True,
+                        timeout=30,
+                    )
+                    print("✓ Service started (via launchctl start)")
+                    return
+                except subprocess.CalledProcessError:
+                    pass  # start also failed — fall through to detached
             _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
             return
     print("✓ Service started")
@@ -3763,9 +3808,23 @@ def launchd_restart():
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
             # Not a "job unloaded" code. If the domain is fundamentally
-            # unmanageable (error 5), degrade to detached; the old process was
-            # already drained/terminated above. Otherwise re-raise.
+            # unmanageable (error 5), check whether the service is actually
+            # loaded first — exit 5 can be a transient kickstart error on
+            # macOS 26 even when launchd CAN supervise the service.  If
+            # loaded, try `launchctl start` (simpler, less error-prone)
+            # before degrading to a detached process.
             if _launchctl_domain_unsupported(e.returncode):
+                if _launchd_service_is_loaded():
+                    try:
+                        subprocess.run(
+                            ["launchctl", "start", target],
+                            check=True,
+                            timeout=30,
+                        )
+                        print("✓ Service restarted (via launchctl start)")
+                        return
+                    except subprocess.CalledProcessError:
+                        pass  # start also failed — fall through to detached
                 _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
                 return
             raise
