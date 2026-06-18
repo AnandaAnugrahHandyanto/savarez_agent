@@ -158,6 +158,7 @@ export const en: Translations = {
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
     openSettings: 'Open settings',
+    openBrowserFeedback: 'Open Web Browser',
     openKeybinds: 'Keyboard shortcuts'
   },
 
@@ -1658,9 +1659,9 @@ export const en: Translations = {
     binaryTitle: 'This looks like a binary file',
     binaryBody: label => `Previewing ${label} may show unreadable text.`,
     largeTitle: 'This file is large',
-    largeBody: (label, size) => `${label} is ${size}. Hermes will only show the first 512 KB.`,
+    largeBody: (label, size) => `${label} is ${size}. Hermes will load the full file for preview.`,
     previewAnyway: 'Preview anyway',
-    truncated: 'Showing first 512 KB.',
+    truncated: 'Showing full file.',
     noInlineTitle: 'No inline preview',
     noInlineBody: mimeType => `${mimeType || 'This file type'} can still be attached as context.`,
     console: {

@@ -1219,7 +1219,8 @@ def list_authenticated_providers(
       - name: str — display name
       - is_current: bool
       - is_user_defined: bool
-      - models: list[str] — curated model IDs (up to max_models)
+      - models: list[str] — curated model IDs (up to max_models; unlimited
+        when max_models is None)
       - total_models: int — total curated count
       - source: str — "built-in", "models.dev", "user-config"
 
@@ -1240,6 +1241,9 @@ def list_authenticated_providers(
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
         get_curated_nous_model_ids,
     )
+
+    def _limit_model_ids(model_ids: list[str]) -> list[str]:
+        return list(model_ids) if max_models is None else list(model_ids[:max_models])
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)

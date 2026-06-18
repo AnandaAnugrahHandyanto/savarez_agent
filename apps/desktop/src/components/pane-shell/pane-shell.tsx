@@ -64,6 +64,8 @@ interface CollectedPane {
   disabled: boolean
   forceCollapsed: boolean
   id: string
+  maxWidth?: string
+  minWidth?: string
   resizable: boolean
   side: PaneSide
   width: string
@@ -94,40 +96,60 @@ export const PANE_TOGGLE_REVEAL_EVENT = 'hermes:pane-toggle-reveal'
 const widthToCss = (value: WidthValue | undefined, fallback: string) =>
   value === undefined ? fallback : typeof value === 'number' ? `${value}px` : value
 
+function clampedTrack(width: string, minWidth?: string, maxWidth?: string) {
+  if (minWidth && maxWidth) {
+    return `clamp(${minWidth},${width},${maxWidth})`
+  }
+
+  if (minWidth) {
+    return `max(${minWidth},${width})`
+  }
+
+  if (maxWidth) {
+    return `min(${width},${maxWidth})`
+  }
+
+  return width
+}
+
 const remPx = () =>
   typeof window === 'undefined'
     ? 16
     : Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16
 
-const viewportPx = () => (typeof window === 'undefined' ? 1280 : window.innerWidth)
-
-// Resolves PaneProps.minWidth/maxWidth (number | "Npx" | "Nrem" | "Nvw" | "N%") to
-// pixels for drag clamping. Viewport units resolve against the current window width.
+// Resolves PaneProps.minWidth/maxWidth (number | "Npx" | "Nrem" | "Nvw" | "Nvh" | "N%")
+// to pixels for drag clamping.
 function widthToPx(value: WidthValue | undefined) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : undefined
   }
 
-  const match = value?.trim().match(/^(-?\d*\.?\d+)(px|rem|vw|%)?$/)
+  const match = value?.trim().match(/^(-?\d*\.?\d+)(px|rem|vw|vh|%)?$/)
 
   if (!match) {
     return undefined
   }
 
-  const n = Number.parseFloat(match[1])
+  const amount = Number.parseFloat(match[1])
+  const unit = match[2] ?? 'px'
 
-  switch (match[2]) {
-    case 'rem':
-      return n * remPx()
-
-    case 'vw':
-
-    case '%':
-      return (n * viewportPx()) / 100
-
-    default:
-      return n
+  if (unit === 'rem') {
+    return amount * remPx()
   }
+
+  if (unit === 'vw') {
+    return typeof window === 'undefined' ? undefined : window.innerWidth * (amount / 100)
+  }
+
+  if (unit === 'vh') {
+    return typeof window === 'undefined' ? undefined : window.innerHeight * (amount / 100)
+  }
+
+  if (unit === '%') {
+    return typeof window === 'undefined' ? undefined : window.innerWidth * (amount / 100)
+  }
+
+  return amount
 }
 
 function isRole(child: unknown, role: 'pane' | 'main'): child is ReactElement {
@@ -157,6 +179,8 @@ function collectPanes(children: ReactNode) {
       disabled: props.disabled ?? false,
       forceCollapsed: props.forceCollapsed ?? false,
       id: props.id,
+      maxWidth: props.maxWidth === undefined ? undefined : widthToCss(props.maxWidth, DEFAULT_WIDTH),
+      minWidth: props.minWidth === undefined ? undefined : widthToCss(props.minWidth, DEFAULT_WIDTH),
       resizable: props.resizable ?? false,
       side: props.side,
       width: widthToCss(props.width, DEFAULT_WIDTH)
@@ -178,7 +202,9 @@ function trackForPane(pane: CollectedPane, states: Record<string, { open: boolea
 
   const override = pane.resizable ? states[pane.id]?.widthOverride : undefined
 
-  return { open: true, track: override !== undefined ? `${override}px` : pane.width }
+  const width = override !== undefined ? `${override}px` : pane.width
+
+  return { open: true, track: clampedTrack(width, pane.minWidth, pane.maxWidth) }
 }
 
 export function PaneShell({ children, className, style }: PaneShellProps) {
@@ -203,7 +229,7 @@ export function PaneShell({ children, className, style }: PaneShellProps) {
       column++
     }
 
-    tracks.push('minmax(0,1fr)')
+    tracks.push('minmax(var(--chat-min-width,0px),1fr)')
     const mainColumn = column++
 
     for (const pane of right) {

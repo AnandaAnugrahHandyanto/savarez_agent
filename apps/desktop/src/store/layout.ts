@@ -11,12 +11,14 @@ import {
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
 
-export const SIDEBAR_DEFAULT_WIDTH = 237
-export const SIDEBAR_MAX_WIDTH = 360
+export const CHAT_MIN_WIDTH = '20rem'
+export const SIDEBAR_MIN_WIDTH = '20rem'
+export const SIDEBAR_DEFAULT_WIDTH = 320
+export const SIDEBAR_MAX_WIDTH = 640
 // Open at the same width as the sessions sidebar so the two rails match.
-export const FILE_BROWSER_DEFAULT_WIDTH = `${SIDEBAR_DEFAULT_WIDTH}px`
-export const FILE_BROWSER_MIN_WIDTH = '14rem'
-export const FILE_BROWSER_MAX_WIDTH = '20rem'
+export const FILE_BROWSER_MIN_WIDTH = '20rem'
+export const FILE_BROWSER_DEFAULT_WIDTH = FILE_BROWSER_MIN_WIDTH
+export const FILE_BROWSER_MAX_WIDTH = '95vw'
 
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
@@ -25,13 +27,13 @@ const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorksp
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
-const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
+const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrderManual'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
-const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
+export const PREVIEW_PANE_ID = 'preview'
 export const RIGHT_RAIL_PREVIEW_TAB_ID = 'preview'
 
 export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}`
@@ -61,9 +63,7 @@ export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_K
 export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
 export const $sidebarSessionOrderManual = atom(storedBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false))
 export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
-// Order of the top-level repo "parent" groups in the worktree tree (worktrees
-// within a parent reuse $sidebarWorkspaceOrderIds).
-export const $sidebarWorkspaceParentOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY))
+export const $sidebarWorkspaceParentOrderIds = $sidebarWorkspaceOrderIds
 export const $sidebarPinsOpen = atom(true)
 // Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
 // true the whole time it's a floating overlay (not just while shown) so the
@@ -92,9 +92,6 @@ $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_O
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderManual.subscribe(manual => persistBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, manual))
 $sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
-$sidebarWorkspaceParentOrderIds.subscribe(ids =>
-  persistStringArray(SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY, [...ids])
-)
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
 
@@ -186,9 +183,7 @@ export function setSidebarWorkspaceOrderIds(ids: string[]) {
 }
 
 export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
-  if (!arraysEqual($sidebarWorkspaceParentOrderIds.get(), ids)) {
-    $sidebarWorkspaceParentOrderIds.set(ids)
-  }
+  setSidebarWorkspaceOrderIds(ids)
 }
 
 export function setSidebarResizing(resizing: boolean) {
@@ -213,15 +208,22 @@ export function unpinSession(sessionId: string) {
   }
 }
 
-// Replace the whole pinned order at once (drag-reorder hands back the new order
-// rather than a single move). Keep only ids that are actually pinned so a stale
-// row can't smuggle an unpinned id into the store.
 export function setPinnedSessionOrder(ids: string[]) {
-  const prev = $pinnedSessionIds.get()
-  const pinned = new Set(prev)
-  const next = ids.filter(id => pinned.has(id))
+  if (!arraysEqual($pinnedSessionIds.get(), ids)) {
+    $pinnedSessionIds.set(ids)
+  }
+}
 
-  if (next.length === prev.length && !arraysEqual(prev, next)) {
+export function reorderPinnedSession(sessionId: string, targetIndex: number) {
+  const prev = $pinnedSessionIds.get()
+
+  if (!prev.includes(sessionId)) {
+    return
+  }
+
+  const next = insertUniqueId(prev, sessionId, targetIndex)
+
+  if (!arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
   }
 }

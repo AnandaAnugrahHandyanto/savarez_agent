@@ -3,8 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
 
-// Keep profile.ts's side-effecting imports inert: the gateway socket layer and
-// the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 
@@ -14,8 +12,30 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
+vi.mock('@/lib/storage', () => ({
+  arraysEqual: (a: unknown[], b: unknown[]) => a.length === b.length && a.every((value, index) => value === b[index]),
+  persistBoolean: vi.fn(),
+  persistString: vi.fn(),
+  persistStringArray: vi.fn(),
+  persistStringRecord: vi.fn(),
+  storedBoolean: vi.fn(() => false),
+  storedString: vi.fn(() => null),
+  storedStringArray: vi.fn(() => []),
+  storedStringRecord: vi.fn(() => ({}))
+}))
 
-const { $activeGatewayProfile, ensureGatewayProfile } = await import('./profile')
+const {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $profileOrder,
+  $profileScope,
+  $profiles,
+  $selectedProfileScope,
+  $showAllProfiles,
+  cycleProfile,
+  ensureGatewayProfile,
+  selectProfile
+} = await import('./profile')
 const { $connection } = await import('./session')
 
 const remoteConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
@@ -30,7 +50,16 @@ beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
+  $profiles.set([
+    { name: 'default', path: '', is_default: true } as never,
+    { name: 'google_search_agent', path: '', is_default: false } as never,
+    { name: 'investment_agent', path: '', is_default: false } as never
+  ])
+  $profileOrder.set([])
   $activeGatewayProfile.set('default')
+  $selectedProfileScope.set('default')
+  $showAllProfiles.set(false)
+  $newChatProfile.set(null)
   $connection.set(localConn())
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
 })
@@ -40,12 +69,34 @@ afterEach(() => {
   $connection.set(null)
 })
 
+describe('profile sidebar scope', () => {
+  it('shows the selected profile history immediately without waiting for gateway connection', async () => {
+    selectProfile('google_search_agent')
+
+    expect($profileScope.get()).toBe('google_search_agent')
+    expect($newChatProfile.get()).toBe('google_search_agent')
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('google_search_agent')
+  })
+
+  it('does not let live gateway changes overwrite the browsed sidebar profile', async () => {
+    selectProfile('investment_agent')
+    $activeGatewayProfile.set('default')
+
+    expect($profileScope.get()).toBe('investment_agent')
+  })
+
+  it('cycles from the selected sidebar profile, not the live gateway profile', async () => {
+    $activeGatewayProfile.set('default')
+    $selectedProfileScope.set('google_search_agent')
+
+    cycleProfile(1)
+
+    expect($profileScope.get()).toBe('investment_agent')
+  })
+})
+
 describe('ensureGatewayProfile → $connection sync (#46651)', () => {
   it('refreshes $connection to the remote descriptor when activating a remote pool profile', async () => {
-    // Regression: the primary window backend is local, so $connection.mode is
-    // "local". Activating the remote profile must flip it to "remote" — without
-    // this, image attach uses path-based image.attach against the remote
-    // gateway ("image not found: C:\\…") instead of image.attach_bytes.
     getConnection.mockResolvedValue(remoteConn())
 
     await ensureGatewayProfile('vps-remote')
@@ -72,7 +123,6 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
 
     await ensureGatewayProfile('vps-remote')
 
-    // Best-effort: boot/reconnect resyncs later; we must not null it out here.
     expect($connection.get()?.mode).toBe('local')
   })
 

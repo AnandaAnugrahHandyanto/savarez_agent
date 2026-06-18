@@ -9517,6 +9517,8 @@ def _(rid, params: dict) -> dict:
             canonical_order=True,
             pricing=True,
             capabilities=True,
+            # Desktop/gateway model picker surfaces need the complete provider catalog.
+            max_models=None,
         )
         return _ok(rid, payload)
     except Exception as e:
@@ -9582,7 +9584,7 @@ def _(rid, params: dict) -> dict:
             current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
         payload = build_models_payload(
-            ctx, picker_hints=True, max_models=50,
+            ctx, picker_hints=True, max_models=None,
         )
         provider_data = next(
             (p for p in payload["providers"] if p["slug"] == slug), None

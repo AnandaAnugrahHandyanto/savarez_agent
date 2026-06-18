@@ -8,10 +8,12 @@ import { translateNow, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
   $rightRailActiveTabId,
+  PREVIEW_PANE_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
   selectRightRailTab
 } from '@/store/layout'
+import { setPaneOpen } from '@/store/panes'
 import {
   $filePreviewTabs,
   $previewReloadRequest,
@@ -23,16 +25,12 @@ import {
 
 import { PreviewPane } from './preview-pane'
 
-export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
-export const PREVIEW_RAIL_MAX_WIDTH = '38rem'
+export const PREVIEW_RAIL_MIN_WIDTH = '20rem'
+export const PREVIEW_RAIL_MAX_WIDTH = '95vw'
 
-const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
-
-// Track for <Pane id="preview">. Folds the intrinsic clamp with a min-floor
-// against --chat-min-width so the chat surface never gets squeezed below it.
-// Subtracts the project browser width so preview yields rather than crushing
-// the chat when both right-side panes are open.
-export const PREVIEW_RAIL_PANE_WIDTH = `min(${INTRINSIC}, max(0rem, calc(100vw - var(--pane-chat-sidebar-width) - var(--pane-file-browser-width, 0rem) - var(--chat-min-width))))`
+// Default track for <Pane id="preview">. Keep the first-open rail at its minimum;
+// user drag overrides are persisted by the pane store.
+export const PREVIEW_RAIL_PANE_WIDTH = PREVIEW_RAIL_MIN_WIDTH
 
 interface ChatPreviewRailProps {
   onRestartServer?: (url: string, context?: string) => Promise<string>
@@ -69,6 +67,11 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
 
+  const closePreviewPane = () => {
+    closeRightRail()
+    setPaneOpen(PREVIEW_PANE_ID, false)
+  }
+
   useEffect(() => {
     if (activeTab && activeTab.id !== activeTabId) {
       selectRightRailTab(activeTab.id)
@@ -76,13 +79,30 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   }, [activeTab, activeTabId])
 
   if (!activeTab) {
-    return null
+    return (
+      <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)">
+        <div className="group/rail-tabs flex h-(--titlebar-height) shrink-0 items-center justify-between border-b border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) pl-3">
+          <span className="text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{t.preview.tab}</span>
+          <button
+            aria-label={t.preview.closePane}
+            className="mr-1.5 grid size-6 shrink-0 place-items-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/rail-tabs:opacity-100 [-webkit-app-region:no-drag]"
+            onClick={closePreviewPane}
+            type="button"
+          >
+            <Codicon name="close" size="0.75rem" />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-xs text-(--ui-text-tertiary)">
+          Open a file or preview link to show it here.
+        </div>
+      </aside>
+    )
   }
 
   const isPreview = activeTab.id === RIGHT_RAIL_PREVIEW_TAB_ID
 
   return (
-    <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) text-(--ui-text-tertiary)">
+    <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)">
       <div className="group/rail-tabs flex h-(--titlebar-height) shrink-0 border-b border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background)">
         <div
           className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -150,7 +170,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
         <button
           aria-label={t.preview.closePane}
           className="mr-1.5 grid size-6 shrink-0 self-center place-items-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/rail-tabs:opacity-100 [-webkit-app-region:no-drag]"
-          onClick={closeRightRail}
+          onClick={closePreviewPane}
           type="button"
         >
           <Codicon name="close" size="0.75rem" />

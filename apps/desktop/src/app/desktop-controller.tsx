@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
@@ -30,6 +30,7 @@ import {
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
+  PREVIEW_PANE_ID,
   pinSession,
   setSidebarOverlayMounted,
   SIDEBAR_DEFAULT_WIDTH,
@@ -86,7 +87,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
+import { BrowserFeedbackWindow } from './browser-feedback'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -98,6 +99,7 @@ import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
@@ -237,6 +239,18 @@ export function DesktopController() {
   } = useOverlayRouting()
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
+  const [browserFeedbackOpen, setBrowserFeedbackOpen] = useState(false)
+  const [browserFeedbackMinimized, setBrowserFeedbackMinimized] = useState(false)
+
+  const openBrowserFeedback = useCallback(() => {
+    setBrowserFeedbackOpen(true)
+    setBrowserFeedbackMinimized(false)
+  }, [])
+
+  const closeBrowserFeedback = useCallback(() => {
+    setBrowserFeedbackOpen(false)
+    setBrowserFeedbackMinimized(false)
+  }, [])
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
@@ -547,7 +561,7 @@ export function DesktopController() {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
+  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds, voiceTranslateToLanguage } = useHermesConfig({
     activeSessionIdRef,
     refreshProjectBranch
   })
@@ -831,7 +845,8 @@ export function DesktopController() {
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
     sttEnabled,
-    updateSessionState
+    updateSessionState,
+    voiceTranslateToLanguage
   })
 
   useGatewayBoot({
@@ -847,12 +862,15 @@ export function DesktopController() {
   })
 
   useEffect(() => {
+    void refreshSessions().catch(() => undefined)
+  }, [profileScope, refreshSessions])
+
+  useEffect(() => {
     if (gatewayState === 'open') {
       void refreshCurrentModel()
       void refreshActiveProfile()
-      void refreshSessions().catch(() => undefined)
     }
-  }, [gatewayState, refreshCurrentModel, refreshSessions])
+  }, [gatewayState, refreshActiveProfile, refreshCurrentModel])
 
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the
@@ -931,7 +949,14 @@ export function DesktopController() {
         setCronFocusJobId(jobId)
         navigate(CRON_ROUTE)
       }}
-      onNavigate={selectSidebarItem}
+      onNavigate={item => {
+        if (item.action === 'browser') {
+          openBrowserFeedback()
+          return
+        }
+
+        selectSidebarItem(item)
+      }}
       onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onTriggerCronJob={jobId => {
@@ -971,6 +996,15 @@ export function DesktopController() {
       <BootFailureOverlay />
       <CommandPalette />
       <SessionSwitcher />
+      {browserFeedbackOpen && (
+        <BrowserFeedbackWindow
+          minimized={browserFeedbackMinimized}
+          onClose={closeBrowserFeedback}
+          onInsertPrompt={composer.addTextToDraft}
+          onMinimizedChange={setBrowserFeedbackMinimized}
+          open={browserFeedbackOpen}
+        />
+      )}
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -1069,8 +1103,8 @@ export function DesktopController() {
 
   const previewPane = (
     <Pane
-      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
-      id="preview"
+      disabled={!chatOpen}
+      id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
       minWidth={PREVIEW_RAIL_MIN_WIDTH}
@@ -1127,10 +1161,12 @@ export function DesktopController() {
 
   return (
     <AppShell
+      browserFeedbackMinimized={browserFeedbackMinimized}
       leftStatusbarItems={leftStatusbarItems}
       leftTitlebarTools={titlebarToolGroups.flat.left}
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
+      onOpenBrowserFeedback={openBrowserFeedback}
       overlays={overlays}
       previewPaneOpen={chatOpen && Boolean(previewTarget || filePreviewTarget)}
       statusbarItems={statusbarItems}

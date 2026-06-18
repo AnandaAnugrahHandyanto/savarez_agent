@@ -211,6 +211,8 @@ function friendlyRemoteAttachError(err: unknown, label: string): Error {
 
 type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
+const SUBMIT_STREAM_START_WATCHDOG_MS = 30_000
+
 /**
  * Stage one file/image attachment into the session workspace and return the
  * attachment rewritten with the gateway-side ref. Images upload their bytes in
@@ -322,6 +324,30 @@ interface PromptActionsOptions {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+  voiceTranslateToLanguage?: string
+}
+
+function voiceTranslationPrompt(transcript: string, targetLanguage?: string): string {
+  const target = targetLanguage?.trim().toLowerCase()
+
+  if (!target) {
+    return transcript
+  }
+
+  const languageName = target === 'bg' || target === 'bg-bg' || target === 'bulgarian' ? 'български' : targetLanguage
+
+  return [
+    `Действай като професионален преводач и редактор. Преведи следния разпознат от микрофон текст на ${languageName}.`,
+    'Изисквания:',
+    '- Отговори само с крайния превод — без обяснения, увод или кавички.',
+    '- Българският трябва да звучи естествено, граматически правилно и разговорно, не буквално машинно.',
+    '- Запази смисъла, тона, обръщенията, числата, имената и техническите термини.',
+    '- Коригирай очевидни грешки от speech-to-text разпознаването, ако контекстът ги прави ясни.',
+    '- Не използвай руски, освен ако в оригинала има руска дума/име като цитат.',
+    '',
+    'Текст за превод:',
+    transcript
+  ].join('\n')
 }
 
 interface SubmitTextOptions {
@@ -392,7 +418,8 @@ export function usePromptActions({
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
   sttEnabled,
-  updateSessionState
+  updateSessionState,
+  voiceTranslateToLanguage
 }: PromptActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
@@ -628,7 +655,8 @@ export function usePromptActions({
           sid,
           state => ({
             ...state,
-            messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
+            messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message)),
+            interrupted: false
           }),
           selectedStoredSessionIdRef.current
         )
@@ -730,6 +758,58 @@ export function usePromptActions({
         if (submitErr !== null) {
           throw submitErr
         }
+
+        const submittedSessionId = sessionId
+        window.setTimeout(() => {
+          updateSessionState(
+            submittedSessionId,
+            state => {
+              // Only unlock the "nothing happened" failure mode: prompt.submit
+              // returned OK, but no message.start/message.delta/tool event ever
+              // moved the session out of the optimistic awaiting state. Legitimate
+              // long-running turns have turnStartedAt (set by message.start), a
+              // streamId, or already saw assistant/tool payload.
+              if (
+                !state.busy ||
+                !state.awaitingResponse ||
+                state.sawAssistantPayload ||
+                state.streamId ||
+                state.turnStartedAt
+              ) {
+                return state
+              }
+
+              if (activeSessionIdRef.current === submittedSessionId) {
+                setMutableRef(busyRef, false)
+                setBusy(false)
+                setAwaitingResponse(false)
+              }
+
+              return {
+                ...state,
+                messages: [
+                  ...state.messages,
+                  {
+                    id: `assistant-no-stream-start-${Date.now()}`,
+                    role: 'assistant' as const,
+                    parts: [],
+                    error:
+                      'Hermes accepted the prompt but did not start a response stream. The chat was unlocked; please retry the message.',
+                    pending: false,
+                    branchGroupId: state.pendingBranchGroup ?? undefined
+                  }
+                ],
+                awaitingResponse: false,
+                busy: false,
+                pendingBranchGroup: null,
+                sawAssistantPayload: true,
+                streamId: null,
+                turnStartedAt: null
+              }
+            },
+            selectedStoredSessionIdRef.current
+          )
+        }, SUBMIT_STREAM_START_WATCHDOG_MS)
 
         if (usingComposerAttachments) {
           clearComposerAttachments()
@@ -1352,9 +1432,9 @@ export function usePromptActions({
       const dataUrl = await blobToDataUrl(audio)
       const result = await transcribeAudio(dataUrl, audio.type)
 
-      return result.transcript
+      return voiceTranslationPrompt(result.transcript, voiceTranslateToLanguage)
     },
-    [copy.sttDisabled, sttEnabled]
+    [copy.sttDisabled, sttEnabled, voiceTranslateToLanguage]
   )
 
   const cancelRun = useCallback(async () => {
@@ -1365,6 +1445,8 @@ export function usePromptActions({
     }
 
     setAwaitingResponse(false)
+    setMutableRef(busyRef, false)
+    setBusy(false)
 
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages

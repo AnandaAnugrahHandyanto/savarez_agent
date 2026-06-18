@@ -875,6 +875,7 @@ const UserMessage: FC<{
   const { t } = useI18n()
   const copy = t.assistant.thread
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
+  const messageRuntime = useMessageRuntime()
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -984,6 +985,25 @@ const UserMessage: FC<{
     </div>
   )
 
+  const openEditComposer = useCallback(() => {
+    try {
+      messageRuntime.composer.beginEdit()
+      notifyThreadEditOpen()
+      triggerHaptic('selection')
+    } catch (error) {
+      // assistant-ui throws when the same message's edit composer is already
+      // open. A rapid double-click or stale click during a render transition must
+      // not bubble an uncaught renderer error; it can abort later submit plumbing
+      // and leave the chat showing only the running timer.
+      if (error instanceof Error && /edit already in progress/i.test(error.message)) {
+        console.warn('[hermes] edit composer already open', error)
+        return
+      }
+
+      console.warn('[hermes] edit composer unavailable', error)
+    }
+  }, [messageRuntime])
+
   return (
     <MessagePrimitive.Root asChild>
       <StickyHumanMessageContainer
@@ -1002,19 +1022,18 @@ const UserMessage: FC<{
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
               {/* Always editable — clicking opens the edit composer even while a
-                  turn streams; sending the edit reverts (interrupt + rewind). */}
-              <ActionBarPrimitive.Edit asChild>
-                <button
-                  aria-label={copy.editMessage}
-                  className={bubbleClassName}
-                  onClick={() => triggerHaptic('selection')}
-                  onPointerDown={() => notifyThreadEditOpen()}
-                  title={copy.editMessage}
-                  type="button"
-                >
-                  {bubbleContent}
-                </button>
-              </ActionBarPrimitive.Edit>
+                  turn streams; sending the edit reverts (interrupt + rewind).
+                  Use a guarded runtime call instead of ActionBarPrimitive.Edit:
+                  the primitive throws on duplicate edit-open clicks. */}
+              <button
+                aria-label={copy.editMessage}
+                className={bubbleClassName}
+                onClick={openEditComposer}
+                title={copy.editMessage}
+                type="button"
+              >
+                {bubbleContent}
+              </button>
               {(showStop || showRestore) && (
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
                   {showStop ? (
@@ -1216,6 +1235,36 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     setFocusRequestId(id => id + 1)
   }, [])
 
+  const safeSetEditComposerText = useCallback(
+    (text: string) => {
+      try {
+        aui.composer().setText(text)
+      } catch (error) {
+        console.warn('[hermes] edit composer text mirror unavailable', error)
+      }
+    },
+    [aui]
+  )
+
+  const safeCancelEditComposer = useCallback(() => {
+    try {
+      aui.composer().cancel()
+    } catch (error) {
+      console.warn('[hermes] edit composer cancel unavailable', error)
+    }
+  }, [aui])
+
+  const safeSendEditComposer = useCallback(() => {
+    try {
+      aui.composer().send()
+      return true
+    } catch (error) {
+      console.warn('[hermes] edit composer send unavailable', error)
+      setSubmitting(false)
+      return false
+    }
+  }, [aui])
+
   const appendExternalText = useCallback(
     (text: string, mode: ComposerInsertMode) => {
       const value = text.trim()
@@ -1229,7 +1278,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       const next = `${base}${sep}${value}`
 
       draftRef.current = next
-      aui.composer().setText(next)
+      safeSetEditComposerText(next)
 
       const editor = editorRef.current
 
@@ -1240,7 +1289,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       setFocusRequestId(id => id + 1)
     },
-    [aui]
+    [safeSetEditComposerText]
   )
 
   useEffect(() => {
@@ -1289,12 +1338,12 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (nextDraft !== draftRef.current) {
         draftRef.current = nextDraft
-        aui.composer().setText(nextDraft)
+        safeSetEditComposerText(nextDraft)
       }
 
       return nextDraft
     },
-    [aui]
+    [safeSetEditComposerText]
   )
 
   const refreshTrigger = useCallback(() => {
@@ -1366,7 +1415,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       const finish = () => {
         draftRef.current = composerPlainText(editor)
-        aui.composer().setText(draftRef.current)
+        safeSetEditComposerText(draftRef.current)
         requestEditFocus()
         starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
       }
@@ -1426,7 +1475,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       }
 
       draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+      safeSetEditComposerText(nextDraft)
       requestEditFocus()
 
       return true
@@ -1595,7 +1644,9 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
 
     setSubmitting(true)
-    aui.composer().send()
+    if (!safeSendEditComposer()) {
+      return
+    }
   }
 
   const handleEditBlur = useCallback(
@@ -1615,7 +1666,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
         }
 
         closeTrigger()
-        aui.composer().cancel()
+        safeCancelEditComposer()
       }, 80)
     },
     [aui, closeTrigger, submitting]
@@ -1662,7 +1713,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
     if (event.key === 'Escape') {
       event.preventDefault()
-      aui.composer().cancel()
+      safeCancelEditComposer()
 
       return
     }

@@ -144,6 +144,9 @@ def build_models_payload(
       selecting Portal-recommended Nous models and applying tier gating. Keep
       this false for UI picker opens; explicit auth/model flows can opt in
       when they need freshly-purchased credits to show up immediately.
+    - ``max_models``: maximum model IDs per provider. ``None`` means no
+      truncation for Desktop/GUI catalogs; keep an integer for compact CLI and
+      slash-command contexts.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 

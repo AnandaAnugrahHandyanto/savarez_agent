@@ -9,8 +9,9 @@ import { useI18n } from '@/i18n'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
-import { $panesFlipped } from '@/store/layout'
+import { $panesFlipped, PREVIEW_PANE_ID } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { setPaneOpen } from '@/store/panes'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 
@@ -46,18 +47,19 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     setNodeOpen
   } = useProjectTree(currentCwd)
 
+  const displayCwd = effectiveCwd || currentCwd
   const cwdName = hasCwd
-    ? (effectiveCwd
+    ? (displayCwd
         .split(/[\\/]+/)
         .filter(Boolean)
-        .pop() ?? effectiveCwd)
+        .pop() ?? displayCwd)
     : r.noFolderSelected
 
   const canCollapse = Object.values(openState).some(Boolean)
 
   const chooseFolder = async () => {
     const selected = await selectDesktopPaths({
-      defaultPath: hasCwd ? effectiveCwd : undefined,
+      defaultPath: hasCwd ? displayCwd : undefined,
       directories: true,
       multiple: false,
       title: r.changeCwdTitle
@@ -77,6 +79,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
       }
 
       setCurrentSessionPreviewTarget(preview, 'file-browser', path)
+      setPaneOpen(PREVIEW_PANE_ID, true)
     } catch (error) {
       notifyError(error, r.previewUnavailable)
     }
@@ -97,7 +100,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
       <FilesystemTab
         canCollapse={canCollapse}
         collapseNonce={collapseNonce}
-        cwd={effectiveCwd}
+        cwd={displayCwd}
         cwdName={cwdName}
         data={data}
         error={rootError}
