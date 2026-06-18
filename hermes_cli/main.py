@@ -1380,9 +1380,9 @@ def _workspace_root(dir: Path) -> Path:
     In a workspace checkout the single ``package-lock.json`` and hoisted
     ``node_modules/`` live at the workspace root (the parent of the
     sub-package directory).  Heuristic: if *dir* has a ``package.json``
-    but **no** ``package-lock.json``, and its **parent** has a
-    ``package-lock.json``, the parent is the workspace root.
-    Otherwise *dir* itself is the root (standalone project or
+    and its **parent** has a ``package-lock.json`` and a ``package.json``
+    whose ``workspaces`` list includes *dir*, the parent is the workspace
+    root.  Otherwise *dir* itself is the root (standalone project or
     prebuilt-bundle layout).
 
     Used by ``_tui_need_npm_install``, ``_make_tui_argv``, and
@@ -1392,12 +1392,27 @@ def _workspace_root(dir: Path) -> Path:
     sub-package lockfile (e.g. running ``npm install`` in the wrong
     directory).
     """
-    if (
-        (dir / "package.json").is_file()
-        and not (dir / "package-lock.json").is_file()
-        and (dir.parent / "package-lock.json").is_file()
-    ):
-        return dir.parent
+    if (dir / "package.json").is_file() and (dir.parent / "package-lock.json").is_file():
+        # The parent has a lockfile.  Check whether it also declares
+        # workspaces that include *dir* — if so, the parent is the true
+        # workspace root even when the child has its own stale
+        # ``package-lock.json`` (see #42973).
+        parent_pkg = dir.parent / "package.json"
+        if parent_pkg.is_file():
+            try:
+                with open(parent_pkg) as _f:
+                    workspaces = json.load(_f).get("workspaces", [])
+                dir_name = dir.name
+                # Match both exact name ("ui-tui") and glob-style ("ui-tui/packages/*")
+                from fnmatch import fnmatch
+                for ws in workspaces:
+                    if fnmatch(dir_name, ws):
+                        return dir.parent
+            except Exception:
+                pass
+        # Legacy heuristic: no child lockfile → parent is root
+        if not (dir / "package-lock.json").is_file():
+            return dir.parent
     return dir
 
 
