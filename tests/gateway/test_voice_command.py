@@ -188,6 +188,8 @@ class TestHandleVoiceCommand:
         from gateway.config import Platform
         runner._voice_mode = {
             "telegram:off_chat": "off",
+            "telegram:narration_chat": "narration",
+            "telegram:topic_chat:1495": "narration",
             "telegram:on_chat": "voice_only",
             "telegram:tts_chat": "all",
             "slack:999": "voice_only",  # wrong platform, must be ignored
@@ -201,7 +203,7 @@ class TestHandleVoiceCommand:
 
         runner._sync_voice_mode_state_to_adapter(adapter)
 
-        assert adapter._auto_tts_disabled_chats == {"off_chat"}
+        assert adapter._auto_tts_disabled_chats == {"off_chat", "narration_chat", "topic_chat:1495"}
         assert adapter._auto_tts_enabled_chats == {"on_chat", "tts_chat"}
 
     def test_sync_pushes_config_default_onto_adapter(self, runner, monkeypatch):
@@ -223,6 +225,77 @@ class TestHandleVoiceCommand:
         runner._sync_voice_mode_state_to_adapter(adapter)
 
         assert adapter._auto_tts_default is True
+
+    def _auto_tts_adapter(self, *, default=True):
+        from gateway.config import Platform
+        return SimpleNamespace(
+            _auto_tts_default=default,
+            _auto_tts_disabled_chats=set(),
+            _auto_tts_enabled_chats=set(),
+            platform=Platform.TELEGRAM,
+        )
+
+    def _should_auto_tts(self, adapter, chat_id, source=None):
+        from gateway.platforms.base import BasePlatformAdapter
+        return BasePlatformAdapter._should_auto_tts_for_chat(adapter, chat_id, source)
+
+    @pytest.mark.asyncio
+    async def test_voice_narrate_topic_updates_live_adapter_auto_tts_suppression(self, runner):
+        """Command-time topic narration must suppress base auto-TTS immediately."""
+        from gateway.config import Platform
+
+        event = _make_event("/voice narrate")
+        event.source.platform = Platform.TELEGRAM
+        event.source.thread_id = "1495"
+        adapter = self._auto_tts_adapter(default=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "topic" in result.lower()
+        assert runner._voice_mode["telegram:123:1495"] == "narration"
+        assert adapter._auto_tts_disabled_chats == {"123:1495"}
+        assert adapter._auto_tts_enabled_chats == set()
+        assert self._should_auto_tts(adapter, "123", event.source) is False
+        assert runner._should_enqueue_narration(event, "speak this later", []) is True
+
+    @pytest.mark.asyncio
+    async def test_voice_off_topic_updates_live_adapter_auto_tts_suppression(self, runner):
+        """Command-time topic /voice off must suppress base auto-TTS immediately."""
+        from gateway.config import Platform
+
+        event = _make_event("/voice off")
+        event.source.platform = Platform.TELEGRAM
+        event.source.thread_id = "1495"
+        adapter = self._auto_tts_adapter(default=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        await runner._handle_voice_command(event)
+
+        assert runner._voice_mode["telegram:123:1495"] == "off"
+        assert adapter._auto_tts_disabled_chats == {"123:1495"}
+        assert adapter._auto_tts_enabled_chats == set()
+        assert self._should_auto_tts(adapter, "123", event.source) is False
+
+    @pytest.mark.asyncio
+    async def test_voice_narrate_chat_updates_live_adapter_auto_tts_suppression(self, runner):
+        """Command-time chat narration must suppress global voice.auto_tts immediately."""
+        from gateway.config import Platform
+
+        event = _make_event("/voice narrate chat")
+        event.source.platform = Platform.TELEGRAM
+        event.source.thread_id = "1495"
+        adapter = self._auto_tts_adapter(default=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "chat" in result.lower()
+        assert runner._voice_mode["telegram:123"] == "narration"
+        assert adapter._auto_tts_disabled_chats == {"123"}
+        assert adapter._auto_tts_enabled_chats == set()
+        assert self._should_auto_tts(adapter, "123", event.source) is False
+        assert runner._should_enqueue_narration(event, "speak this later", []) is True
 
     def test_restart_restores_voice_off_state(self, runner, tmp_path):
         from gateway.config import Platform
@@ -380,16 +453,35 @@ class TestAutoVoiceReply:
     def test_empty_response_skipped(self, runner):
         assert self._call(runner, "all", MessageType.TEXT, response="") is False
 
-    def test_dedup_skips_when_agent_called_tts(self, runner):
-        messages = [{
-            "role": "assistant",
-            "tool_calls": [{
-                "id": "call_1",
-                "type": "function",
-                "function": {"name": "text_to_speech", "arguments": "{}"},
-            }],
-        }]
+    def test_dedup_skips_when_agent_called_tts_this_turn(self, runner):
+        messages = [
+            {"role": "user", "content": "read this manually"},
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "text_to_speech", "arguments": "{}"},
+                }],
+            },
+        ]
         assert self._call(runner, "all", MessageType.TEXT, agent_messages=messages) is False
+
+    def test_old_tts_tool_call_does_not_suppress_new_turn(self, runner):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_old",
+                    "type": "function",
+                    "function": {"name": "text_to_speech", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_old", "content": "{}"},
+            {"role": "user", "content": "new normal text turn"},
+            {"role": "assistant", "content": "Normal reply."},
+        ]
+        assert self._call(runner, "all", MessageType.TEXT, agent_messages=messages) is True
 
     def test_no_dedup_for_other_tools(self, runner):
         messages = [{
@@ -2903,7 +2995,7 @@ class TestUDPKeepalive:
 # =====================================================================
 
 class TestShouldAutoTtsForChat:
-    """Three-layer gate: per-chat enable > per-chat disable > config default."""
+    """Voice-first auto-TTS gate, including topic overrides."""
 
     def _make_adapter(self, *, default: bool, enabled=(), disabled=()):
         """Build a bare adapter with only the attrs the gate reads."""
@@ -2937,7 +3029,7 @@ class TestShouldAutoTtsForChat:
         assert fn(adapter, "chat1") is False
 
     def test_enabled_wins_over_disabled(self):
-        """An explicit enable beats an explicit disable (enable takes priority)."""
+        """Preserve the historical chat-level priority for stale mixed state."""
         fn, adapter = self._make_adapter(
             default=False, enabled={"chat1"}, disabled={"chat1"}
         )
@@ -2948,3 +3040,24 @@ class TestShouldAutoTtsForChat:
         fn, adapter = self._make_adapter(default=False, enabled={"chat1"})
         assert fn(adapter, "chat1") is True
         assert fn(adapter, "chat2") is False
+
+    def test_topic_narration_suppresses_default_auto_tts_for_voice_input(self):
+        """Topic /voice narrate keeps base voice-first auto-TTS off even when global default is on."""
+        fn, adapter = self._make_adapter(default=True, disabled={"chat1:1495"})
+        source = SessionSource(platform=MagicMock(), chat_id="chat1", user_id="user1", thread_id="1495")
+
+        assert fn(adapter, "chat1", source) is False
+
+    def test_topic_narration_suppresses_chat_auto_tts_opt_in(self):
+        """A topic narration override wins over chat-level /voice on|tts."""
+        fn, adapter = self._make_adapter(default=False, enabled={"chat1"}, disabled={"chat1:1495"})
+        source = SessionSource(platform=MagicMock(), chat_id="chat1", user_id="user1", thread_id="1495")
+
+        assert fn(adapter, "chat1", source) is False
+
+    def test_topic_auto_tts_opt_in_overrides_chat_off(self):
+        """Topic /voice on|tts still wins over chat-level /voice off."""
+        fn, adapter = self._make_adapter(default=False, enabled={"chat1:1495"}, disabled={"chat1"})
+        source = SessionSource(platform=MagicMock(), chat_id="chat1", user_id="user1", thread_id="1495")
+
+        assert fn(adapter, "chat1", source) is True
