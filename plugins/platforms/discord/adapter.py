@@ -4363,6 +4363,29 @@ class DiscordAdapter(BasePlatformAdapter):
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
             return thread
         except Exception as direct_error:
+            # If another bot/client won the race and already created the thread
+            # from this starter message, Discord rejects a second
+            # message.create_thread() call.  Reuse the existing thread instead
+            # of posting a new seed message, which would create a duplicate
+            # top-level post + duplicate thread.
+            existing_thread = getattr(message, "thread", None)
+            if existing_thread is not None:
+                return existing_thread
+            if self._client is not None:
+                try:
+                    existing_thread = self._client.get_channel(int(message.id))
+                    if existing_thread is None:
+                        existing_thread = await self._client.fetch_channel(int(message.id))
+                    if existing_thread is not None:
+                        return existing_thread
+                except Exception:
+                    logger.debug(
+                        "[%s] Could not resolve existing Discord thread for starter message %s",
+                        self.name,
+                        getattr(message, "id", "unknown"),
+                        exc_info=True,
+                    )
+
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
             reason = f"Auto-threaded from mention by {display_name}"
             try:
