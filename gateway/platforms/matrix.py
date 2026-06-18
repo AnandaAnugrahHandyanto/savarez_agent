@@ -3754,23 +3754,41 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Apply Matrix reply/thread relation metadata to an outbound payload."""
-        thread_id = str((metadata or {}).get("thread_id") or "")
+        """Apply Matrix reply/thread relation metadata to an outbound payload.
+
+        ``is_falling_back`` is only true when ``m.in_reply_to`` is deliberately
+        being used as a backwards-compatibility fallback chain for clients
+        without thread support. Genuine rich replies inside a thread use false,
+        and plain thread sends without an ``m.in_reply_to`` relation omit the
+        flag.
+        """
+        metadata = metadata or {}
+        thread_id = str(metadata.get("thread_id") or "")
+        fallback_to = (
+            metadata.get("matrix_thread_fallback_event_id")
+            or metadata.get("thread_fallback_event_id")
+        )
+
+        if not thread_id:
+            if reply_to:
+                msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
+            return
+
+        relates_to = msg_content.get("m.relates_to", {})
+        relates_to["rel_type"] = "m.thread"
+        relates_to["event_id"] = thread_id
+
         if reply_to:
-            msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
-        if thread_id:
-            relates_to = msg_content.get("m.relates_to", {})
-            relates_to["rel_type"] = "m.thread"
-            relates_to["event_id"] = thread_id
+            relates_to["m.in_reply_to"] = {"event_id": reply_to}
+            relates_to["is_falling_back"] = False
+        elif fallback_to:
+            relates_to["m.in_reply_to"] = {"event_id": fallback_to}
             relates_to["is_falling_back"] = True
-            # Matrix clients that do not render threads still use reply
-            # fallback. If no explicit reply target is available, fall back
-            # to the thread root.
-            relates_to.setdefault(
-                "m.in_reply_to",
-                {"event_id": reply_to or thread_id},
-            )
-            msg_content["m.relates_to"] = relates_to
+        else:
+            relates_to.pop("m.in_reply_to", None)
+            relates_to.pop("is_falling_back", None)
+
+        msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:
         """Return unique Matrix user IDs mentioned in outbound text."""
