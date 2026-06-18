@@ -1,0 +1,100 @@
+# XMemo Memory Provider
+
+User-owned cloud memory for AI agents. XMemo provides orchestrated recall,
+semantic search, durable fact storage, working state, reminders, and session
+snapshots across sessions and tools.
+
+## Requirements
+
+- Hermes already depends on `httpx`.
+- An XMemo account at [xmemo.dev](https://xmemo.dev).
+- Authentication via **API key** or **browser device-login flow**.
+
+## Install
+
+XMemo is bundled with Hermes. To activate it:
+
+```bash
+hermes memory setup xmemo
+```
+
+This writes:
+
+- `config.yaml` → `memory.provider = xmemo`
+- `$HERMES_HOME/.env` → `XMEMO_KEY`
+- `$HERMES_HOME/xmemo.json` → non-secret provider settings
+
+The API key is never written to `xmemo.json`. Do not paste tokens into shell
+history, logs, or git-tracked files.
+
+### Authentication
+
+`hermes memory setup xmemo` offers two ways to authenticate:
+
+1. **API key** — create a scoped API key in the XMemo Memory Console:
+   [xmemo.dev](https://xmemo.dev) → **API Keys** → **Create API key**.
+   Paste the key shown in the one-time secret dialog. The token is validated
+   immediately against the authenticated `/v1/auth/token/validate` endpoint.
+2. **Device login** — the plugin shows a URL and a user code. Open the URL in
+   your browser, approve the request, and the CLI polls XMemo for the access
+   token. No long-lived token needs to be copied by hand.
+
+If your XMemo account has not completed onboarding, setup will tell you to
+finish setup in the browser first (HTTP 409 `setup_required`).
+
+## Config
+
+Config file: `$HERMES_HOME/xmemo.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `base_url` | `https://xmemo.dev` | XMemo service URL |
+| `agent_id` | `hermes` | Agent family identifier |
+| `agent_instance_id` | auto-generated | Stable install identifier (random UUID) |
+| `bucket` | `work` | Storage namespace |
+| `scope` | `hermes/default` | Project/session scope |
+| `team_id` | `""` | Optional team ID for team-shared memories |
+| `timeout_seconds` | `5.0` | REST request timeout |
+| `prefetch_max_items` | `5` | Max context items per recall |
+| `prefetch_max_tokens` | `900` | Max context tokens per recall |
+| `enable_workflow_tools` | `false` | Expose reminder/event tools |
+| `enable_destructive_tools` | `false` | Expose `xmemo_forget` |
+| `capture_timeline` | `false` | Record high-signal turns to timeline |
+
+## Default tools
+
+These tools are always available:
+
+| Tool | Description |
+|------|-------------|
+| `xmemo_recall_context` | Build a bounded, ranked context pack |
+| `xmemo_search` | Semantic search over XMemo memories |
+| `xmemo_remember` | Save a durable fact |
+| `xmemo_update_state` | Save active task / next action / blocker with TTL |
+
+## Optional tools
+
+Set `enable_workflow_tools: true` in `xmemo.json` to expose:
+
+| Tool | Description |
+|------|-------------|
+| `xmemo_record_event` | Append a timeline event or milestone |
+| `xmemo_create_reminder` | Create a TODO / action item |
+| `xmemo_list_reminders` | List open or completed reminders |
+| `xmemo_complete_reminder` | Mark a reminder as completed |
+
+Set `enable_destructive_tools: true` to expose:
+
+| Tool | Description |
+|------|-------------|
+| `xmemo_forget` | Delete a memory by exact id |
+
+## Privacy and lifecycle notes
+
+- `xmemo_forget` requires an exact memory id and is disabled by default.
+- Automatic timeline writes are disabled by default. When `capture_timeline` is
+  `true`, only high-signal turns (decisions, preferences, blockers, etc.) are
+  recorded.
+- Hermes built-in `memory` tool writes are mirrored to XMemo `remember`.
+- Prefetch cache is isolated per session, so concurrent gateway sessions cannot
+  cross-contaminate recall context.
