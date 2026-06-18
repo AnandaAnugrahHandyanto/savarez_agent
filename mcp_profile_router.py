@@ -216,6 +216,16 @@ class TerminalSubprocessPlan:
 
 
 @dataclass(frozen=True)
+class TerminalOutputStreamShape:
+    """Bounded terminal output stream prepared for future MCP responses."""
+
+    text: str
+    truncated: bool
+    original_chars: int
+    returned_chars: int
+
+
+@dataclass(frozen=True)
 class ProfileRoutePolicy:
     """Deny-by-default policy for one fully-qualified profile ref."""
 
@@ -2342,6 +2352,109 @@ def _prepare_terminal_subprocess_plan(
         timeout_seconds=timeout_seconds,
         max_output_chars=max_output_chars,
     )
+
+
+def _coerce_terminal_output_stream(value: str | bytes, stream_name: str) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    raise ProfileRouterError(
+        "invalid_terminal_result",
+        f"{stream_name} must be text or bytes for terminal result shaping",
+    )
+
+
+def _shape_terminal_output_stream(
+    value: str | bytes,
+    *,
+    stream_name: str,
+    budget_chars: int,
+) -> TerminalOutputStreamShape:
+    text = _coerce_terminal_output_stream(value, stream_name)
+    budget = max(budget_chars, 0)
+    returned = text[:budget]
+    return TerminalOutputStreamShape(
+        text=returned,
+        truncated=len(text) > len(returned),
+        original_chars=len(text),
+        returned_chars=len(returned),
+    )
+
+
+def _terminal_result_status(returncode: int | None, *, timed_out: bool) -> str:
+    if timed_out:
+        return "timeout"
+    if not isinstance(returncode, int):
+        raise ProfileRouterError(
+            "invalid_terminal_result",
+            "returncode must be an integer unless the terminal command timed out",
+        )
+    if returncode == 0:
+        return "success"
+    return "failed"
+
+
+def _shape_terminal_subprocess_result(
+    plan: TerminalSubprocessPlan,
+    *,
+    returncode: int | None,
+    stdout: str | bytes,
+    stderr: str | bytes,
+    timed_out: bool = False,
+) -> dict:
+    """Shape a future subprocess result without exposing roots, env, or argv.
+
+    This is Phase 6 scaffolding only. It defines the bounded output/status/audit
+    contract that a later no-shell executor must satisfy; it does not call
+    ``subprocess.run`` and current ``TerminalSubprocessPlan`` instances still
+    carry ``executes=False``.
+    """
+
+    max_output_chars = _bounded_terminal_int(
+        plan.max_output_chars,
+        "max_output_chars",
+        default=MAX_TERMINAL_OUTPUT_CHARS,
+        minimum=1,
+        maximum=MAX_TERMINAL_OUTPUT_CHARS,
+    )
+    stdout_shape = _shape_terminal_output_stream(
+        stdout,
+        stream_name="stdout",
+        budget_chars=max_output_chars,
+    )
+    stderr_shape = _shape_terminal_output_stream(
+        stderr,
+        stream_name="stderr",
+        budget_chars=max_output_chars - stdout_shape.returned_chars,
+    )
+    normalized_returncode = None if returncode is None else int(returncode)
+
+    return {
+        "status": _terminal_result_status(normalized_returncode, timed_out=timed_out),
+        "returncode": normalized_returncode,
+        "timed_out": bool(timed_out),
+        "stdout": asdict(stdout_shape),
+        "stderr": asdict(stderr_shape),
+        "output": {
+            "max_output_chars": max_output_chars,
+            "returned_chars": stdout_shape.returned_chars + stderr_shape.returned_chars,
+            "truncated": stdout_shape.truncated or stderr_shape.truncated,
+            "stdout_truncated": stdout_shape.truncated,
+            "stderr_truncated": stderr_shape.truncated,
+        },
+        "working_directory": plan.public_cwd,
+        "audit": {
+            "tool": "terminal_run",
+            "llm_calls": 0,
+            "root_exposed": False,
+            "uses_shell": plan.uses_shell,
+            "executes": plan.executes,
+            "argv_redacted": True,
+            "env_values_exposed": False,
+            "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+        },
+    }
 
 
 def _terminal_execution_plan_audit(

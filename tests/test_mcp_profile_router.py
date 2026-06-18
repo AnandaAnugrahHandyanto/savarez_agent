@@ -15,6 +15,7 @@ from mcp_profile_router import (
     RouterToolMetadata,
     _build_terminal_sanitized_env,
     _prepare_terminal_subprocess_plan,
+    _shape_terminal_subprocess_result,
     assert_default_tools_are_no_model,
     classify_terminal_command,
     create_workspace_metadata,
@@ -254,6 +255,79 @@ def test_terminal_subprocess_plan_uses_sanitized_no_inheritance_env(
             max_output_chars=1234,
         )
     assert shell_control.value.code == "terminal_shell_control_not_allowed"
+
+
+def test_terminal_result_shape_bounds_streams_status_and_audit(tmp_path):
+    plan = _prepare_terminal_subprocess_plan(
+        "git status --short",
+        resolved_cwd=tmp_path,
+        public_cwd="subdir",
+        timeout_seconds=5,
+        max_output_chars=8,
+    )
+
+    failed = _shape_terminal_subprocess_result(
+        plan,
+        returncode=2,
+        stdout="abcdef",
+        stderr="123456",
+    )
+    assert failed["status"] == "failed"
+    assert failed["returncode"] == 2
+    assert failed["timed_out"] is False
+    assert failed["stdout"] == {
+        "text": "abcdef",
+        "truncated": False,
+        "original_chars": 6,
+        "returned_chars": 6,
+    }
+    assert failed["stderr"] == {
+        "text": "12",
+        "truncated": True,
+        "original_chars": 6,
+        "returned_chars": 2,
+    }
+    assert failed["output"] == {
+        "max_output_chars": 8,
+        "returned_chars": 8,
+        "truncated": True,
+        "stdout_truncated": False,
+        "stderr_truncated": True,
+    }
+    assert failed["working_directory"] == "subdir"
+    assert failed["audit"] == {
+        "tool": "terminal_run",
+        "llm_calls": 0,
+        "root_exposed": False,
+        "uses_shell": False,
+        "executes": False,
+        "argv_redacted": True,
+        "env_values_exposed": False,
+        "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+    }
+    dumped = json.dumps(failed)
+    assert str(tmp_path) not in dumped
+    assert "git status --short" not in dumped
+    assert "/usr/bin" not in dumped
+
+    success = _shape_terminal_subprocess_result(
+        plan,
+        returncode=0,
+        stdout=b"ok",
+        stderr=b"",
+    )
+    assert success["status"] == "success"
+    assert success["stdout"]["text"] == "ok"
+
+    timed_out = _shape_terminal_subprocess_result(
+        plan,
+        returncode=None,
+        stdout="partial",
+        stderr="",
+        timed_out=True,
+    )
+    assert timed_out["status"] == "timeout"
+    assert timed_out["returncode"] is None
 
 
 def test_profile_router_policy_is_deny_by_default_for_execution_groups(hermes_home):
