@@ -82,6 +82,42 @@ def test_has_live_gateway_owner_false_when_chain_breaks(monkeypatch):
     assert lifecycle.has_live_gateway_owner(worker_pid, my_pid=4242) is False
 
 
+def test_has_live_gateway_owner_supports_psutil7_ppid_method(monkeypatch):
+    my_pid = 4242
+    worker_pid = 9001
+    gateway_pid = 5000
+
+    class GatewayProc:
+        def ppid(self):
+            return 1
+
+        def cmdline(self):
+            return ["python", "-m", "tui_gateway.entry"]
+
+        def status(self):
+            return psutil.STATUS_RUNNING
+
+    class WorkerParent:
+        def ppid(self):
+            return gateway_pid
+
+        def cmdline(self):
+            return ["conhost.exe"]
+
+        def status(self):
+            return psutil.STATUS_RUNNING
+
+    def fake_process(pid):
+        if pid == worker_pid:
+            return WorkerParent()
+        if pid == gateway_pid:
+            return GatewayProc()
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(lifecycle.psutil, "Process", fake_process)
+    assert lifecycle.has_live_gateway_owner(worker_pid, my_pid=my_pid) is True
+
+
 def test_reap_orphan_slash_workers_terminates_unowned(monkeypatch):
     terminated: list[int] = []
 

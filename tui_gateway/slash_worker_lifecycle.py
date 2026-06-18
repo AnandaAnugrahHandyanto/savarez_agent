@@ -30,6 +30,14 @@ _GATEWAY_CMD_MARKERS = (
 _reaper_ran = False
 
 
+def _process_ppid(proc: psutil.Process) -> int:
+    """Return parent PID across psutil versions (property on 5.x, method on 7.x)."""
+    ppid = proc.ppid
+    if callable(ppid):
+        return int(ppid())
+    return int(ppid)
+
+
 def _cmdline_text(cmdline: Iterable[str] | None) -> str:
     if not cmdline:
         return ""
@@ -49,7 +57,7 @@ def is_gateway_cmdline(cmdline: Iterable[str] | None) -> bool:
 def has_live_gateway_owner(worker_pid: int, *, my_pid: int) -> bool:
     """True when ``worker_pid`` descends from a live gateway (this or another)."""
     try:
-        current = psutil.Process(worker_pid).ppid
+        current = _process_ppid(psutil.Process(worker_pid))
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
 
@@ -67,7 +75,7 @@ def has_live_gateway_owner(worker_pid: int, *, my_pid: int) -> bool:
             return False
         if is_gateway_cmdline(parent.cmdline()):
             return True
-        current = parent.ppid
+        current = _process_ppid(parent)
     return False
 
 
