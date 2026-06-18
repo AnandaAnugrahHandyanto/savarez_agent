@@ -644,6 +644,10 @@ def compress_context(
         agent.session_id or "none", _pre_msg_count, len(compressed),
         f"{_compressed_est:,}",
     )
+    agent._emit_status(
+        f"✅ Context compressed: {_pre_msg_count} → {len(compressed)} messages, "
+        f"~{_compressed_est:,} tokens"
+    )
     # Release the lock on the OLD session_id only AFTER rotation completed
     # and all post-rotation bookkeeping (memory manager, context engine,
     # file dedup) ran. A concurrent path that wakes up the moment we
