@@ -12,6 +12,7 @@ from mcp_profile_router import (
     ProfileRouterError,
     RouterToolMetadata,
     assert_default_tools_are_no_model,
+    classify_terminal_command,
     create_workspace_metadata,
     file_patch,
     file_read,
@@ -171,6 +172,36 @@ def test_no_model_guard_fails_closed_for_model_spending_default_tool():
                 )
             }
         )
+
+
+def test_terminal_command_classifier_blocks_model_destructive_git_and_deploy_commands():
+    blocked_cases = {
+        "codex exec 'fix this'": "model_command",
+        "hermes --profile maker chat -q hello": "model_command",
+        "hermes --profile maker": "model_command",
+        "python -c 'from run_agent import run_conversation'": "model_command",
+        "python -c 'delegate_task({})'": "model_command",
+        "rm -rf build": "destructive_command",
+        "git reset --hard HEAD": "destructive_command",
+        "git push origin main": "protected_git_command",
+        "kubectl rollout restart deployment/app": "deploy_command",
+    }
+    for command, reason_code in blocked_cases.items():
+        classification = classify_terminal_command(command)
+        assert classification["cost_class"] == COST_CLASS_NO_MODEL
+        assert classification["llm_calls"] == 0
+        assert classification["executes"] is False
+        assert classification["uses_shell"] is False
+        assert classification["blocked"] is True
+        assert classification["decision"] == "blocked"
+        assert reason_code in {reason["code"] for reason in classification["reasons"]}
+        assert command not in json.dumps(classification)
+
+    low = classify_terminal_command("git status --short")
+    assert low["blocked"] is False
+    assert low["decision"] == "disabled_pending_execution_policy"
+    assert low["risk_level"] == "low_unexecuted"
+    assert low["reasons"] == []
 
 
 def test_profile_router_policy_is_deny_by_default_for_execution_groups(hermes_home):
@@ -583,6 +614,13 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     assert patch_without_context["error"]["code"] == "context_not_loaded"
     assert patch_without_context["llm_calls"] == 0
 
+    terminal_without_context = json.loads(
+        terminal_run(workspace_id, "codex exec 'should not classify before context'")
+    )
+    assert terminal_without_context["ok"] is False
+    assert terminal_without_context["error"]["code"] == "context_not_loaded"
+    assert "terminal_command" not in terminal_without_context
+
     hydrated = json.loads(workspace_instructions_get(workspace_id))
     stale_token = hydrated["context"]["context_token"]
     agents.write_text("# Agents\nChanged policy.\n", encoding="utf-8")
@@ -620,15 +658,32 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     assert write_result["write"]["path"] == "created.txt"
     assert (workspace_root / "created.txt").read_text(encoding="utf-8") == "created\n"
 
+    terminal_blocked_model = json.loads(
+        terminal_run(
+            workspace_id,
+            "codex exec 'touch SHOULD_NOT_EXIST'",
+            context_token=fresh_token,
+        )
+    )
+    assert terminal_blocked_model["ok"] is False
+    assert terminal_blocked_model["error"]["code"] == "terminal_command_blocked"
+    assert terminal_blocked_model["terminal_command"]["blocked"] is True
+    assert "model_command" in {
+        reason["code"] for reason in terminal_blocked_model["terminal_command"]["reasons"]
+    }
+    assert terminal_blocked_model["llm_calls"] == 0
+
     terminal_disabled = json.loads(
         terminal_run(
             workspace_id,
-            "touch SHOULD_NOT_EXIST",
+            "git status --short",
             context_token=fresh_token,
         )
     )
     assert terminal_disabled["ok"] is False
     assert terminal_disabled["error"]["code"] == "tool_disabled"
+    assert terminal_disabled["terminal_command"]["blocked"] is False
+    assert terminal_disabled["terminal_command"]["decision"] == "disabled_pending_execution_policy"
     assert terminal_disabled["llm_calls"] == 0
     assert not (workspace_root / "SHOULD_NOT_EXIST").exists()
 

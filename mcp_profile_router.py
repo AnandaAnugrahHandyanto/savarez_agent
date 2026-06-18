@@ -17,6 +17,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import subprocess
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
 from dataclasses import asdict, dataclass
@@ -66,6 +67,7 @@ MAX_FILE_WRITE_CHARS = 200_000
 MAX_WRITE_DIFF_CHARS = 20_000
 MAX_WORKSPACE_DIFF_CHARS = 30_000
 MAX_WORKSPACE_DIFF_FILES = 100
+MAX_TERMINAL_COMMAND_CHARS = 4_000
 ALLOWED_SEARCH_OUTPUT_MODES = frozenset({"content", "files_only", "count"})
 MAX_CONTEXT_FILE_CHARS = 12_000
 MAX_CONTEXT_FILE_BYTES = 128_000
@@ -80,6 +82,40 @@ WORKSPACE_INSTRUCTION_FILES = (
 )
 FUNCIONES_TXT_FILENAME = "funciones.txt"
 PROTECTED_WORKSPACE_DIFF_DIRS = frozenset({".hermes"})
+SHELL_CONTROL_TOKENS = frozenset({";", "&&", "||", "|", "|&", "&", "(", ")"})
+MODEL_COMMAND_NAMES = frozenset(
+    {
+        "aider",
+        "claude",
+        "codex",
+        "fable",
+        "gemini",
+        "openai",
+        "opencode",
+    }
+)
+MODEL_COMMAND_TEXT_MARKERS = ("run_conversation", "delegate_task")
+HERMES_MODEL_SUBCOMMANDS = frozenset({"chat"})
+DESTRUCTIVE_COMMAND_PATTERNS = (
+    (
+        "rm_rf",
+        re.compile(r"(?i)(?:^|[;&|]\s*)rm\s+-(?=\S*r)(?=\S*f)\S*(?:\s|$)"),
+    ),
+    ("git_reset_hard", re.compile(r"(?i)\bgit\s+reset\s+--hard\b")),
+    ("git_clean_force", re.compile(r"(?i)\bgit\s+clean\s+-(?=\S*f)\S*\b")),
+)
+PROTECTED_GIT_COMMAND_PATTERNS = (
+    ("git_push", re.compile(r"(?i)\bgit\s+push\b")),
+    ("git_merge", re.compile(r"(?i)\bgit\s+merge\b")),
+    ("git_rebase", re.compile(r"(?i)\bgit\s+rebase\b")),
+)
+DEPLOY_COMMAND_PATTERNS = (
+    ("easypanel", re.compile(r"(?i)\beasypanel\b")),
+    ("kubectl", re.compile(r"(?i)\bkubectl\b")),
+    ("vercel_deploy", re.compile(r"(?i)\bvercel\s+(?:deploy|prod|--prod)\b")),
+    ("fly_deploy", re.compile(r"(?i)\bfly\s+deploy\b")),
+    ("railway", re.compile(r"(?i)\brailway\s+(?:up|deploy)\b")),
+)
 
 
 class ProfileRouterError(ValueError):
@@ -611,8 +647,9 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
     "terminal_run": RouterToolMetadata(
         name="terminal_run",
         description=(
-            "Future terminal tool; disabled until command policy/tests exist and "
-            "always requires fresh workspace context before execution."
+            "Future terminal tool; disabled from default public MCP exposure. "
+            "Direct calls require fresh workspace context, classify commands without "
+            "execution, and block model/destructive/protected/deploy patterns."
         ),
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
@@ -1787,6 +1824,155 @@ def _literal_git_pathspecs(paths: Iterable[str]) -> list[str]:
     return [f":(literal){path}" for path in paths]
 
 
+def _shell_command_tokens(command: str) -> list[str]:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError as exc:
+        raise ProfileRouterError(
+            "invalid_terminal_command",
+            "terminal command could not be parsed safely",
+        ) from exc
+
+
+def _terminal_token_basename(token: str) -> str:
+    return posixpath.basename(token).lower()
+
+
+def _terminal_non_control_tokens(tokens: Iterable[str]) -> list[str]:
+    return [
+        token
+        for token in tokens
+        if token not in SHELL_CONTROL_TOKENS
+        and not all(char in ";&|()<>" for char in token)
+    ]
+
+
+def _find_hermes_model_command(tokens: list[str]) -> str | None:
+    non_control = _terminal_non_control_tokens(tokens)
+    for index, token in enumerate(non_control):
+        if _terminal_token_basename(token) != "hermes":
+            continue
+        following = [item for item in non_control[index + 1 :] if not item.startswith("-")]
+        if any(item.lower() in HERMES_MODEL_SUBCOMMANDS for item in following):
+            return "hermes chat"
+        # Bare Hermes, option-only Hermes (for example ``hermes --profile maker``),
+        # and other Hermes subcommands stay blocked until a safe-subcommand policy
+        # exists. The CLI defaults to chat when no subcommand is provided.
+        return "hermes"
+    return None
+
+
+def _append_terminal_pattern_reasons(
+    reasons: list[dict],
+    *,
+    command: str,
+    patterns: Iterable[tuple[str, re.Pattern[str]]],
+    code: str,
+    detail_prefix: str,
+) -> None:
+    for name, pattern in patterns:
+        if pattern.search(command):
+            reasons.append(
+                {
+                    "code": code,
+                    "name": name,
+                    "detail": f"{detail_prefix}: {name}",
+                }
+            )
+
+
+def classify_terminal_command(command: str) -> dict:
+    """Classify a future terminal command without executing it.
+
+    This is a no-model, fail-closed Phase 6 helper. It intentionally returns no
+    raw command text because command strings may contain secrets. The actual
+    ``terminal_run`` wrapper still requires fresh workspace context first and
+    remains disabled until execution policy, output limits, and audit are built.
+    """
+
+    assert_default_tools_are_no_model()
+    if not isinstance(command, str):
+        raise ProfileRouterError("invalid_terminal_command", "command must be a string")
+    stripped = command.strip()
+    if not stripped:
+        raise ProfileRouterError("invalid_terminal_command", "command is required")
+    if len(stripped) > MAX_TERMINAL_COMMAND_CHARS:
+        raise ProfileRouterError(
+            "terminal_command_too_large",
+            f"command exceeds {MAX_TERMINAL_COMMAND_CHARS} characters",
+        )
+
+    tokens = _shell_command_tokens(stripped)
+    non_control = _terminal_non_control_tokens(tokens)
+    basenames = {_terminal_token_basename(token) for token in non_control}
+    reasons: list[dict] = []
+
+    for marker in MODEL_COMMAND_TEXT_MARKERS:
+        if re.search(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", stripped):
+            reasons.append(
+                {
+                    "code": "model_command",
+                    "name": marker,
+                    "detail": f"Hermes agent/model marker is blocked: {marker}",
+                }
+            )
+    for name in sorted(basenames & MODEL_COMMAND_NAMES):
+        reasons.append(
+            {
+                "code": "model_command",
+                "name": name,
+                "detail": f"Model/agent CLI is blocked: {name}",
+            }
+        )
+    hermes_model_command = _find_hermes_model_command(tokens)
+    if hermes_model_command is not None:
+        reasons.append(
+            {
+                "code": "model_command",
+                "name": hermes_model_command,
+                "detail": f"Hermes model command is blocked: {hermes_model_command}",
+            }
+        )
+
+    _append_terminal_pattern_reasons(
+        reasons,
+        command=stripped,
+        patterns=DESTRUCTIVE_COMMAND_PATTERNS,
+        code="destructive_command",
+        detail_prefix="Destructive filesystem/Git command is blocked",
+    )
+    _append_terminal_pattern_reasons(
+        reasons,
+        command=stripped,
+        patterns=PROTECTED_GIT_COMMAND_PATTERNS,
+        code="protected_git_command",
+        detail_prefix="Protected Git operation is blocked pending policy",
+    )
+    _append_terminal_pattern_reasons(
+        reasons,
+        command=stripped,
+        patterns=DEPLOY_COMMAND_PATTERNS,
+        code="deploy_command",
+        detail_prefix="Deploy/production command is blocked pending policy",
+    )
+
+    blocked = bool(reasons)
+    return {
+        "cost_class": COST_CLASS_NO_MODEL,
+        "llm_calls": 0,
+        "uses_shell": False,
+        "executes": False,
+        "command_length": len(stripped),
+        "parsed_token_count": len(tokens),
+        "blocked": blocked,
+        "decision": "blocked" if blocked else "disabled_pending_execution_policy",
+        "risk_level": "blocked" if blocked else "low_unexecuted",
+        "reasons": reasons,
+    }
+
+
 def diff_workspace(
     workspace_id: str,
     *,
@@ -2297,10 +2483,34 @@ def terminal_run(
     """Disabled future wrapper: context-gated terminal command without execution."""
 
     try:
-        _reject_disabled_powerful_tool_after_context(
+        require_fresh_workspace_context(workspace_id, context_token=context_token)
+        classification = classify_terminal_command(command)
+        if classification["blocked"]:
+            return _tool_envelope(
+                "terminal_run",
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "terminal_command_blocked",
+                        "message": "terminal command is blocked by profile-router no-model policy",
+                    },
+                    "terminal_command": classification,
+                },
+            )
+        return _tool_envelope(
             "terminal_run",
-            workspace_id,
-            context_token=context_token,
+            {
+                "ok": False,
+                "error": {
+                    "code": "tool_disabled",
+                    "message": (
+                        "terminal_run is disabled until explicit no-model policy, "
+                        "context, containment, output limits, audit, and focused tests "
+                        "are implemented"
+                    ),
+                },
+                "terminal_command": classification,
+            },
         )
     except ProfileRouterError as exc:
         return _tool_error("terminal_run", exc)
