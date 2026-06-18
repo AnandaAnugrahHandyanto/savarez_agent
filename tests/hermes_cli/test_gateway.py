@@ -497,6 +497,98 @@ def test_gateway_start_ignores_legacy_platform_selector(monkeypatch):
     assert calls == [False]
 
 
+def test_launchd_restart_from_gateway_child_arms_watchdog_before_signal(monkeypatch, tmp_path, capsys):
+    """macOS CLI restart from a gateway-hosted terminal must not trust KeepAlive alone."""
+    calls = []
+    plist = tmp_path / "ai.hermes.gateway.plist"
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
+    monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(gateway, "_launchd_domain", lambda: "gui/501")
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: plist)
+    monkeypatch.setattr(gateway, "_get_restart_drain_timeout", lambda: 30.0)
+    monkeypatch.setattr(gateway, "_is_pid_ancestor_of_current_process", lambda pid: True)
+    monkeypatch.setattr(
+        gateway,
+        "_launch_launchd_restart_watchdog",
+        lambda pid, target, plist_path: calls.append(("watchdog", pid, target, plist_path)) or True,
+    )
+    monkeypatch.setattr(
+        gateway,
+        "_request_gateway_self_restart",
+        lambda pid: calls.append(("sigusr1", pid)) or True,
+    )
+    monkeypatch.setattr(
+        gateway,
+        "terminate_pid",
+        lambda *args, **kwargs: pytest.fail("self-restart path must not hard-stop before arming watchdog"),
+    )
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("watchdog self-restart path must not synchronously kickstart"),
+    )
+
+    gateway.launchd_restart()
+
+    assert calls == [
+        ("watchdog", 12345, "gui/501/ai.hermes.gateway", plist),
+        ("sigusr1", 12345),
+    ]
+    assert "watchdog will kickstart launchd" in capsys.readouterr().out
+
+
+def test_launchd_restart_from_gateway_child_refuses_without_watchdog(monkeypatch, tmp_path):
+    """If the detached watchdog cannot be armed, do not stop the live gateway."""
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
+    monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(gateway, "_launchd_domain", lambda: "gui/501")
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: tmp_path / "ai.hermes.gateway.plist")
+    monkeypatch.setattr(gateway, "_get_restart_drain_timeout", lambda: 30.0)
+    monkeypatch.setattr(gateway, "_is_pid_ancestor_of_current_process", lambda pid: True)
+    monkeypatch.setattr(gateway, "_launch_launchd_restart_watchdog", lambda *args: False)
+    monkeypatch.setattr(
+        gateway,
+        "_request_gateway_self_restart",
+        lambda *args: pytest.fail("must not signal gateway when watchdog is unavailable"),
+    )
+    monkeypatch.setattr(
+        gateway,
+        "terminate_pid",
+        lambda *args, **kwargs: pytest.fail("must not terminate gateway when watchdog is unavailable"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.launchd_restart()
+
+    assert exc_info.value.code == 1
+
+
+def test_launchd_restart_watchdog_uses_launchctl_not_recursive_hermes(monkeypatch, tmp_path):
+    calls = []
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            calls.append((argv, kwargs))
+
+    monkeypatch.setattr(gateway.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: tmp_path / ".hermes")
+    monkeypatch.setattr(gateway, "_launchd_domain", lambda: "gui/501")
+
+    assert gateway._launch_launchd_restart_watchdog(
+        12345,
+        "gui/501/ai.hermes.gateway",
+        tmp_path / "ai.hermes.gateway.plist",
+    )
+
+    argv, kwargs = calls[0]
+    assert argv[:3] == [gateway.sys.executable, "-c", argv[2]]
+    helper_source = argv[2]
+    assert "launchctl" in helper_source
+    assert "hermes gateway restart" not in helper_source
+    assert kwargs["start_new_session"] is True
+
+
 def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkeypatch):
     """Windows manual restart must not fall back to foreground run_gateway().
 

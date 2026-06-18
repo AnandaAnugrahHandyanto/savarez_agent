@@ -3736,6 +3736,119 @@ def _wait_for_gateway_exit(
     return True
 
 
+def _launch_launchd_restart_watchdog(pid: int, target: str, plist_path: Path) -> bool:
+    """Start a detached launchd kickstart helper before self-restarting.
+
+    When ``hermes gateway restart`` is invoked from a gateway-hosted terminal
+    tool on macOS, the CLI process is a child of the gateway process.  The old
+    implementation sent SIGUSR1 to its gateway ancestor and returned, trusting
+    launchd KeepAlive to relaunch the service.  In practice, launchd can leave
+    the job loaded-but-stopped after that planned self-exit, which strands the
+    gateway after users see only the shutdown notification.  A tiny detached
+    helper closes that gap: it waits for the old PID to disappear, then directly
+    ``kickstart``s the already-installed launchd job, re-bootstrapping first if
+    the job was unloaded.
+    """
+    if pid <= 0:
+        return False
+
+    log_path = get_hermes_home() / "logs" / "gateway-restart-helper.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    helper = textwrap.dedent(
+        """
+        import os, subprocess, sys, time
+
+        pid = int(sys.argv[1])
+        target = sys.argv[2]
+        domain = sys.argv[3]
+        plist_path = sys.argv[4]
+        log_path = sys.argv[5]
+        deadline = time.monotonic() + 120
+
+        def log(msg):
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " " + msg + "\\n")
+            except Exception:
+                pass
+
+        def alive(p):
+            try:
+                os.kill(p, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            except OSError:
+                return False
+
+        while time.monotonic() < deadline and alive(pid):
+            time.sleep(0.2)
+
+        if alive(pid):
+            log(f"old gateway pid {pid} still alive after timeout; not kickstarting")
+            sys.exit(2)
+
+        try:
+            result = subprocess.run(
+                ["launchctl", "kickstart", "-k", target],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                log(f"kickstart ok for {target}")
+                sys.exit(0)
+            log(f"kickstart failed rc={result.returncode}: {(result.stderr or result.stdout).strip()}")
+
+            boot = subprocess.run(
+                ["launchctl", "bootstrap", domain, plist_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if boot.returncode != 0:
+                log(f"bootstrap failed rc={boot.returncode}: {(boot.stderr or boot.stdout).strip()}")
+                sys.exit(boot.returncode or 1)
+
+            retry = subprocess.run(
+                ["launchctl", "kickstart", target],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if retry.returncode != 0:
+                log(f"kickstart retry failed rc={retry.returncode}: {(retry.stderr or retry.stdout).strip()}")
+                sys.exit(retry.returncode or 1)
+            log(f"bootstrap + kickstart ok for {target}")
+        except Exception as exc:
+            log(f"helper exception: {exc!r}")
+            sys.exit(1)
+        """
+    ).strip()
+    try:
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                helper,
+                str(pid),
+                target,
+                _launchd_domain(),
+                str(plist_path),
+                str(log_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed to arm launchd restart watchdog: {exc}")
+        return False
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -3744,9 +3857,14 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
-            return
+        if pid is not None and _is_pid_ancestor_of_current_process(pid):
+            plist_path = get_launchd_plist_path()
+            if not _launch_launchd_restart_watchdog(pid, target, plist_path):
+                print("✗ Refusing in-gateway launchd restart without a restart watchdog")
+                sys.exit(1)
+            if _request_gateway_self_restart(pid):
+                print("✓ Service restart requested; watchdog will kickstart launchd after shutdown")
+                return
         if pid is not None:
             try:
                 terminate_pid(pid, force=False)
