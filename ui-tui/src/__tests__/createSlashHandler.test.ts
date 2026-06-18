@@ -643,6 +643,83 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
   })
 
+  it('falls through to command.dispatch for /prompts and prefills the composer', async () => {
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(
+                new Error('pending-input command: use command.dispatch for /prompts')
+              )
+            }
+
+            if (method === 'command.dispatch') {
+              return Promise.resolve({
+                type: 'prefill',
+                message: 'reuse this prompt',
+                notice: 'Loaded prompt #1 into the composer.'
+              })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/prompts 1')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Loaded prompt #1 into the composer.')
+    })
+
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('reuse this prompt')
+    expect(ctx.transcript.send).not.toHaveBeenCalled()
+  })
+
+  it('pages multi-line command.dispatch exec output', async () => {
+    const output = [
+      'Recent prompts in this session:',
+      '1. second prompt',
+      '2. first prompt',
+      '',
+      'Use /prompts N to load a prompt into the composer.'
+    ].join('\n')
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(
+                new Error('pending-input command: use command.dispatch for /prompts')
+              )
+            }
+
+            if (method === 'command.dispatch') {
+              return Promise.resolve({ type: 'exec', output })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/prompts')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.page).toHaveBeenCalledWith(output, 'Prompts')
+    })
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(output)
+  })
+
   it('/history pages the current TUI transcript (user + assistant)', () => {
     const ctx = buildCtx({
       local: {
