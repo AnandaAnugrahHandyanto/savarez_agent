@@ -2538,6 +2538,42 @@ class TestAdapterBehavior(unittest.TestCase):
             [[{"tag": "md", "text": "---\n1. 第一项\n  2. 子项\n- 外层\n  - 内层\n<u>下划线</u> 和 ~~删除线~~"}]],
         )
 
+    @patch.dict(os.environ, {"FEISHU_MENTION_ALIASES": "MOSS:ou_moss,Tweet Copy=ou_tweet"}, clear=True)
+    def test_build_post_payload_converts_alias_to_at_tag(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(adapter._build_post_payload("@MOSS please review with @Tweet Copy"))
+
+        elements = payload["zh_cn"]["content"][0]
+        self.assertEqual(
+            elements,
+            [
+                {"tag": "at", "user_id": "ou_moss", "user_name": "MOSS"},
+                {"tag": "md", "text": " please review with "},
+                {"tag": "at", "user_id": "ou_tweet", "user_name": "Tweet Copy"},
+            ],
+        )
+
+    @patch.dict(os.environ, {"FEISHU_MENTION_ALIASES": "MOSS:ou_moss"}, clear=True)
+    def test_build_post_payload_does_not_convert_mentions_inside_fenced_code(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(adapter._build_post_payload("before\n```text\n@MOSS example\n```\nafter @MOSS"))
+
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(rows[1], [{"tag": "md", "text": "```text\n@MOSS example\n```"}])
+        self.assertEqual(
+            rows[2],
+            [
+                {"tag": "md", "text": "after "},
+                {"tag": "at", "user_id": "ou_moss", "user_name": "MOSS"},
+            ],
+        )
+
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_inline_markdown(self):
         from gateway.config import PlatformConfig
