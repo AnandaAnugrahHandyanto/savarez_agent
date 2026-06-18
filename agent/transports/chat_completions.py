@@ -164,6 +164,8 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
+        _model_lower = (kwargs.get("model") or "").lower()
+        strip_gateway_metadata = "mistral" in _model_lower
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -172,6 +174,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or (strip_gateway_metadata and ("timestamp" in msg or "observed" in msg))
             ):
                 needs_sanitize = True
                 break
@@ -201,6 +204,11 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            # Mistral's strict Pydantic schema rejects gateway-injected
+            # metadata fields (timestamp, observed) as extra inputs.
+            if strip_gateway_metadata:
+                msg.pop("timestamp", None)
+                msg.pop("observed", None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.
