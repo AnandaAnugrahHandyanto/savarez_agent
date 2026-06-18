@@ -2329,14 +2329,33 @@ def build_anthropic_kwargs(
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
+        # 0. Prepend the billing-attribution block that the genuine Claude Code
+        #    / Agent-SDK CLI sends as its FIRST system block:
+        #      x-anthropic-billing-header: cc_version=<ver>; cc_entrypoint=sdk-cli;
+        #    Anthropic's billing gate uses this to route OAuth/subscription
+        #    requests to the plan's usage limits. Without it, tool-bearing
+        #    requests are classified as a generic third-party app and rejected
+        #    with HTTP 400 "Third-party apps now draw from extra usage, not plan
+        #    limits" — even when every tool name is already on the double-
+        #    underscore mcp__ wire form normalized below (step 3). Verified on a
+        #    live Team plan: mcp__ normalization alone still 400s; adding this
+        #    block returns 200. Captured from `claude -p` (v2.1.181).
+        billing_block = {
+            "type": "text",
+            "text": (
+                f"x-anthropic-billing-header: "
+                f"cc_version={_get_claude_code_version()}; "
+                f"cc_entrypoint=sdk-cli;"
+            ),
+        }
+        # 1. Prepend Claude Code system prompt identity (after billing header)
         cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
         if isinstance(system, list):
-            system = [cc_block] + system
+            system = [billing_block, cc_block] + system
         elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
+            system = [billing_block, cc_block, {"type": "text", "text": system}]
         else:
-            system = [cc_block]
+            system = [billing_block, cc_block]
 
         # 2. Sanitize system prompt — replace product name references
         #    to avoid Anthropic's server-side content filters.
