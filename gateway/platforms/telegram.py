@@ -6186,6 +6186,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
+                # Let the agent know a photo was sent but could not be
+                # downloaded so it can acknowledge the attachment rather
+                # than silently ignoring it.
+                event.text = self._append_observed_note(
+                    event.text,
+                    "[Note: A photo was attached but could not be "
+                    "downloaded from Telegram (transient timeout). "
+                    "The image is not available for this turn.]",
+                )
 
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
