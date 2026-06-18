@@ -305,8 +305,13 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
   return Array.from(found.values())
 }
 
-function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+export function formatArtifactTime(timestamp: number): string {
+  // Python backends (state.db) store timestamps as epoch *seconds*;
+  // JavaScript Date() expects milliseconds.  Values below 1e12 are
+  // seconds — multiply by 1000 so Jan-2026 renders correctly instead
+  // of showing as Jan 1970.
+  const ts = timestamp < 1e12 ? timestamp * 1000 : timestamp
+  return ARTIFACT_TIME_FMT.format(new Date(ts))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {
