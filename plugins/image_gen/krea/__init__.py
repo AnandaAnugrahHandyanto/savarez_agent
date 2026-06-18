@@ -224,9 +224,13 @@ class KreaImageGenProvider(ImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         krea_ar = _ASPECT_MAP.get(aspect, "1:1")
 
-        # Collect reference images (primary image_url + any references +
-        # legacy image_style_references kwarg) for reference-guided generation.
-        style_refs: List[str] = []
+        # Collect reference images for reference-guided generation (image-to-
+        # image style transfer). Sources, in order:
+        #   1. unified image_url (primary source) + reference_image_urls (strings)
+        #   2. legacy image_style_references kwarg — may be plain URL strings OR
+        #      Krea's richer ref objects (e.g. {"url": ..., "strength": ...}),
+        #      which are passed through verbatim for backward compatibility.
+        style_refs: List[Any] = []
         if isinstance(image_url, str) and image_url.strip():
             style_refs.append(image_url.strip())
         for ref in (normalize_reference_images(reference_image_urls) or []):
@@ -234,11 +238,23 @@ class KreaImageGenProvider(ImageGenProvider):
         legacy_refs = kwargs.get("image_style_references")
         if isinstance(legacy_refs, list):
             for ref in legacy_refs:
-                if isinstance(ref, str) and ref.strip():
-                    style_refs.append(ref.strip())
-        # Dedupe while preserving order; Krea caps at 10.
+                if isinstance(ref, str):
+                    if ref.strip():
+                        style_refs.append(ref.strip())
+                elif ref:
+                    # Non-string ref object (dict, etc.) — pass through as-is.
+                    style_refs.append(ref)
+        # Dedupe string entries while preserving order (dict refs aren't
+        # hashable, so they're kept verbatim); Krea caps at 10.
         seen: set = set()
-        style_refs = [r for r in style_refs if not (r in seen or seen.add(r))][:10]
+        deduped: List[Any] = []
+        for r in style_refs:
+            if isinstance(r, str):
+                if r in seen:
+                    continue
+                seen.add(r)
+            deduped.append(r)
+        style_refs = deduped[:10]
         modality = "image" if style_refs else "text"
 
         if not prompt:

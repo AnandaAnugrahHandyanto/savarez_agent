@@ -146,13 +146,18 @@ class FalImageGenProvider(ImageGenProvider):
             )
             if key in kwargs and kwargs[key] is not None
         }
+        # Only forward the image-to-image inputs when actually supplied, so a
+        # plain text-to-image call delegates exactly as it did before (no
+        # noisy None kwargs).
+        if image_url is not None:
+            passthrough["image_url"] = image_url
+        if reference_image_urls is not None:
+            passthrough["reference_image_urls"] = reference_image_urls
 
         try:
             raw = _it.image_generate_tool(
                 prompt=prompt,
                 aspect_ratio=aspect,
-                image_url=image_url,
-                reference_image_urls=reference_image_urls,
                 **passthrough,
             )
         except Exception as exc:  # noqa: BLE001 — never raise out of generate
