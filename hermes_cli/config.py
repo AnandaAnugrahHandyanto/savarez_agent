@@ -27,6 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Dict, Any, Optional, List, Tuple
 
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -223,11 +224,11 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # save_config() + migrate_config() write via atomic_yaml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any], "_ReadonlyConfigView"]] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
-_RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+_RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any], "_ReadonlyConfigView"]] = {}
 # Serializes all config read/write paths. libyaml's C extension is not
 # thread-safe for concurrent safe_load() on the same file, and multiple
 # tool threads (approval.py, browser_tool.py, setup flows) hit
@@ -236,6 +237,77 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+
+
+class _ReadonlyConfigView(dict):
+    """Zero-copy read-only ``dict`` subclass over a cached config mapping.
+
+    Subclasses ``dict`` so existing ``isinstance(cfg, dict)`` guards keep
+    working. Reads proxy the backing store; writes raise ``TypeError``.
+    """
+
+    __slots__ = ("_data",)
+
+    def __new__(cls, data: Dict[str, Any]) -> "_ReadonlyConfigView":
+        inst = super().__new__(cls)
+        object.__setattr__(inst, "_data", data)
+        return inst
+
+    def __getitem__(self, key: str) -> Any:
+        val = self._data[key]
+        if type(val) is dict:
+            return _ReadonlyConfigView(val)
+        return val
+
+    def __iter__(self) -> Iterator:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key not in self._data:
+            return default
+        return self[key]
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        for key in self._data:
+            yield self[key]
+
+    def items(self):
+        for key in self._data:
+            yield key, self[key]
+
+    def __setitem__(self, key, value) -> None:
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def __delitem__(self, key) -> None:
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def update(self, *args, **kwargs) -> None:
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def pop(self, *args, **kwargs):
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def popitem(self):
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def clear(self) -> None:
+        raise TypeError("config is read-only; use load_config() to mutate")
+
+    def setdefault(self, key, default=None):
+        if key in self._data:
+            return self[key]
+        return default
+
+
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -5437,8 +5509,46 @@ def read_raw_config() -> Dict[str, Any]:
 
         if not isinstance(data, dict):
             data = {}
-        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
+        stored = copy.deepcopy(data)
+        view = _ReadonlyConfigView(stored)
+        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], stored, view)
         return data
+
+
+def read_raw_config_readonly() -> Dict[str, Any]:
+    """Fast-path variant of ``read_raw_config()`` for callers that ONLY READ.
+
+    Returns a read-only view over the cached raw YAML dict without the
+    defensive deepcopy that ``read_raw_config()`` applies. Mutations raise
+    ``TypeError``. If you need to mutate or pass to ``save_config``, call
+    ``read_raw_config()`` instead.
+    """
+    with _CONFIG_LOCK:
+        try:
+            config_path = get_config_path()
+            st = config_path.stat()
+            cache_key = (st.st_mtime_ns, st.st_size)
+        except (FileNotFoundError, OSError):
+            return _ReadonlyConfigView({})
+
+        path_key = str(config_path)
+        cached = _RAW_CONFIG_CACHE.get(path_key)
+        if cached is not None and cached[:2] == cache_key:
+            return cached[3]
+
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            _warn_config_parse_failure(config_path, e)
+            return _ReadonlyConfigView({})
+
+        if not isinstance(data, dict):
+            data = {}
+        stored = copy.deepcopy(data)
+        view = _ReadonlyConfigView(stored)
+        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], stored, view)
+        return view
 
 
 def load_config() -> Dict[str, Any]:
@@ -5461,22 +5571,16 @@ def load_config() -> Dict[str, Any]:
 def load_config_readonly() -> Dict[str, Any]:
     """Fast-path variant of ``load_config()`` for callers that ONLY READ.
 
-    Returns the cached config dict directly without the defensive deepcopy
-    that ``load_config()`` applies. **Mutating the returned dict (or any
-    nested structure) corrupts the in-process cache for every subsequent
-    caller** — only use this when you are absolutely sure your code path
-    will not write to the result. If you need to mutate or pass to
-    ``save_config``, call ``load_config()`` instead.
+    Returns a read-only view over the cached config dict without the
+    defensive deepcopy that ``load_config()`` applies. Mutations raise
+    ``TypeError``. If you need to mutate or pass to ``save_config``, call
+    ``load_config()`` instead.
 
     Why this exists: ``load_config()`` cache-hit cost is ~265us per call,
     half of which (~135us) is the defensive deepcopy. The agent loop calls
     into config reads (timeouts, thresholds, feature flags) ~20-50x per
     conversation; skipping deepcopy here removes a measurable allocation
     source and the GC pressure that comes with it.
-
-    Note: this returns a plain ``dict`` (not ``MappingProxyType``) so
-    existing ``isinstance(x, dict)`` guards downstream keep working. The
-    safety guarantee is purely documented, not enforced — be careful.
     """
     return _load_config_impl(want_deepcopy=False)
 
@@ -5583,7 +5687,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
         if cached is not None and cache_key is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
+            return copy.deepcopy(cached[2]) if want_deepcopy else cached[3]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -5612,14 +5716,16 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
             # callers all see the same stable cached object.
             cached_copy = copy.deepcopy(expanded)
-            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
-            # On the readonly path return the same cached object subsequent
-            # calls will see — keeps "two readonly calls return the same
-            # object" invariant that callers may rely on for identity checks.
+            readonly_view = _ReadonlyConfigView(cached_copy)
+            _LOAD_CONFIG_CACHE[path_key] = (
+                cache_key[0], cache_key[1], cached_copy, readonly_view,
+            )
             if not want_deepcopy:
-                return cached_copy
+                return readonly_view
         else:
             _LOAD_CONFIG_CACHE.pop(path_key, None)
+        if not want_deepcopy:
+            return _ReadonlyConfigView(expanded)
         # First-load result is a fresh dict (not aliased to the cache); safe
         # to return directly. For the deepcopy=True path this is the
         # canonical "freshly-built mutable result" the function has always

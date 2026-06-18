@@ -471,15 +471,21 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
     repairs = repair_message_sequence(agent, messages)
 
-    if repairs > 0 and hasattr(agent, "_last_flushed_db_idx"):
-        if pre_repair_flushed_ids is not None:
-            agent._last_flushed_db_idx = sum(
-                1 for m in messages if id(m) in pre_repair_flushed_ids
-            )
-        else:
-            agent._last_flushed_db_idx = min(
-                agent._last_flushed_db_idx, len(messages)
-            )
+    if repairs > 0:
+        if hasattr(agent, "_last_flushed_db_idx"):
+            if pre_repair_flushed_ids is not None:
+                agent._last_flushed_db_idx = sum(
+                    1 for m in messages if id(m) in pre_repair_flushed_ids
+                )
+            else:
+                agent._last_flushed_db_idx = min(
+                    agent._last_flushed_db_idx, len(messages)
+                )
+        # Incremental flush scan cursor indexes into the pre-repair list;
+        # compaction can shift unflushed rows below the cursor. Rescan from
+        # the start — flushed_ids still dedupes already-written rows.
+        if hasattr(agent, "_flush_scan_cursor"):
+            agent._flush_scan_cursor = 0
 
     return repairs
 
@@ -1519,6 +1525,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
         # ── Swap core runtime fields ──
         agent.model = new_model
+        agent._supports_vision_cache = None
+        agent._tools_char_estimate = None
         agent.provider = new_provider
         # Use new base_url when provided; only fall back to current when the
         # new provider genuinely has no endpoint (e.g. native SDK providers).
@@ -2038,33 +2046,31 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     is present — so orphans from session loading or manual message
     manipulation are always caught.
     """
-    # --- Role allowlist: drop messages with roles the API won't accept ---
-    filtered = []
+    valid_roles = _ra().AIAgent._VALID_API_ROLES
+    filtered: List[Dict[str, Any]] = []
+    surviving_call_ids: set = set()
+    result_call_ids: set = set()
+
     for msg in messages:
         role = msg.get("role")
-        if role not in _ra().AIAgent._VALID_API_ROLES:
+        if role not in valid_roles:
             _ra().logger.debug(
                 "Pre-call sanitizer: dropping message with invalid role %r",
                 role,
             )
             continue
         filtered.append(msg)
-    messages = filtered
-
-    surviving_call_ids: set = set()
-    for msg in messages:
-        if msg.get("role") == "assistant":
+        if role == "assistant":
             for tc in msg.get("tool_calls") or []:
                 cid = _ra().AIAgent._get_tool_call_id_static(tc)
                 if cid:
                     surviving_call_ids.add(cid)
-
-    result_call_ids: set = set()
-    for msg in messages:
-        if msg.get("role") == "tool":
+        elif role == "tool":
             cid = msg.get("tool_call_id")
             if cid:
                 result_call_ids.add(cid)
+
+    messages = filtered
 
     # 1. Drop tool results with no matching assistant call
     orphaned_results = result_call_ids - surviving_call_ids
@@ -2077,6 +2083,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d orphaned tool result(s)",
             len(orphaned_results),
         )
+        result_call_ids -= orphaned_results
 
     # 2. Inject stub results for calls whose result was dropped
     missing_results = surviving_call_ids - result_call_ids

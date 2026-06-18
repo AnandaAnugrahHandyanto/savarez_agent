@@ -715,6 +715,7 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
+        self._transcript_mutation_cb = None
         
         # Initialize SQLite session database
         self._db = None
@@ -1339,6 +1340,12 @@ class SessionStore:
                 self._db.replace_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
+        cb = getattr(self, "_transcript_mutation_cb", None)
+        if cb:
+            try:
+                cb(session_id)
+            except Exception:
+                logger.debug("transcript mutation callback failed", exc_info=True)
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
@@ -1401,6 +1408,12 @@ class SessionStore:
             target_text = content
         else:
             target_text = ""
+        cb = getattr(self, "_transcript_mutation_cb", None)
+        if cb:
+            try:
+                cb(session_id)
+            except Exception:
+                logger.debug("transcript mutation callback failed", exc_info=True)
         return {
             "rewound_count": result.get("rewound_count", 0),
             "turns_undone": target_idx + 1,

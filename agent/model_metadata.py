@@ -2071,6 +2071,7 @@ def estimate_request_tokens_rough(
     *,
     system_prompt: str = "",
     tools: Optional[List[Dict[str, Any]]] = None,
+    tools_char_estimate: Optional[int] = None,
 ) -> int:
     """Rough token estimate for a full chat-completions request.
 
@@ -2079,12 +2080,17 @@ def estimate_request_tokens_rough(
     tools enabled, schemas alone can add 20-30K tokens — a significant
     blind spot when only counting messages. Image content is counted
     at a flat per-image cost (see estimate_messages_tokens_rough).
+
+    Pass ``tools_char_estimate`` when tool schemas are stable for the
+    session to avoid re-stringifying the full tools list every iteration.
     """
     total = 0
     if system_prompt:
         total += (len(system_prompt) + 3) // 4
     if messages:
         total += estimate_messages_tokens_rough(messages)
-    if tools:
+    if tools_char_estimate is not None:
+        total += (tools_char_estimate + 3) // 4
+    elif tools:
         total += (len(str(tools)) + 3) // 4
     return total

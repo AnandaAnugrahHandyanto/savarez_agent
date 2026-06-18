@@ -856,8 +856,14 @@ def run_conversation(
         # Calculate approximate request size for logging
         total_chars = sum(len(str(msg)) for msg in api_messages)
         approx_tokens = estimate_messages_tokens_rough(api_messages)
+        _tools_char_estimate = getattr(agent, "_tools_char_estimate", None)
+        if _tools_char_estimate is None and agent.tools:
+            _tools_char_estimate = len(str(agent.tools))
+            agent._tools_char_estimate = _tools_char_estimate
         approx_request_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
+            api_messages,
+            tools=agent.tools or None,
+            tools_char_estimate=_tools_char_estimate,
         )
 
         _runtime_context_error = _ollama_context_limit_error(

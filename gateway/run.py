@@ -1883,13 +1883,13 @@ def _load_gateway_config() -> dict:
     """
     config_path = _hermes_home / 'config.yaml'
     try:
-        from hermes_cli.config import get_config_path, read_raw_config
+        from hermes_cli.config import get_config_path, read_raw_config_readonly
         # Fast path: if _hermes_home agrees with the canonical config
         # location, reuse the shared cache. Otherwise fall through to a
         # direct read (keeps test fixtures with a monkeypatched
         # _hermes_home working).
         if config_path == get_config_path():
-            return read_raw_config()
+            return read_raw_config_readonly()
     except Exception:
         pass
 
@@ -1903,6 +1903,10 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+# Memoized expanded gateway runtime config keyed on (path, mtime_ns, size).
+_GATEWAY_RUNTIME_CONFIG_CACHE: Dict[str, tuple] = {}
+
+
 def _load_gateway_runtime_config() -> dict:
     """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
 
@@ -1914,13 +1918,29 @@ def _load_gateway_runtime_config() -> dict:
     Expansion failures are intentionally NOT swallowed — silently returning
     the unexpanded dict would mask the very bug this helper exists to fix.
     """
+    config_path = _hermes_home / 'config.yaml'
+    path_key = str(config_path)
+    try:
+        st = config_path.stat()
+        cache_key = (st.st_mtime_ns, st.st_size)
+    except (FileNotFoundError, OSError):
+        cache_key = None
+
+    if cache_key is not None:
+        cached = _GATEWAY_RUNTIME_CONFIG_CACHE.get(path_key)
+        if cached is not None and cached[:2] == cache_key:
+            return cached[2]
+
     cfg = _load_gateway_config()
     if not isinstance(cfg, dict) or not cfg:
         return {}
     from hermes_cli.config import _expand_env_vars
 
     expanded = _expand_env_vars(cfg)
-    return expanded if isinstance(expanded, dict) else {}
+    result = expanded if isinstance(expanded, dict) else {}
+    if cache_key is not None:
+        _GATEWAY_RUNTIME_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], result)
+    return result
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -2263,6 +2283,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
         )
+        self.session_store._transcript_mutation_cb = (
+            self._invalidate_transcript_cache_for_session_id
+        )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -2344,6 +2367,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import threading as _threading
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
+        # Transcript cache: session_key -> (session_id, message_count, history)
+        self._transcript_cache: "OrderedDict[str, tuple]" = OrderedDict()
+        self._transcript_cache_max = 512
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
@@ -8421,6 +8447,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(session_entry, "is_fresh_reset", False):
             session_entry.is_fresh_reset = False
         if _is_new_session:
+            self._invalidate_transcript_cache(session_key)
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -8547,8 +8574,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
-        # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
+        # Load conversation history from transcript (off event loop; cached per session)
+        history = await asyncio.to_thread(
+            self._load_transcript_sync,
+            session_entry.session_id,
+            session_key,
+        )
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -8565,308 +8596,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         #    by 30-50% on code/JSON-heavy sessions, but that just
         #    means hygiene fires a bit early — safe and harmless.
         # -----------------------------------------------------------------
+        _hyg_plan = None
         if history and len(history) >= 4:
-            from agent.model_metadata import (
-                estimate_messages_tokens_rough,
-                get_model_context_length,
-            )
-
-            # Read model + compression config from config.yaml.
-            # NOTE: hygiene threshold is intentionally HIGHER than the agent's
-            # own compressor (0.85 vs 0.50).  Hygiene is a safety net for
-            # sessions that grew too large between turns — it fires pre-agent
-            # to prevent API failures.  The agent's own compressor handles
-            # normal context management during its tool loop with accurate
-            # real token counts.  Having hygiene at 0.50 caused premature
-            # compression on every turn in long gateway sessions.
-            _hyg_model = "anthropic/claude-sonnet-4.6"
-            _hyg_threshold_pct = 0.85
-            _hyg_compression_enabled = True
-            _hyg_hard_msg_limit = 400
-            _hyg_config_context_length = None
-            _hyg_provider = None
-            _hyg_base_url = None
-            _hyg_api_key = None
-            _hyg_data = {}
             try:
-                _hyg_data = _load_gateway_config()
-                if _hyg_data:
-                    # Resolve model name (same logic as run_sync)
-                    _model_cfg = _hyg_data.get("model", {})
-                    if isinstance(_model_cfg, str):
-                        _hyg_model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        _hyg_model = _model_cfg.get("default") or _model_cfg.get("model") or _hyg_model
-                        # Read explicit context_length override from model config
-                        # (same as run_agent.py lines 995-1005)
-                        _raw_ctx = _model_cfg.get("context_length")
-                        if _raw_ctx is not None:
-                            try:
-                                _hyg_config_context_length = int(_raw_ctx)
-                            except (TypeError, ValueError):
-                                pass
-                        # Read provider for accurate context detection
-                        _hyg_provider = _model_cfg.get("provider") or None
-                        _hyg_base_url = _model_cfg.get("base_url") or None
-
-                    # Read compression settings — only use enabled flag.
-                    # The threshold is intentionally separate from the agent's
-                    # compression.threshold (hygiene runs higher).
-                    _comp_cfg = _hyg_data.get("compression", {})
-                    if isinstance(_comp_cfg, dict):
-                        _hyg_compression_enabled = str(
-                            _comp_cfg.get("enabled", True)
-                        ).lower() in {"true", "1", "yes"}
-                        _raw_hard_limit = _comp_cfg.get("hygiene_hard_message_limit")
-                        if _raw_hard_limit is not None:
-                            try:
-                                _parsed = int(_raw_hard_limit)
-                                if _parsed > 0:
-                                    _hyg_hard_msg_limit = _parsed
-                            except (TypeError, ValueError):
-                                pass
-
-                try:
-                    _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
-                        source=source,
-                        session_key=session_key,
-                        user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
-                    )
-                    _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
-                    _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
-                    _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
-                except Exception:
-                    pass
-
-                # Check custom_providers per-model context_length
-                # (same fallback as run_agent.py lines 1171-1189).
-                # Must run after runtime resolution so _hyg_base_url is set.
-                if _hyg_config_context_length is None and _hyg_base_url:
-                    try:
-                        try:
-                            from hermes_cli.config import get_compatible_custom_providers as _gw_gcp
-                            _hyg_custom_providers = _gw_gcp(_hyg_data)
-                        except Exception:
-                            _hyg_custom_providers = _hyg_data.get("custom_providers")
-                            if not isinstance(_hyg_custom_providers, list):
-                                _hyg_custom_providers = []
-                        for _cp in _hyg_custom_providers:
-                            if not isinstance(_cp, dict):
-                                continue
-                            _cp_url = (_cp.get("base_url") or "").rstrip("/")
-                            if _cp_url and _cp_url == _hyg_base_url.rstrip("/"):
-                                _cp_models = _cp.get("models", {})
-                                if isinstance(_cp_models, dict):
-                                    _cp_model_cfg = _cp_models.get(_hyg_model, {})
-                                    if isinstance(_cp_model_cfg, dict):
-                                        _cp_ctx = _cp_model_cfg.get("context_length")
-                                        if _cp_ctx is not None:
-                                            _hyg_config_context_length = int(_cp_ctx)
-                                break
-                    except (TypeError, ValueError):
-                        pass
-            except Exception:
-                pass
-
-            if _hyg_compression_enabled:
-                _hyg_context_length = get_model_context_length(
-                    _hyg_model,
-                    base_url=_hyg_base_url or "",
-                    api_key=_hyg_api_key or "",
-                    config_context_length=_hyg_config_context_length,
-                    provider=_hyg_provider or "",
+                _hyg_plan = await asyncio.to_thread(
+                    self._plan_session_hygiene_sync,
+                    history,
+                    session_entry,
+                    session_key,
+                    source,
                 )
-                _compress_token_threshold = int(
-                    _hyg_context_length * _hyg_threshold_pct
+            except Exception as _hyg_plan_err:
+                logger.warning(
+                    "Session hygiene planning failed: %s", _hyg_plan_err
                 )
-                _warn_token_threshold = int(_hyg_context_length * 0.95)
-
-                _msg_count = len(history)
-
-                # Prefer actual API-reported tokens from the last turn
-                # (stored in session entry) over the rough char-based estimate.
-                _stored_tokens = session_entry.last_prompt_tokens
-                if _stored_tokens > 0:
-                    _approx_tokens = _stored_tokens
-                    _token_source = "actual"
-                else:
-                    _approx_tokens = estimate_messages_tokens_rough(history)
-                    _token_source = "estimated"
-                    # Note: rough estimates overestimate by 30-50% for code/JSON-heavy
-                    # sessions, but that just means hygiene fires a bit early — which
-                    # is safe and harmless.  The 85% threshold already provides ample
-                    # headroom (agent's own compressor runs at 50%).  A previous 1.4x
-                    # multiplier tried to compensate by inflating the threshold, but
-                    # 85% * 1.4 = 119% of context — which exceeds the model's limit
-                    # and prevented hygiene from ever firing for ~200K models (GLM-5).
-
-                # Hard safety valve: force compression if message count is
-                # extreme, regardless of token estimates.  This breaks the
-                # death spiral where API disconnects prevent token data
-                # collection, which prevents compression, which causes more
-                # disconnects.  400 messages is well above normal sessions
-                # but catches runaway growth before it becomes unrecoverable.
-                # Threshold is configurable via
-                # compression.hygiene_hard_message_limit.
-                # (#2153)
-                _HARD_MSG_LIMIT = _hyg_hard_msg_limit
-                _needs_compress = (
-                    _approx_tokens >= _compress_token_threshold
-                    or _msg_count >= _HARD_MSG_LIMIT
+                _hyg_plan = None
+            if _hyg_plan:
+                history = await self._run_session_hygiene_compress(
+                    _hyg_plan,
+                    history,
+                    session_entry,
+                    session_key,
+                    source,
+                    event,
                 )
-
-                if _needs_compress:
-                    logger.info(
-                        "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
-                        "(threshold: %s%% of %s = %s tokens)",
-                        _msg_count, f"{_approx_tokens:,}", _token_source,
-                        int(_hyg_threshold_pct * 100),
-                        f"{_hyg_context_length:,}",
-                        f"{_compress_token_threshold:,}",
-                    )
-
-                    _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-
-                    try:
-                        from run_agent import AIAgent
-
-                        _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
-                            source=source,
-                            session_key=session_key,
-                            user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
-                        )
-                        if _hyg_runtime.get("api_key"):
-                            _hyg_msgs = [
-                                {"role": m.get("role"), "content": m.get("content")}
-                                for m in history
-                                if m.get("role") in {"user", "assistant"}
-                                and m.get("content")
-                            ]
-
-                            if len(_hyg_msgs) >= 4:
-                                _hyg_agent = AIAgent(
-                                    **_hyg_runtime,
-                                    model=_hyg_model,
-                                    max_iterations=4,
-                                    quiet_mode=True,
-                                    skip_memory=True,
-                                    enabled_toolsets=["memory"],
-                                    session_id=session_entry.session_id,
-                                )
-                                try:
-                                    _hyg_agent._print_fn = lambda *a, **kw: None
-
-                                    loop = asyncio.get_running_loop()
-                                    _compressed, _ = await loop.run_in_executor(
-                                        None,
-                                        lambda: _hyg_agent._compress_context(
-                                            _hyg_msgs, "",
-                                            approx_tokens=_approx_tokens,
-                                        ),
-                                    )
-
-                                    # _compress_context ends the old session and creates
-                                    # a new session_id.  Write compressed messages into
-                                    # the NEW session so the old transcript stays intact
-                                    # and searchable via session_search.
-                                    _hyg_new_sid = _hyg_agent.session_id
-                                    if _hyg_new_sid != session_entry.session_id:
-                                        session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
-                                        self._sync_telegram_topic_binding(
-                                            source, session_entry,
-                                            reason="hygiene-compression",
-                                        )
-
-                                    self.session_store.rewrite_transcript(
-                                        session_entry.session_id, _compressed
-                                    )
-                                    # Reset stored token count — transcript was rewritten
-                                    session_entry.last_prompt_tokens = 0
-                                    history = _compressed
-                                    _new_count = len(_compressed)
-                                    _new_tokens = estimate_messages_tokens_rough(
-                                        _compressed
-                                    )
-
-                                    logger.info(
-                                        "Session hygiene: compressed %s → %s msgs, "
-                                        "~%s → ~%s tokens",
-                                        _msg_count, _new_count,
-                                        f"{_approx_tokens:,}", f"{_new_tokens:,}",
-                                    )
-
-                                    if _new_tokens >= _warn_token_threshold:
-                                        logger.warning(
-                                            "Session hygiene: still ~%s tokens after "
-                                            "compression",
-                                            f"{_new_tokens:,}",
-                                        )
-
-                                    # If summary generation failed, the
-                                    # compressor aborts entirely and returns
-                                    # messages unchanged — nothing is dropped.
-                                    # Surface a visible warning to the gateway
-                                    # user — agent.log alone is invisible on
-                                    # TG/Discord/etc. — so they know the chat
-                                    # is "frozen" at the current size and can
-                                    # /compress to retry or /reset to start
-                                    # fresh.
-                                    _comp = getattr(_hyg_agent, "context_compressor", None)
-                                    if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
-                                        _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
-                                        _warn_msg = (
-                                            "⚠️ Context compression aborted "
-                                            f"({_err}). No messages were dropped — "
-                                            "conversation is unchanged. Run /compress "
-                                            "to retry, /reset for a clean session, or "
-                                            "check your auxiliary.compression model "
-                                            "configuration."
-                                        )
-                                        try:
-                                            _adapter = self.adapters.get(source.platform)
-                                            if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
-                                        except Exception as _werr:
-                                            logger.warning(
-                                                "Failed to deliver compression-failure warning to user: %s",
-                                                _werr,
-                                            )
-                                    # Separately: if the user's CONFIGURED aux
-                                    # model failed and we recovered by falling
-                                    # back to the main model, tell them — a
-                                    # misconfigured auxiliary.compression.model
-                                    # is something only they can fix, and
-                                    # silent recovery would hide it.
-                                    elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
-                                        _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
-                                        _aux_msg = (
-                                            f"ℹ️ Configured compression model `{_aux_model}` "
-                                            f"failed ({_aux_err}). Recovered using your main "
-                                            "model — context is intact — but you may want to "
-                                            "check `auxiliary.compression.model` in config.yaml."
-                                        )
-                                        try:
-                                            _adapter = self.adapters.get(source.platform)
-                                            if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
-                                        except Exception as _werr:
-                                            logger.warning(
-                                                "Failed to deliver aux-model-fallback notice to user: %s",
-                                                _werr,
-                                            )
-                                finally:
-                                    # Evict the cached agent so the next turn
-                                    # rebuilds its system prompt from current
-                                    # SOUL.md, memory, and skills.
-                                    self._evict_cached_agent(session_key)
-                                    self._cleanup_agent_resources(_hyg_agent)
-
-                    except Exception as e:
-                        logger.warning(
-                            "Session hygiene auto-compress failed: %s", e
-                        )
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
@@ -9102,6 +8855,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._refresh_agent_cache_message_count(
                 session_key, session_entry.session_id
             )
+            try:
+                await asyncio.to_thread(
+                    self._load_transcript_sync,
+                    session_entry.session_id,
+                    session_key,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to warm transcript cache after turn for %s",
+                    session_key,
+                    exc_info=True,
+                )
 
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
@@ -13128,6 +12893,375 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if release_running_state:
             self._release_running_agent_state(session_key)
 
+    def _plan_session_hygiene_sync(
+        self,
+        history: List[Dict[str, Any]],
+        session_entry,
+        session_key: str,
+        source,
+    ) -> Optional[Dict[str, Any]]:
+        """Evaluate whether pre-agent session hygiene compression is needed.
+
+        Runs synchronously — call via ``asyncio.to_thread`` from the gateway
+        event loop. Returns ``None`` when hygiene is disabled, skipped, or
+        not needed; otherwise a dict with compression parameters.
+        """
+        from agent.model_metadata import (
+            estimate_messages_tokens_rough,
+            get_model_context_length,
+        )
+
+        _hyg_model = "anthropic/claude-sonnet-4.6"
+        _hyg_threshold_pct = 0.85
+        _hyg_compression_enabled = True
+        _hyg_hard_msg_limit = 400
+        _hyg_config_context_length = None
+        _hyg_provider = None
+        _hyg_base_url = None
+        _hyg_api_key = None
+        _hyg_data: dict = {}
+        _hyg_runtime: dict = {}
+        _msg_count = len(history)
+        _stored_tokens = int(getattr(session_entry, "last_prompt_tokens", 0) or 0)
+
+        try:
+            _hyg_data = _load_gateway_config()
+            if _hyg_data:
+                _model_cfg = _hyg_data.get("model", {})
+                if isinstance(_model_cfg, str):
+                    _hyg_model = _model_cfg
+                elif isinstance(_model_cfg, dict):
+                    _hyg_model = _model_cfg.get("default") or _model_cfg.get("model") or _hyg_model
+                    _raw_ctx = _model_cfg.get("context_length")
+                    if _raw_ctx is not None:
+                        try:
+                            _hyg_config_context_length = int(_raw_ctx)
+                        except (TypeError, ValueError):
+                            pass
+                    _hyg_provider = _model_cfg.get("provider") or None
+                    _hyg_base_url = _model_cfg.get("base_url") or None
+
+                _comp_cfg = _hyg_data.get("compression", {})
+                if isinstance(_comp_cfg, dict):
+                    _hyg_compression_enabled = str(
+                        _comp_cfg.get("enabled", True)
+                    ).lower() in {"true", "1", "yes"}
+                    _raw_hard_limit = _comp_cfg.get("hygiene_hard_message_limit")
+                    if _raw_hard_limit is not None:
+                        try:
+                            _parsed = int(_raw_hard_limit)
+                            if _parsed > 0:
+                                _hyg_hard_msg_limit = _parsed
+                        except (TypeError, ValueError):
+                            pass
+
+            try:
+                _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                    source=source,
+                    session_key=session_key,
+                    user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                )
+                _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
+                _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
+                _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
+            except Exception:
+                pass
+
+            if _hyg_config_context_length is None and _hyg_base_url:
+                try:
+                    try:
+                        from hermes_cli.config import get_compatible_custom_providers as _gw_gcp
+                        _hyg_custom_providers = _gw_gcp(_hyg_data)
+                    except Exception:
+                        _hyg_custom_providers = _hyg_data.get("custom_providers")
+                        if not isinstance(_hyg_custom_providers, list):
+                            _hyg_custom_providers = []
+                    for _cp in _hyg_custom_providers:
+                        if not isinstance(_cp, dict):
+                            continue
+                        _cp_url = (_cp.get("base_url") or "").rstrip("/")
+                        if _cp_url and _cp_url == _hyg_base_url.rstrip("/"):
+                            _cp_models = _cp.get("models", {})
+                            if isinstance(_cp_models, dict):
+                                _cp_model_cfg = _cp_models.get(_hyg_model, {})
+                                if isinstance(_cp_model_cfg, dict):
+                                    _cp_ctx = _cp_model_cfg.get("context_length")
+                                    if _cp_ctx is not None:
+                                        _hyg_config_context_length = int(_cp_ctx)
+                            break
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            pass
+
+        if not _hyg_compression_enabled:
+            return None
+
+        _hyg_context_length = get_model_context_length(
+            _hyg_model,
+            base_url=_hyg_base_url or "",
+            api_key=_hyg_api_key or "",
+            config_context_length=_hyg_config_context_length,
+            provider=_hyg_provider or "",
+        )
+        _compress_token_threshold = int(_hyg_context_length * _hyg_threshold_pct)
+        _warn_token_threshold = int(_hyg_context_length * 0.95)
+
+        if _stored_tokens > 0:
+            _approx_tokens = _stored_tokens
+            _token_source = "actual"
+        else:
+            _approx_tokens = estimate_messages_tokens_rough(history)
+            _token_source = "estimated"
+
+        _needs_compress = (
+            _approx_tokens >= _compress_token_threshold
+            or _msg_count >= _hyg_hard_msg_limit
+        )
+        if not _needs_compress:
+            return None
+
+        return {
+            "needs_compress": True,
+            "hyg_model": _hyg_model,
+            "hyg_runtime": _hyg_runtime,
+            "hyg_data": _hyg_data,
+            "approx_tokens": _approx_tokens,
+            "token_source": _token_source,
+            "msg_count": _msg_count,
+            "hyg_context_length": _hyg_context_length,
+            "compress_token_threshold": _compress_token_threshold,
+            "warn_token_threshold": _warn_token_threshold,
+            "hyg_threshold_pct": _hyg_threshold_pct,
+            "hyg_hard_msg_limit": _hyg_hard_msg_limit,
+        }
+
+    async def _run_session_hygiene_compress(
+        self,
+        plan: Dict[str, Any],
+        history: List[Dict[str, Any]],
+        session_entry,
+        session_key: str,
+        source,
+        event,
+    ) -> List[Dict[str, Any]]:
+        """Run pre-agent hygiene compression when ``_plan_session_hygiene_sync`` says so."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+        from run_agent import AIAgent
+
+        _approx_tokens = plan["approx_tokens"]
+        _token_source = plan["token_source"]
+        _msg_count = plan["msg_count"]
+        _hyg_context_length = plan["hyg_context_length"]
+        _compress_token_threshold = plan["compress_token_threshold"]
+        _warn_token_threshold = plan["warn_token_threshold"]
+        _hyg_threshold_pct = plan["hyg_threshold_pct"]
+        _hyg_model = plan["hyg_model"]
+        _hyg_runtime = plan["hyg_runtime"]
+
+        logger.info(
+            "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
+            "(threshold: %s%% of %s = %s tokens)",
+            _msg_count, f"{_approx_tokens:,}", _token_source,
+            int(_hyg_threshold_pct * 100),
+            f"{_hyg_context_length:,}",
+            f"{_compress_token_threshold:,}",
+        )
+
+        _hyg_meta = self._thread_metadata_for_source(
+            source, self._reply_anchor_for_event(event)
+        )
+
+        try:
+            if not _hyg_runtime.get("api_key"):
+                return history
+            _hyg_msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in {"user", "assistant"}
+                and m.get("content")
+            ]
+            if len(_hyg_msgs) < 4:
+                return history
+
+            _hyg_agent = AIAgent(
+                **_hyg_runtime,
+                model=_hyg_model,
+                max_iterations=4,
+                quiet_mode=True,
+                skip_memory=True,
+                enabled_toolsets=["memory"],
+                session_id=session_entry.session_id,
+            )
+            try:
+                _hyg_agent._print_fn = lambda *a, **kw: None
+
+                loop = asyncio.get_running_loop()
+                _compressed, _ = await loop.run_in_executor(
+                    None,
+                    lambda: _hyg_agent._compress_context(
+                        _hyg_msgs, "",
+                        approx_tokens=_approx_tokens,
+                    ),
+                )
+
+                _hyg_new_sid = _hyg_agent.session_id
+                if _hyg_new_sid != session_entry.session_id:
+                    session_entry.session_id = _hyg_new_sid
+                    self.session_store._save()
+                    self._sync_telegram_topic_binding(
+                        source, session_entry,
+                        reason="hygiene-compression",
+                    )
+
+                self.session_store.rewrite_transcript(
+                    session_entry.session_id, _compressed
+                )
+                session_entry.last_prompt_tokens = 0
+                self._invalidate_transcript_cache(session_key)
+                _new_count = len(_compressed)
+                _new_tokens = estimate_messages_tokens_rough(_compressed)
+
+                logger.info(
+                    "Session hygiene: compressed %s → %s msgs, "
+                    "~%s → ~%s tokens",
+                    _msg_count, _new_count,
+                    f"{_approx_tokens:,}", f"{_new_tokens:,}",
+                )
+
+                if _new_tokens >= _warn_token_threshold:
+                    logger.warning(
+                        "Session hygiene: still ~%s tokens after compression",
+                        f"{_new_tokens:,}",
+                    )
+
+                _comp = getattr(_hyg_agent, "context_compressor", None)
+                if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
+                    _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
+                    _warn_msg = (
+                        "⚠️ Context compression aborted "
+                        f"({_err}). No messages were dropped — "
+                        "conversation is unchanged. Run /compress "
+                        "to retry, /reset for a clean session, or "
+                        "check your auxiliary.compression model "
+                        "configuration."
+                    )
+                    try:
+                        _adapter = self.adapters.get(source.platform)
+                        if _adapter and source.chat_id:
+                            await _adapter.send(
+                                source.chat_id, _warn_msg, metadata=_hyg_meta
+                            )
+                    except Exception as _werr:
+                        logger.warning(
+                            "Failed to deliver compression-failure warning to user: %s",
+                            _werr,
+                        )
+                elif _comp is not None and getattr(
+                    _comp, "_last_aux_model_failure_model", None
+                ):
+                    _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
+                    _aux_err = (
+                        getattr(_comp, "_last_aux_model_failure_error", None)
+                        or "unknown error"
+                    )
+                    _aux_msg = (
+                        f"ℹ️ Configured compression model `{_aux_model}` "
+                        f"failed ({_aux_err}). Recovered using your main "
+                        "model — context is intact — but you may want to "
+                        "check `auxiliary.compression.model` in config.yaml."
+                    )
+                    try:
+                        _adapter = self.adapters.get(source.platform)
+                        if _adapter and source.chat_id:
+                            await _adapter.send(
+                                source.chat_id, _aux_msg, metadata=_hyg_meta
+                            )
+                    except Exception as _werr:
+                        logger.warning(
+                            "Failed to deliver aux-model-fallback notice to user: %s",
+                            _werr,
+                        )
+                return _compressed
+            finally:
+                self._evict_cached_agent(session_key)
+                self._cleanup_agent_resources(_hyg_agent)
+        except Exception as e:
+            logger.warning("Session hygiene auto-compress failed: %s", e)
+        return history
+
+    def _invalidate_transcript_cache(self, session_key: Optional[str] = None) -> None:
+        """Drop cached transcript snapshots for one session or all sessions."""
+        cache = getattr(self, "_transcript_cache", None)
+        if not cache:
+            return
+        if session_key:
+            cache.pop(session_key, None)
+        else:
+            cache.clear()
+
+    def _invalidate_transcript_cache_for_session_id(self, session_id: str) -> None:
+        """Drop cached transcripts for every session key sharing *session_id*."""
+        if not session_id:
+            return
+        cache = getattr(self, "_transcript_cache", None)
+        if not cache:
+            return
+        for key in [k for k, v in list(cache.items()) if v[0] == session_id]:
+            cache.pop(key, None)
+
+    def _get_transcript_cache_token(self, session_id: Optional[str]) -> Optional[tuple]:
+        if self._session_db is None or not session_id:
+            return None
+        try:
+            return self._session_db.get_transcript_cache_token(session_id)
+        except Exception:
+            pass
+        return None
+
+    def _get_session_message_count(self, session_id: Optional[str]) -> Optional[int]:
+        if self._session_db is None or not session_id:
+            return None
+        try:
+            row = self._session_db.get_session(session_id)
+            if row:
+                return row.get("message_count", 0)
+        except Exception:
+            pass
+        return None
+
+    def _load_transcript_sync(
+        self,
+        session_id: str,
+        session_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load transcript from SessionDB, reusing a per-session cache when valid."""
+        cache_token = self._get_transcript_cache_token(session_id)
+        cache = getattr(self, "_transcript_cache", None)
+        if cache is not None and session_key and cache_token is not None:
+            cached = cache.get(session_key)
+            if (
+                cached is not None
+                and cached[0] == session_id
+                and cached[1] == cache_token
+            ):
+                try:
+                    cache.move_to_end(session_key)
+                except Exception:
+                    pass
+                return cached[2]
+
+        history = self.session_store.load_transcript(session_id)
+        if cache is not None and session_key and cache_token is not None:
+            cache[session_key] = (session_id, cache_token, history)
+            try:
+                cache.move_to_end(session_key)
+                while len(cache) > getattr(self, "_transcript_cache_max", 512):
+                    cache.popitem(last=False)
+            except Exception:
+                pass
+        return history
+
     def _refresh_agent_cache_message_count(
         self, session_key: str, session_id: Optional[str]
     ) -> None:
@@ -13203,6 +13337,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``_agent_cache_lock`` on slow socket teardown — mirrors the
         cap-enforcer and idle-sweeper paths.
         """
+        self._invalidate_transcript_cache(session_key)
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None
         if _lock:

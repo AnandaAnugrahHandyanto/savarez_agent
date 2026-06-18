@@ -68,7 +68,7 @@ class TestApplyAnthropicCacheControl:
         result = apply_anthropic_cache_control([])
         assert result == []
 
-    def test_returns_deep_copy(self):
+    def test_returns_shallow_copy_of_marked_messages(self):
         msgs = [{"role": "user", "content": "Hello"}]
         result = apply_anthropic_cache_control(msgs)
         assert result is not msgs

@@ -983,10 +983,10 @@ def build_environment_hints() -> str:
     extra = (os.getenv("HERMES_ENVIRONMENT_HINT") or "").strip()
     if not extra:
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
 
             extra = str(
-                (load_config().get("agent", {}) or {}).get("environment_hint", "")
+                (load_config_readonly().get("agent", {}) or {}).get("environment_hint", "")
             ).strip()
         except Exception as e:
             logger.debug("Could not read agent.environment_hint from config: %s", e)

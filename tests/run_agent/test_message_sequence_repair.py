@@ -272,6 +272,25 @@ def test_cursor_helper_safe_without_cursor_attribute():
     assert not hasattr(agent, "_last_flushed_db_idx")
 
 
+def test_flush_scan_cursor_resets_when_repair_compacts_list():
+    """Incremental DB flush scan cursor must reset after repair shrinks the
+    list, or unflushed rows shifted below the cursor are skipped."""
+    agent = _bare_agent()
+    flushed_a = {"role": "user", "content": "first"}
+    flushed_b = {"role": "user", "content": "second"}
+    unflushed_assistant = {"role": "assistant", "content": "answer"}
+    messages = [flushed_a, flushed_b, unflushed_assistant]
+    agent._last_flushed_db_idx = 2
+    agent._flush_scan_cursor = 2
+    agent._flushed_db_message_ids = {id(flushed_a), id(flushed_b)}
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert agent._flush_scan_cursor == 0
+
+
 def test_flush_guard_clamps_overshooting_cursor():
     """_flush_messages_to_session_db safety net: an overshooting cursor must
     not produce a negative-start slice that skips everything (#44837)."""
