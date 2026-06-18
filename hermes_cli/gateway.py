@@ -1045,12 +1045,7 @@ def _recover_pending_systemd_restart(
         print(
             f"↻ Clearing failed state for pending {scope_label.lower()} service restart..."
         )
-        _run_systemctl(
-            ["reset-failed", svc],
-            system=system,
-            check=False,
-            timeout=30,
-        )
+        _reset_failed_quiet(svc, system=system)
         _run_systemctl(
             ["start", svc],
             system=system,
@@ -1737,6 +1732,35 @@ def _run_systemctl(
         return subprocess.run(_systemctl_cmd(system) + args, **kwargs)
     except FileNotFoundError:
         raise RuntimeError("systemctl is not available on this system") from None
+
+
+def _reset_failed_quiet(service: str, *, system: bool = False) -> None:
+    """Best-effort ``systemctl reset-failed`` that swallows benign noise.
+
+    ``reset-failed`` only clears a unit's *failed* state. When there is nothing
+    to clear — most often because the unit is currently stopped and systemd has
+    dropped it from memory (disabled units are unloaded after a daemon-reload) —
+    systemctl exits non-zero with ``Unit <svc> not loaded`` / ``not found``.
+    Every caller follows this with a ``start``/``restart`` that loads the unit
+    anyway, so the message is harmless; printing it just makes a routine
+    ``hermes gateway restart`` of a stopped gateway look like it failed.
+
+    Capture and discard that benign output, but still surface genuinely
+    unexpected stderr so real problems aren't hidden.
+    """
+    result = _run_systemctl(
+        ["reset-failed", service],
+        system=system,
+        check=False,
+        timeout=30,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return
+    stderr = (result.stderr or "").strip()
+    if stderr and "not loaded" not in stderr and "not found" not in stderr:
+        sys.stderr.write(stderr + "\n")
 
 
 def _service_scope_label(system: bool = False) -> str:
@@ -2959,12 +2983,7 @@ def systemd_restart(system: bool = False):
             # RestartSec can otherwise delay the relaunch even though the
             # operator asked for an immediate restart, so kick the unit once
             # the old PID has exited and then wait for the replacement PID.
-            _run_systemctl(
-                ["reset-failed", svc],
-                system=system,
-                check=False,
-                timeout=30,
-            )
+            _reset_failed_quiet(svc, system=system)
             _run_systemctl(
                 ["restart", svc],
                 system=system,
@@ -2980,12 +2999,7 @@ def systemd_restart(system: bool = False):
             f"⚠ Graceful restart did not complete within {int(drain_timeout + 5)}s; "
             "forcing a service restart..."
         )
-        _run_systemctl(
-            ["reset-failed", svc],
-            system=system,
-            check=False,
-            timeout=30,
-        )
+        _reset_failed_quiet(svc, system=system)
         try:
             _run_systemctl(["restart", svc], system=system, check=True, timeout=90)
         except subprocess.CalledProcessError as exc:
@@ -3008,12 +3022,7 @@ def systemd_restart(system: bool = False):
     if _recover_pending_systemd_restart(system=system, previous_pid=pid):
         return
 
-    _run_systemctl(
-        ["reset-failed", get_service_name()],
-        system=system,
-        check=False,
-        timeout=30,
-    )
+    _reset_failed_quiet(get_service_name(), system=system)
     try:
         _run_systemctl(
             ["restart", get_service_name()], system=system, check=True, timeout=90
