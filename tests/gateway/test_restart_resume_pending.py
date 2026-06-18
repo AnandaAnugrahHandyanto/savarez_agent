@@ -38,6 +38,7 @@ from gateway.run import (
     _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
+    _gateway_model_history_for_run,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
@@ -102,6 +103,41 @@ def _build_agent_history(history: list) -> list:
             if content:
                 agent_history.append({"role": role, "content": content})
     return agent_history
+
+
+def test_gateway_model_history_sanitizes_completed_tool_payloads():
+    agent_history = [
+        {"role": "user", "content": "look this up"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "private",
+            "tool_calls": [{"id": "call_1", "function": {"name": "search"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "secret" * 100},
+        {"role": "assistant", "content": "Found it."},
+    ]
+
+    model_history = _gateway_model_history_for_run(agent_history)
+
+    assert model_history == [
+        {"role": "user", "content": "look this up"},
+        {"role": "assistant", "content": "Found it."},
+    ]
+    assert "tool_call_id" not in repr(model_history)
+    assert "secret" not in repr(model_history)
+
+
+def test_gateway_model_history_preserves_fresh_interrupted_tool_context():
+    agent_history = [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "pending result"},
+    ]
+
+    assert _gateway_model_history_for_run(
+        agent_history,
+        preserve_interrupted_tool_context=True,
+    ) is agent_history
 
 
 def _simulate_note_injection(

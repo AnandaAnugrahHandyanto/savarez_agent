@@ -796,6 +796,17 @@ def _build_gateway_agent_history(
     return agent_history, observed_context
 
 
+def _gateway_model_history_for_run(
+    agent_history: List[Dict[str, Any]],
+    *,
+    preserve_interrupted_tool_context: bool = False,
+) -> List[Dict[str, Any]]:
+    if preserve_interrupted_tool_context:
+        return agent_history
+    from agent.resume_history import sanitize_resumed_conversation_history
+    return sanitize_resumed_conversation_history(agent_history)
+
+
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
     """Prepend observed Telegram context to the API-only current user turn."""
 
@@ -15249,6 +15260,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     + message
                 )
 
+            model_agent_history = _gateway_model_history_for_run(
+                agent_history,
+                preserve_interrupted_tool_context=(
+                    _is_resume_pending or _has_fresh_tool_tail
+                ),
+            )
+
             # Consume one-shot /reload-skills note (if the user ran
             # /reload-skills since their last turn in this session). Same
             # queue pattern as CLI: prepend to the NEXT user message, then
@@ -15300,7 +15318,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     observed_group_context,
                 )
                 _conversation_kwargs = {
-                    "conversation_history": agent_history,
+                    "conversation_history": model_agent_history,
                     "task_id": session_id,
                 }
                 if _persist_user_message_override is not None:

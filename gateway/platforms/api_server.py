@@ -1563,9 +1563,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
         history = self._conversation_history_for_session(session_id)
+        from agent.resume_history import sanitize_resumed_conversation_history
+        model_history = sanitize_resumed_conversation_history(history)
         result, usage = await self._run_agent(
             user_message=user_message,
-            conversation_history=history,
+            conversation_history=model_history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
@@ -1652,9 +1654,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = self._conversation_history_for_session(session_id)
+                from agent.resume_history import sanitize_resumed_conversation_history
+                model_history = sanitize_resumed_conversation_history(history)
                 result, usage = await self._run_agent(
                     user_message=user_message,
-                    conversation_history=history,
+                    conversation_history=model_history,
                     ephemeral_system_prompt=system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_delta,
@@ -1663,7 +1667,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
-                turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
+                turn_messages = self._turn_transcript_messages(model_history, user_message, result) if isinstance(result, dict) else []
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
@@ -1823,7 +1827,10 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 db = self._ensure_session_db()
                 if db is not None:
-                    history = db.get_messages_as_conversation(session_id)
+                    from agent.resume_history import sanitize_resumed_conversation_history
+                    history = sanitize_resumed_conversation_history(
+                        db.get_messages_as_conversation(session_id)
+                    )
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []

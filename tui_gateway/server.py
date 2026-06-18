@@ -6059,8 +6059,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
 
+            from agent.resume_history import sanitize_resumed_conversation_history
             run_kwargs = {
-                "conversation_history": list(history),
+                "conversation_history": sanitize_resumed_conversation_history(history),
                 "stream_callback": _stream,
             }
             try:
