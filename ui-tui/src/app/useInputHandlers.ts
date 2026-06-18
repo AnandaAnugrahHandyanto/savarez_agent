@@ -10,7 +10,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isInterruptKey, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
@@ -80,7 +80,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
-  const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
+  const { actions, composer, gateway, interruptKey, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
 
   const overlay = useStore($overlayState)
@@ -426,7 +426,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // handled above in the `isBlocked` branch and never reach here anyway, but
     // the explicit check keeps the intent readable.  Also skip when completions
     // are open so Esc can first dismiss the autocomplete list.
-    if (key.escape && live.busy && live.sid && !isBlocked && !cState.completions.length) {
+    if (isInterruptKey(key, ch, interruptKey) && live.busy && live.sid && !isBlocked && !cState.completions.length) {
       return turnController.interruptTurn({
         appendMessage: actions.appendMessage,
         gw: gateway.gw,
