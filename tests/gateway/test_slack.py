@@ -1798,8 +1798,8 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.text == "what's the weather?"
         assert "<@U_BOT>" not in msg_event.text
+        assert msg_event.text.endswith("what's the weather?")
 
     @pytest.mark.asyncio
     async def test_bot_messages_ignored(self, adapter):
@@ -2654,9 +2654,10 @@ class TestThreadReplyHandling:
         await adapter_with_session_store._handle_slack_message(event)
         adapter_with_session_store.handle_message.assert_called_once()
 
-        # Verify the text is passed through unchanged (no mention stripping needed)
+        # Verify the user text is passed through unchanged (no mention stripping needed).
+        # Note: msg_event.text is prefixed with a [Slack context] block.
         msg_event = adapter_with_session_store.handle_message.call_args[0][0]
-        assert msg_event.text == "Follow-up question"
+        assert msg_event.text.endswith("Follow-up question")
 
     @pytest.mark.asyncio
     async def test_thread_reply_with_mention_strips_bot_id(
@@ -2681,7 +2682,7 @@ class TestThreadReplyHandling:
 
         msg_event = adapter_with_session_store.handle_message.call_args[0][0]
         assert "<@U_BOT>" not in msg_event.text
-        assert msg_event.text == "thanks for the help"
+        assert msg_event.text.endswith("thanks for the help")
 
     @pytest.mark.asyncio
     async def test_top_level_message_requires_mention_even_with_session(

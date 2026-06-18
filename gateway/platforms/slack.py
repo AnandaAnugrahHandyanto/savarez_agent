@@ -332,6 +332,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._channel_info_cache: Dict[str, Dict[str, Any]] = {}  # channel_id → {name, is_private}
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -1779,6 +1780,35 @@ class SlackAdapter(BasePlatformAdapter):
             self._user_name_cache[user_id] = user_id
             return user_id
 
+    async def _resolve_channel_info(self, channel_id: str, team_id: str = "") -> Dict[str, Any]:
+        """Resolve a Slack channel ID to its name and privacy flag, with caching.
+
+        Cache is capped at 100 entries; oldest 50 are evicted when full so stale
+        channel renames eventually cycle out without requiring a restart.
+        """
+        if channel_id in self._channel_info_cache:
+            return self._channel_info_cache[channel_id]
+        default: Dict[str, Any] = {"name": channel_id, "is_private": False}
+        if not channel_id or not self._app:
+            return default
+        if len(self._channel_info_cache) >= 100:
+            for k in list(self._channel_info_cache)[:50]:
+                del self._channel_info_cache[k]
+        try:
+            client = self._get_client(team_id) if team_id else self._app.client
+            result = await client.conversations_info(channel=channel_id)
+            ch = result.get("channel", {})
+            info: Dict[str, Any] = {
+                "name": ch.get("name") or channel_id,
+                "is_private": bool(ch.get("is_private")),
+            }
+            self._channel_info_cache[channel_id] = info
+            return info
+        except Exception as e:
+            logger.debug("[Slack] conversations.info failed for %s: %s", channel_id, e)
+            self._channel_info_cache[channel_id] = default
+            return default
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -2429,6 +2459,14 @@ class SlackAdapter(BasePlatformAdapter):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
 
+        # Resolve channel name and privacy flag (skip for DMs — channel_id is the DM ID)
+        channel_name = channel_id
+        channel_is_private = False
+        if not is_dm:
+            _ch_info = await self._resolve_channel_info(channel_id, team_id)
+            channel_name = _ch_info["name"]
+            channel_is_private = _ch_info["is_private"]
+
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).
@@ -2786,10 +2824,25 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
+        # Inject Slack channel context so the agent can infer project/client from channel name.
+        # Only for channel messages — DMs have no meaningful channel name to surface.
+        if not is_dm:
+            _ctx_lines = [
+                "[Slack context]",
+                "- source_platform: slack",
+                f"- channel_id: {channel_id}",
+                f"- channel_name: {channel_name}",
+                f"- channel_is_private: {str(channel_is_private).lower()}",
+            ]
+            if thread_ts:
+                _ctx_lines.append(f"- thread_ts: {thread_ts}")
+            _ctx_lines.append(f"- message_ts: {ts}")
+            text = "\n".join(_ctx_lines) + "\n\n" + text
+
         # Build source
         source = self.build_source(
             chat_id=channel_id,
-            chat_name=channel_id,  # Will be resolved later if needed
+            chat_name=channel_name,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
             user_name=user_name,
