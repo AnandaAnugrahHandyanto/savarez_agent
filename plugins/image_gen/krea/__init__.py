@@ -256,7 +256,7 @@ class KreaImageGenProvider(ImageGenProvider):
         if isinstance(styles, list) and styles:
             payload["styles"] = styles
 
-        image_style_references = kwargs.get("image_style_references")
+        image_style_references = kwargs.get("image_style_references") or kwargs.get("reference_images")
         if isinstance(image_style_references, list) and image_style_references:
             # Krea caps at 10 refs per request.
             payload["image_style_references"] = image_style_references[:10]

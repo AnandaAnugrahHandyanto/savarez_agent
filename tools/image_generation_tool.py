@@ -20,13 +20,16 @@ Pricing shown in UI strings is as-of the initial commit; we accept drift and
 update when it's noticed.
 """
 
+import base64
 import json
 import logging
+import mimetypes
 import os
+import pathlib
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
 # eagerly added ~64 ms to every CLI cold start because
@@ -251,6 +254,31 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    "openai/gpt-image-2/edit": {
+        "display": "GPT Image 2 Edit",
+        "speed": "~20s",
+        "strengths": "Reference/image editing fallback with prompt adherence",
+        "price": "$0.011+ per image with 1 input image (quality/size dependent)",
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
+        },
+        "defaults": {
+            # Low keeps the managed fallback cheap. Krea remains the preferred
+            # style-reference path; this endpoint exists to preserve refs when
+            # Krea is not enabled on the Nous Portal meter set.
+            "quality": "low",
+            "num_images": 1,
+            "output_format": "png",
+        },
+        "supports": {
+            "prompt", "image_size", "quality", "num_images", "output_format",
+            "image_urls", "sync_mode",
+        },
+        "upscale": False,
+    },
     "fal-ai/ideogram/v3": {
         "display": "Ideogram V3",
         "speed": "~5s",
@@ -370,6 +398,8 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
 DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
+REFERENCE_CAPABLE_MODEL = "fal-ai/krea/v2/medium/text-to-image"
+REFERENCE_EDIT_FALLBACK_MODEL = "openai/gpt-image-2/edit"
 
 DEFAULT_ASPECT_RATIO = "landscape"
 VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
@@ -554,6 +584,108 @@ def _build_fal_payload(
     return {k: v for k, v in payload.items() if k in supports}
 
 
+def _reference_image_to_payload(value: Any) -> Optional[Dict[str, str]]:
+    """Normalize one reference image into FAL/Krea's ``{"url": ...}`` shape.
+
+    Public callers may pass an HTTP(S) URL, a data URL, a local file path, or
+    the already-normalized dict shape used by Krea. Local files are converted
+    to data URLs so the managed FAL gateway can read them without direct access
+    to the user's filesystem.
+    """
+    if not value:
+        return None
+
+    if isinstance(value, dict):
+        raw_url = value.get("url")
+        if raw_url is None and isinstance(value.get("image_url"), dict):
+            raw_url = value["image_url"].get("url")
+        if not isinstance(raw_url, str) or not raw_url.strip():
+            return None
+        url = raw_url.strip()
+        if url.startswith(("http://", "https://", "data:")):
+            return {"url": url}
+        value = url
+
+    if not isinstance(value, str):
+        return None
+
+    source = value.strip()
+    if not source:
+        return None
+    if source.startswith(("http://", "https://", "data:")):
+        return {"url": source}
+
+    path = pathlib.Path(source).expanduser()
+    if not path.is_absolute():
+        path = pathlib.Path.cwd() / path
+    if not path.is_file():
+        raise ValueError(f"Reference image is not a readable file: {source}")
+
+    mime, _ = mimetypes.guess_type(str(path))
+    if not mime or not mime.startswith("image/"):
+        mime = "image/png"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {"url": f"data:{mime};base64,{encoded}"}
+
+
+def _normalize_reference_images(reference_images: Any) -> List[Dict[str, str]]:
+    """Return up to 10 normalized reference images for style/character refs."""
+    if not reference_images:
+        return []
+    if isinstance(reference_images, (str, dict)):
+        raw_refs = [reference_images]
+    elif isinstance(reference_images, (list, tuple)):
+        raw_refs = list(reference_images)
+    else:
+        raise ValueError("reference_images must be a string, dict, or list")
+
+    normalized: List[Dict[str, str]] = []
+    for ref in raw_refs:
+        item = _reference_image_to_payload(ref)
+        if item:
+            normalized.append(item)
+        if len(normalized) >= 10:
+            break
+    return normalized
+
+
+def _resolve_reference_capable_model(model_id: str, meta: Dict[str, Any]) -> tuple:
+    """Use a reference-capable model when refs are supplied to a text-only model."""
+    if _reference_override_key(meta):
+        return model_id, meta
+    fallback_meta = FAL_MODELS.get(REFERENCE_CAPABLE_MODEL)
+    if fallback_meta is None:
+        return model_id, meta
+    logger.info(
+        "Reference images supplied; switching image generation model from %s to %s",
+        model_id,
+        REFERENCE_CAPABLE_MODEL,
+    )
+    return REFERENCE_CAPABLE_MODEL, fallback_meta
+
+
+def _reference_override_key(meta: Dict[str, Any]) -> Optional[str]:
+    """Return the model-specific reference input field, if one exists."""
+    supports = meta.get("supports", set())
+    if "image_style_references" in supports:
+        return "image_style_references"
+    if "image_urls" in supports:
+        return "image_urls"
+    return None
+
+
+def _reference_overrides_for_model(
+    meta: Dict[str, Any], reference_payload: List[Dict[str, str]]
+) -> Dict[str, Any]:
+    """Translate normalized references into a model's native payload shape."""
+    key = _reference_override_key(meta)
+    if key == "image_style_references":
+        return {key: reference_payload}
+    if key == "image_urls":
+        return {key: [item["url"] for item in reference_payload if item.get("url")]}
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Upscaler
 # ---------------------------------------------------------------------------
@@ -729,18 +861,24 @@ def image_generate_tool(
     num_images: Optional[int] = None,
     output_format: Optional[str] = None,
     seed: Optional[int] = None,
+    reference_images: Optional[list] = None,
+    image_style_references: Optional[list] = None,
 ) -> str:
     """Generate an image from a text prompt using the configured FAL model.
 
-    The agent-facing schema exposes only ``prompt`` and ``aspect_ratio``; the
-    remaining kwargs are overrides for direct Python callers and are filtered
-    per-model via the ``supports`` whitelist (unsupported overrides are
-    silently dropped so legacy callers don't break when switching models).
+    The agent-facing schema exposes ``prompt``, ``aspect_ratio``, and optional
+    ``reference_images``. The remaining kwargs are overrides for direct Python
+    callers and are filtered per-model via the ``supports`` whitelist
+    (unsupported overrides are silently dropped so legacy callers don't break
+    when switching models). When references are supplied to a text-only model,
+    Hermes tries the configured FAL reference-capable fallback and retries the
+    text-only model with a warning if that managed route is unavailable.
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "error": str, "error_type": str}``.
     """
     model_id, meta = _resolve_fal_model()
+    original_model_id, original_meta = model_id, meta
 
     debug_call_data = {
         "model": model_id,
@@ -752,6 +890,8 @@ def image_generate_tool(
             "num_images": num_images,
             "output_format": output_format,
             "seed": seed,
+            # Do not log raw data URLs or local reference paths. Count only.
+            "reference_images": 0,
         },
         "error": None,
         "success": False,
@@ -786,6 +926,16 @@ def image_generate_tool(
         if output_format is not None:
             overrides["output_format"] = output_format
 
+        reference_payload = _normalize_reference_images(
+            image_style_references if image_style_references else reference_images
+        )
+        reference_warning = None
+        if reference_payload:
+            model_id, meta = _resolve_reference_capable_model(model_id, meta)
+            debug_call_data["model"] = model_id
+            debug_call_data["parameters"]["reference_images"] = len(reference_payload)
+            overrides.update(_reference_overrides_for_model(meta, reference_payload))
+
         arguments = _build_fal_payload(
             model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
         )
@@ -795,7 +945,79 @@ def image_generate_tool(
             meta.get("display", model_id), model_id, prompt[:80],
         )
 
-        handler = _submit_fal_request(model_id, arguments=arguments)
+        try:
+            handler = _submit_fal_request(model_id, arguments=arguments)
+        except Exception as exc:
+            cause = getattr(exc, "__cause__", None)
+            status = _extract_http_status(exc) or (_extract_http_status(cause) if cause else None)
+            if reference_payload and status is not None and 400 <= status < 500:
+                failed_reference_model = model_id
+                edit_model_id = REFERENCE_EDIT_FALLBACK_MODEL
+                edit_meta = FAL_MODELS.get(edit_model_id)
+                if edit_meta is not None and model_id != edit_model_id:
+                    edit_overrides = dict(overrides)
+                    edit_overrides.pop("image_style_references", None)
+                    edit_overrides.pop("image_urls", None)
+                    edit_overrides.update(
+                        _reference_overrides_for_model(edit_meta, reference_payload)
+                    )
+                    edit_arguments = _build_fal_payload(
+                        edit_model_id,
+                        prompt,
+                        aspect_lc,
+                        seed=seed,
+                        overrides=edit_overrides,
+                    )
+                    try:
+                        handler = _submit_fal_request(edit_model_id, arguments=edit_arguments)
+                        model_id, meta = edit_model_id, edit_meta
+                        debug_call_data["model"] = model_id
+                    except Exception as edit_exc:
+                        edit_cause = getattr(edit_exc, "__cause__", None)
+                        edit_status = _extract_http_status(edit_exc) or (
+                            _extract_http_status(edit_cause) if edit_cause else None
+                        )
+                        if edit_status is None or not (400 <= edit_status < 500):
+                            raise
+                        reference_warning = (
+                            f"Reference-capable model '{failed_reference_model}' was not "
+                            f"available via the current image generation backend (HTTP {status}); "
+                            f"reference edit fallback '{edit_model_id}' also failed "
+                            f"(HTTP {edit_status}); retried with text-only model "
+                            f"'{original_model_id}'."
+                        )
+                        logger.warning(reference_warning)
+                        model_id, meta = original_model_id, original_meta
+                        debug_call_data["model"] = model_id
+                        debug_call_data["parameters"]["reference_images"] = 0
+                        retry_overrides = dict(overrides)
+                        retry_overrides.pop("image_style_references", None)
+                        retry_overrides.pop("image_urls", None)
+                        arguments = _build_fal_payload(
+                            model_id, prompt, aspect_lc, seed=seed, overrides=retry_overrides,
+                        )
+                        handler = _submit_fal_request(model_id, arguments=arguments)
+                        reference_payload = []
+                else:
+                    reference_warning = (
+                        f"Reference-capable model '{model_id}' was not available via the "
+                        f"current image generation backend (HTTP {status}); retried with "
+                        f"text-only model '{original_model_id}'."
+                    )
+                    logger.warning(reference_warning)
+                    model_id, meta = original_model_id, original_meta
+                    debug_call_data["model"] = model_id
+                    debug_call_data["parameters"]["reference_images"] = 0
+                    retry_overrides = dict(overrides)
+                    retry_overrides.pop("image_style_references", None)
+                    retry_overrides.pop("image_urls", None)
+                    arguments = _build_fal_payload(
+                        model_id, prompt, aspect_lc, seed=seed, overrides=retry_overrides,
+                    )
+                    handler = _submit_fal_request(model_id, arguments=arguments)
+                    reference_payload = []
+            else:
+                raise
         result = handler.get()
 
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
@@ -841,7 +1063,11 @@ def image_generate_tool(
         response_data = {
             "success": True,
             "image": formatted_images[0]["url"] if formatted_images else None,
+            "model": model_id,
+            "reference_images": len(reference_payload),
         }
+        if reference_warning:
+            response_data["reference_warning"] = reference_warning
 
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
@@ -1004,7 +1230,9 @@ IMAGE_GENERATE_SCHEMA = {
     "description": (
         "Generate high-quality images from text prompts. The underlying "
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
+        "selectable by the agent. Optional reference images can guide style "
+        "or character consistency when the configured backend supports them. "
+        "Returns either a URL or an absolute file "
         "path in the `image` field; display it with markdown "
         "![description](url-or-path) and the gateway will deliver it. When "
         "the active terminal backend has a different filesystem, successful "
@@ -1023,6 +1251,17 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "reference_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional image URLs, data URLs, or local file paths to use as "
+                    "style/character references. Local files are converted to data "
+                    "URLs before submission. If references are supplied and the "
+                    "active FAL model is text-only, Hermes routes to a reference-"
+                    "capable model."
+                ),
             },
         },
         "required": ["prompt"],
@@ -1069,7 +1308,11 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    aspect_ratio: str,
+    reference_images: Optional[list] = None,
+):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -1123,9 +1366,13 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        normalized_refs = _normalize_reference_images(reference_images)
+        if normalized_refs:
+            kwargs["reference_images"] = reference_images
+            kwargs["image_style_references"] = normalized_refs
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -1153,17 +1400,19 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    reference_images = args.get("reference_images") or []
     task_id = kw.get("task_id")
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, reference_images)
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
 
     raw = image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        reference_images=reference_images,
     )
     return _postprocess_image_generate_result(raw, task_id=task_id)
 
