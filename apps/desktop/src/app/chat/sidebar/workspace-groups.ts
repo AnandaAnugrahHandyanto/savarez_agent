@@ -1,5 +1,12 @@
-import type { HermesWorktreeInfo } from '@/global'
-import type { SessionInfo } from '@/hermes'
+import type { HermesGitWorktree } from '@/global'
+import type { ProjectInfo, SessionInfo } from '@/hermes'
+
+// Session grouping is now computed authoritatively on the backend
+// (`tui_gateway/project_tree.py`, exposed via `projects.tree` /
+// `projects.project_sessions`). The desktop is a thin renderer: this module
+// only holds the render contract (the three tree interfaces) plus a couple of
+// pure helpers and the VISUAL-ONLY worktree enhancer that injects empty lanes
+// from `git worktree list`. It never decides session membership.
 
 export interface SidebarSessionGroup {
   id: string
@@ -8,6 +15,12 @@ export interface SidebarSessionGroup {
   sessions: SessionInfo[]
   // Profile color for the ALL-profiles view; absent for workspace groups.
   color?: null | string
+  // True when this group is a repo's main checkout (vs a linked worktree).
+  isMain?: boolean
+  // True for the synthetic lane that collapses all of a repo's kanban task
+  // worktrees (`<repo>/.worktrees/t_*`) into one row, so a heavy board doesn't
+  // spray hundreds of throwaway branch lanes across the sidebar.
+  isKanban?: boolean
   loadingMore?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   onLoadMore?: () => void
@@ -15,119 +28,7 @@ export interface SidebarSessionGroup {
   totalCount?: number
 }
 
-const NO_WORKSPACE_ID = '__no_workspace__'
-
-/** Path split into segments, ignoring trailing slashes and mixed separators. */
-const segments = (path: string): string[] => path.replace(/[/\\]+$/, '').split(/[/\\]/).filter(Boolean)
-
-/** Last path segment. */
-export const baseName = (path: string): string | undefined => segments(path).pop()
-
-/** The segments above the basename. */
-const parentSegments = (path: string): string[] => segments(path).slice(0, -1)
-
-interface Labelable {
-  id: string
-  label: string
-  path: null | string
-}
-
-/**
- * Disambiguate groups whose basename collides (worktrees all end in the same
- * `apps/desktop`, sibling repos share a folder name, etc.) by walking up the
- * path and prepending parent segments until each colliding label is unique —
- * e.g. `hermes-agent/desktop` vs `hermes-agent-wt-rtl/desktop`. Groups with a
- * unique basename keep their short label untouched.
- */
-function disambiguateLabels(groups: Labelable[]): void {
-  const byLabel = new Map<string, Labelable[]>()
-
-  for (const group of groups) {
-    const bucket = byLabel.get(group.label)
-
-    if (bucket) {
-      bucket.push(group)
-    } else {
-      byLabel.set(group.label, [group])
-    }
-  }
-
-  for (const bucket of byLabel.values()) {
-    if (bucket.length < 2) {
-      continue
-    }
-
-    // Only groups backed by a real path can grow a prefix; the synthetic
-    // "No workspace" group has no path and stays as-is.
-    const pathed = bucket.filter(group => group.path)
-
-    if (pathed.length < 2) {
-      continue
-    }
-
-    const parents = new Map(pathed.map(group => [group.id, parentSegments(group.path!)]))
-    let depth = 1
-
-    // Grow the prefix one parent segment at a time until every label in the
-    // bucket is distinct, or we run out of parent segments to add.
-    while (depth <= Math.max(...pathed.map(g => parents.get(g.id)!.length))) {
-      const labels = new Map<string, number>()
-
-      for (const group of pathed) {
-        const segs = parents.get(group.id)!
-        const prefix = segs.slice(-depth).join('/')
-        const base = baseName(group.path!) ?? group.path!
-        group.label = prefix ? `${prefix}/${base}` : base
-        labels.set(group.label, (labels.get(group.label) ?? 0) + 1)
-      }
-
-      if ([...labels.values()].every(count => count === 1)) {
-        break
-      }
-
-      depth += 1
-    }
-  }
-}
-
-export function workspaceGroupsFor(
-  sessions: SessionInfo[],
-  noWorkspaceLabel: string,
-  options: { preserveSessionOrder?: boolean } = {}
-): SidebarSessionGroup[] {
-  const groups = new Map<string, SidebarSessionGroup>()
-
-  for (const session of sessions) {
-    const path = session.cwd?.trim() || ''
-    const id = path || NO_WORKSPACE_ID
-    const label = baseName(path) || path || noWorkspaceLabel
-
-    const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
-    group.sessions.push(session)
-    groups.set(id, group)
-  }
-
-  if (!options.preserveSessionOrder) {
-    // Groups keep recency order (Map insertion = first-seen in the recency-sorted
-    // input, so an active project floats up), but rows *within* a group sort by
-    // creation time so they don't reshuffle every time a message lands — keeps
-    // muscle memory intact.
-    for (const group of groups.values()) {
-      group.sessions.sort((a, b) => b.started_at - a.started_at)
-    }
-  }
-
-  const result = [...groups.values()]
-  disambiguateLabels(result)
-
-  return result
-}
-
-/**
- * A worktree's main repo and all its linked worktrees collapse into ONE parent
- * (keyed by the repo root); each worktree is a child group; sessions hang off
- * the worktree they ran in. `parent → worktree → sessions`.
- */
+/** A repo node: holds its branch/worktree lanes (`repo -> lane -> sessions`). */
 export interface SidebarWorkspaceTree {
   id: string
   label: string
@@ -136,191 +37,313 @@ export interface SidebarWorkspaceTree {
   sessionCount: number
 }
 
-/** Resolves a session cwd to git-worktree identity (from the local fs probe). */
-export type WorktreeResolver = (cwd: string) => HermesWorktreeInfo | null | undefined
-
-interface WorkspacePlacement {
-  parentKey: string
-  parentLabel: string
-  parentPath: string
-  worktreeKey: string
-  worktreeLabel: string
-  worktreePath: string
+/** A project node: human-named (or repo-derived), holds its repo subtree. */
+export interface SidebarProjectTree {
+  id: string
+  label: string
+  path: null | string
+  color?: null | string
+  icon?: null | string
+  archived?: boolean
+  // A git repo root promoted automatically (not a user-created projects.db row).
+  // Deletable = dismissable.
+  isAuto?: boolean
+  // The synthetic "No project" bucket for cwd-less sessions.
+  isNoProject?: boolean
+  repos: SidebarWorkspaceTree[]
+  sessionCount: number
+  // Max activity timestamp across the project's sessions (overview sort key).
+  lastActive?: number
+  // Up to N most-recent sessions for the overview preview (set by `projects.tree`).
+  previewSessions?: SessionInfo[]
 }
 
-/** Replace a path's final segment, preserving its prefix + separators. */
-const withBaseName = (path: string, name: string): string =>
-  path.replace(/[/\\]+$/, '').replace(/[^/\\]+$/, name)
+/** Path split into segments, ignoring trailing slashes and mixed separators. */
+const segments = (path: string): string[] => path.replace(/[/\\]+$/, '').split(/[/\\]/).filter(Boolean)
+
+/** Last path segment. */
+export const baseName = (path: string): string | undefined => segments(path).pop()
+
+/** The kanban-task worktree dir (`<repo>/.worktrees`) for a `…/.worktrees/<task>` path, else null. */
+const KANBAN_DIR_RE = /^(.*[/\\]\.worktrees)[/\\][^/\\]+[/\\]?$/
+
+export function kanbanWorktreeDir(path: string): null | string {
+  return path.match(KANBAN_DIR_RE)?.[1] ?? null
+}
+
+/** Default-branch names that sort first and read as the repo's trunk. */
+const TRUNK_BRANCHES = new Set(['main', 'master', 'trunk', 'develop'])
+
+function compareWorktreeGroups(a: SidebarSessionGroup, b: SidebarSessionGroup): number {
+  if (Boolean(a.isMain) !== Boolean(b.isMain)) {
+    return a.isMain ? -1 : 1
+  }
+
+  if (a.isMain && b.isMain) {
+    const aTrunk = TRUNK_BRANCHES.has(a.label.toLowerCase())
+    const bTrunk = TRUNK_BRANCHES.has(b.label.toLowerCase())
+
+    if (aTrunk !== bTrunk) {
+      return aTrunk ? -1 : 1
+    }
+  }
+
+  // The collapsed kanban bucket sinks below real branches.
+  if (Boolean(a.isKanban) !== Boolean(b.isKanban)) {
+    return a.isKanban ? 1 : -1
+  }
+
+  return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+}
+
+export function sortWorktreeGroups(groups: SidebarSessionGroup[]): SidebarSessionGroup[] {
+  return [...groups].sort(compareWorktreeGroups)
+}
 
 /**
- * Path-only fallback for when git metadata is unavailable (remote backends,
- * unreadable paths). Mirrors the git layout: a `<repo>-wt-<branch>` directory
- * nests under its sibling `<repo>`; any other directory is its own repo root.
+ * VISUAL enhancer only: inject empty lanes from a live `git worktree list` so a
+ * repo shows its branches/worktrees even when they have no Hermes sessions yet.
+ * The repo's real session lanes already come fully built from the backend
+ * (`projects.project_sessions`); this never adds or moves session rows, and it
+ * degrades to a no-op on remote backends (where the Electron probe returns
+ * nothing). Lanes already present (by id/path) are left untouched.
  */
-function placeByHeuristic(path: string): WorkspacePlacement | null {
-  const base = baseName(path)
+export function mergeRepoWorktreeGroups(
+  repo: Pick<SidebarWorkspaceTree, 'groups' | 'id' | 'path'>,
+  discoveredWorktrees?: HermesGitWorktree[]
+): SidebarSessionGroup[] {
+  const merged = [...repo.groups]
+  const seenIds = new Set(merged.map(group => group.id))
+  const seenPaths = new Set(merged.map(group => group.path).filter((path): path is string => Boolean(path)))
+  const hasMainLane = (branch: string) =>
+    merged.some(group => group.isMain && group.label.localeCompare(branch, undefined, { sensitivity: 'base' }) === 0)
 
-  if (!base) {
+  for (const worktree of discoveredWorktrees ?? []) {
+    const wtPath = worktree.path?.trim()
+
+    if (!wtPath) {
+      continue
+    }
+
+    if (worktree.isMain) {
+      const branch = (worktree.branch?.trim() || 'main').trim()
+      const id = `${repo.id}::branch::${branch}`
+
+      if (seenIds.has(id) || hasMainLane(branch)) {
+        continue
+      }
+
+      merged.push({ id, isMain: true, label: branch, path: wtPath, sessions: [] })
+      seenIds.add(id)
+      seenPaths.add(wtPath)
+
+      continue
+    }
+
+    // Kanban task worktrees never get their own lane — they fold into the
+    // session-derived `::kanban` bucket. Listing every `git worktree list` entry
+    // here is exactly what blew the sidebar up to hundreds of empty rows.
+    if (kanbanWorktreeDir(wtPath)) {
+      continue
+    }
+
+    if (seenPaths.has(wtPath) || seenIds.has(wtPath)) {
+      continue
+    }
+
+    merged.push({
+      id: wtPath,
+      isMain: false,
+      label: worktree.branch?.trim() || baseName(wtPath) || wtPath,
+      path: wtPath,
+      sessions: []
+    })
+    seenIds.add(wtPath)
+    seenPaths.add(wtPath)
+  }
+
+  return sortWorktreeGroups(merged)
+}
+
+// ── Live session overlay ─────────────────────────────────────────────────────
+// The backend tree is a snapshot (sessions with >=1 message, refreshed on a
+// turn boundary). For parity with the flat Recents list — instant insertion of
+// a freshly-created session and the live "working" arc — we overlay the live
+// `$sessions` store onto the tree at render time. This is ADDITIVE only: the
+// backend still owns membership, structure, counts, and history. The overlay
+// just places rows already present in `$sessions` into the project/lane the
+// backend would put them in, using the same id scheme. Worktree/kanban folding
+// needs the backend common-root probe, so those rows are left for the next
+// tree refresh; the common case (a new main-checkout session) overlays here.
+
+const sessionRecency = (session: SessionInfo): number => session.last_active || session.started_at || 0
+
+/** True when `target` equals `folder` or is nested under it (segment-wise). */
+function isPathUnder(folder: string, target: string): boolean {
+  const f = segments(folder)
+  const t = segments(target)
+
+  if (!f.length || f.length > t.length) {
+    return false
+  }
+
+  return f.every((seg, i) => seg === t[i])
+}
+
+interface LiveLanePlacement {
+  projectId: string
+  repoRoot: string
+  laneId: string
+  laneLabel: string
+  lanePath: string
+}
+
+/** Where a live session overlays: its project id + main-checkout lane key. */
+export function placeLiveSession(session: SessionInfo, explicitProjects: ProjectInfo[]): LiveLanePlacement | null {
+  const cwd = (session.cwd || '').trim()
+
+  if (!cwd || kanbanWorktreeDir(cwd)) {
     return null
   }
 
-  const worktreeMatch = base.match(/^(.+)-wt-(.+)$/)
+  // No persisted repo root yet (brand-new session) → the cwd is the root.
+  const repoRoot = (session.git_repo_root || '').trim() || cwd
+  const underRepo = cwd === repoRoot || cwd.startsWith(`${repoRoot}/`) || cwd.startsWith(`${repoRoot}\\`)
 
-  if (worktreeMatch) {
-    const repo = worktreeMatch[1]
-    const repoPath = withBaseName(path, repo)
+  // Linked worktrees (cwd outside the repo root) need backend folding — skip.
+  if (!underRepo || cwd.startsWith(`${repoRoot}/.worktrees/`) || cwd.startsWith(`${repoRoot}\\.worktrees\\`)) {
+    return null
+  }
 
-    return {
-      parentKey: repoPath,
-      parentLabel: repo,
-      parentPath: repoPath,
-      worktreeKey: path,
-      worktreeLabel: worktreeMatch[2],
-      worktreePath: path
+  let projectId = ''
+  let bestLen = -1
+
+  for (const project of explicitProjects) {
+    if (project.archived) {
+      continue
+    }
+
+    for (const folder of project.folders) {
+      if (isPathUnder(folder.path, cwd) || isPathUnder(folder.path, repoRoot)) {
+        const len = segments(folder.path).length
+
+        if (len > bestLen) {
+          bestLen = len
+          projectId = project.id
+        }
+      }
     }
   }
+
+  // Auto projects are keyed by their repo root (matches the backend tree id).
+  if (!projectId) {
+    projectId = repoRoot
+  }
+
+  const branch = (session.git_branch || '').trim()
 
   return {
-    parentKey: path,
-    parentLabel: base,
-    parentPath: path,
-    worktreeKey: path,
-    worktreeLabel: base,
-    worktreePath: path
+    projectId,
+    repoRoot,
+    laneId: branch ? `${repoRoot}::branch::${branch}` : `${repoRoot}::branch::`,
+    laneLabel: branch || 'main',
+    lanePath: repoRoot
   }
 }
 
-function placeWorkspace(path: string, resolver?: WorktreeResolver): WorkspacePlacement | null {
-  const info = resolver?.(path)
+const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
+  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => b.started_at - a.started_at)
 
-  if (info?.repoRoot && info.worktreeRoot) {
-    const dirLabel = baseName(info.worktreeRoot) || info.worktreeRoot
+/** Overlay live sessions into an entered project's lanes (instant + working state). */
+export function overlayLiveLanes(
+  project: SidebarProjectTree,
+  live: SessionInfo[],
+  explicitProjects: ProjectInfo[]
+): SidebarProjectTree {
+  const mine = live
+    .map(session => ({ session, placement: placeLiveSession(session, explicitProjects) }))
+    .filter((entry): entry is { session: SessionInfo; placement: LiveLanePlacement } =>
+      Boolean(entry.placement && entry.placement.projectId === project.id)
+    )
 
-    return {
-      parentKey: info.repoRoot,
-      parentLabel: baseName(info.repoRoot) ?? info.repoRoot,
-      parentPath: info.repoRoot,
-      worktreeKey: info.worktreeRoot,
-      // The main checkout's branch is transient — it changes as you work, so a
-      // branch label would misattribute every past session to whatever branch
-      // is checked out *now*. Label it by directory. Linked worktrees are
-      // per-branch by construction, so branch is the clearest label there.
-      worktreeLabel: info.isMainWorktree ? dirLabel : info.branch || dirLabel,
-      worktreePath: info.worktreeRoot
-    }
+  if (!mine.length) {
+    return project
   }
 
-  return placeByHeuristic(path)
+  const single = project.repos.length <= 1
+
+  const repos = project.repos.map(repo => {
+    const lanes = repo.groups.map(group => ({ ...group, sessions: [...group.sessions] }))
+
+    for (const { session, placement } of mine) {
+      if (!single && repo.id !== placement.repoRoot) {
+        continue
+      }
+
+      let lane =
+        lanes.find(group => group.id === placement.laneId) ??
+        lanes.find(group => group.isMain && group.label.toLowerCase() === placement.laneLabel.toLowerCase())
+
+      if (!lane) {
+        lane = { id: placement.laneId, isMain: true, label: placement.laneLabel, path: placement.lanePath, sessions: [] }
+        lanes.push(lane)
+      }
+
+      lane.sessions = upsertSession(lane.sessions, session)
+    }
+
+    return { ...repo, groups: sortWorktreeGroups(lanes), sessionCount: lanes.reduce((n, group) => n + group.sessions.length, 0) }
+  })
+
+  return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
 }
 
-/** Unique, non-empty session cwds — the batch to probe for worktree info. */
-export function uniqueCwds(sessions: SessionInfo[]): string[] {
-  const seen = new Set<string>()
+/** Merge live sessions into per-project overview previews, keyed by project path. */
+export function overlayLivePreviews(
+  projects: SidebarProjectTree[],
+  live: SessionInfo[],
+  explicitProjects: ProjectInfo[],
+  limit: number
+): Record<string, SessionInfo[]> {
+  const byProject = new Map<string, SessionInfo[]>()
 
-  for (const session of sessions) {
-    const path = session.cwd?.trim()
-
-    if (path) {
-      seen.add(path)
-    }
-  }
-
-  return [...seen]
-}
-
-/**
- * Build the `parent → worktree → sessions` tree. Parents keep recency order
- * (first-seen in the recency-sorted input); worktree groups within a parent do
- * too, while rows inside a worktree sort by creation time (stable muscle memory,
- * matching `workspaceGroupsFor`).
- */
-export function workspaceTreeFor(
-  sessions: SessionInfo[],
-  noWorkspaceLabel: string,
-  resolver?: WorktreeResolver,
-  options: { preserveSessionOrder?: boolean } = {}
-): SidebarWorkspaceTree[] {
-  interface WorktreeEntry {
-    group: SidebarSessionGroup
-    parentKey: string
-    parentLabel: string
-    parentPath: string
-  }
-
-  const worktrees = new Map<string, WorktreeEntry>()
-  const noWorkspace: SessionInfo[] = []
-
-  for (const session of sessions) {
-    const path = session.cwd?.trim() || ''
-
-    if (!path) {
-      noWorkspace.push(session)
-
-      continue
-    }
-
-    const placement = placeWorkspace(path, resolver)
+  for (const session of live) {
+    const placement = placeLiveSession(session, explicitProjects)
 
     if (!placement) {
-      noWorkspace.push(session)
-
       continue
     }
 
-    let entry = worktrees.get(placement.worktreeKey)
+    const arr = byProject.get(placement.projectId) ?? []
+    arr.push(session)
+    byProject.set(placement.projectId, arr)
+  }
 
-    if (!entry) {
-      entry = {
-        group: { id: placement.worktreeKey, label: placement.worktreeLabel, path: placement.worktreePath, sessions: [] },
-        parentKey: placement.parentKey,
-        parentLabel: placement.parentLabel,
-        parentPath: placement.parentPath
+  const out: Record<string, SessionInfo[]> = {}
+
+  for (const node of projects) {
+    if (!node.path) {
+      continue
+    }
+
+    const liveRows = byProject.get(node.id) ?? []
+    const base = node.previewSessions ?? []
+
+    if (!liveRows.length && !base.length) {
+      continue
+    }
+
+    // Live rows take precedence (fresher title/activity/working state).
+    const map = new Map<string, SessionInfo>()
+
+    for (const session of [...liveRows, ...base]) {
+      if (!map.has(session.id)) {
+        map.set(session.id, session)
       }
-      worktrees.set(placement.worktreeKey, entry)
     }
 
-    entry.group.sessions.push(session)
+    out[node.path] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
   }
 
-  if (!options.preserveSessionOrder) {
-    for (const entry of worktrees.values()) {
-      entry.group.sessions.sort((a, b) => b.started_at - a.started_at)
-    }
-  }
-
-  const parents = new Map<string, SidebarWorkspaceTree>()
-
-  for (const entry of worktrees.values()) {
-    let parent = parents.get(entry.parentKey)
-
-    if (!parent) {
-      parent = { id: entry.parentKey, label: entry.parentLabel, path: entry.parentPath, groups: [], sessionCount: 0 }
-      parents.set(entry.parentKey, parent)
-    }
-
-    parent.groups.push(entry.group)
-    parent.sessionCount += entry.group.sessions.length
-  }
-
-  const result = [...parents.values()]
-
-  if (noWorkspace.length) {
-    result.push({
-      id: NO_WORKSPACE_ID,
-      label: noWorkspaceLabel,
-      path: null,
-      groups: [{ id: NO_WORKSPACE_ID, label: noWorkspaceLabel, path: null, sessions: noWorkspace }],
-      sessionCount: noWorkspace.length
-    })
-  }
-
-  // Parents that collide on basename grow a path prefix; worktree labels that
-  // collide inside a parent do the same.
-  disambiguateLabels(result)
-
-  for (const parent of result) {
-    disambiguateLabels(parent.groups)
-  }
-
-  return result
+  return out
 }

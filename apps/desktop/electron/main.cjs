@@ -43,7 +43,9 @@ const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-e
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
+const { addWorktree, listWorktrees, removeWorktree } = require('./git-worktree-ops.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
+const { scanGitRepos } = require('./git-repo-scan.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
@@ -6039,7 +6041,48 @@ ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dir
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
+// Reveal a path in the OS file manager (Finder / Explorer / Files).
+ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
+  const target = String(targetPath || '').trim()
+
+  if (!target) {
+    return false
+  }
+
+  try {
+    shell.showItemInFolder(target)
+
+    return true
+  } catch {
+    return false
+  }
+})
+
 ipcMain.handle('hermes:fs:worktrees', async (_event, cwds) => worktreesForIpc(cwds))
+
+// Git-driven worktree management ("Start work" flow). Errors surface to the
+// renderer as rejected promises so it can toast a friendly message.
+ipcMain.handle('hermes:git:worktreeList', async (_event, repoPath) =>
+  listWorktrees(repoPath, resolveGitBinary())
+)
+
+ipcMain.handle('hermes:git:worktreeAdd', async (_event, repoPath, options) =>
+  addWorktree(repoPath, options || {}, resolveGitBinary())
+)
+
+ipcMain.handle('hermes:git:worktreeRemove', async (_event, repoPath, worktreePath, options) =>
+  removeWorktree(repoPath, worktreePath, options || {}, resolveGitBinary())
+)
+
+// Repo-first project discovery: scan bounded roots for git repos (pure fs walk,
+// no native addon). Never throws to the renderer — failures yield an empty list.
+ipcMain.handle('hermes:git:scanRepos', async (_event, roots, options) => {
+  try {
+    return await scanGitRepos(roots || [], options || {})
+  } catch {
+    return []
+  }
+})
 
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {

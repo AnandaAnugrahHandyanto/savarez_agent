@@ -178,6 +178,11 @@ _LONG_HANDLERS = frozenset(
         "browser.manage",
         "cli.exec",
         "plugins.manage",
+        "projects.discover_repos",
+        "projects.record_repos",
+        "projects.for_cwd",
+        "projects.tree",
+        "projects.project_sessions",
         "session.branch",
         "session.compress",
         "session.resume",
@@ -1142,6 +1147,96 @@ def _git_branch_for_cwd(cwd: str) -> str:
         return ""
 
 
+_repo_root_cache: dict[str, str] = {}
+
+
+def _git_repo_root_for_cwd(cwd: str) -> str:
+    """Top-level git repo root for ``cwd`` (``""`` when not a repo). Cached.
+
+    Runs where the gateway runs, so it resolves repos for both local and remote
+    backends — unlike the desktop's electron probe, which only sees the local fs.
+    """
+    if not cwd:
+        return ""
+    if cwd in _repo_root_cache:
+        return _repo_root_cache[cwd]
+    root = ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            root = result.stdout.strip()
+    except Exception:
+        root = ""
+    _repo_root_cache[cwd] = root
+    return root
+
+
+_common_root_cache: dict[str, str] = {}
+
+
+def _git_common_repo_root_for_cwd(cwd: str) -> str:
+    """The MAIN (common) repo root for ``cwd``, folding linked worktrees.
+
+    ``git rev-parse --show-toplevel`` returns a linked worktree's OWN root, so
+    grouping by it splits every worktree into a separate "repo". The common
+    ``.git`` directory (``--git-common-dir``) is shared by a repo and all its
+    worktrees, so its parent is the one true repo root. Cached. Falls back to
+    the show-toplevel root when the common-dir probe is unavailable.
+    """
+    if not cwd:
+        return ""
+    if cwd in _common_root_cache:
+        return _common_root_cache[cwd]
+
+    root = ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            gitdir = result.stdout.strip()
+            if gitdir:
+                gitdir = os.path.realpath(gitdir)
+                if os.path.basename(gitdir) == ".git":
+                    root = os.path.dirname(gitdir)
+    except Exception:
+        root = ""
+
+    if not root:
+        root = _git_repo_root_for_cwd(cwd)
+
+    _common_root_cache[cwd] = root
+    return root
+
+
+def _resolve_cwd_git(cwd: str) -> dict | None:
+    """Inject-able resolver for ``project_tree.build_tree``.
+
+    Returns ``{"repo_root": <common root>, "worktree_root": <this checkout>}``
+    or ``None`` when ``cwd`` is not in a git repo. ``build_tree`` treats
+    ``worktree_root == repo_root`` as the main checkout.
+    """
+    worktree_root = _git_repo_root_for_cwd(cwd)
+    if not worktree_root:
+        return None
+    return {
+        "repo_root": _git_common_repo_root_for_cwd(cwd) or worktree_root,
+        "worktree_root": worktree_root,
+    }
+
+
 def _session_cwd(session: dict | None) -> str:
     if session and session.get("cwd"):
         return str(session["cwd"])
@@ -1302,7 +1397,12 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     with _session_db(session) as db:
         if db is not None:
             try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
+                db.update_session_cwd(
+                    session.get("session_key", ""),
+                    resolved,
+                    _git_branch_for_cwd(resolved),
+                    _git_repo_root_for_cwd(resolved),
+                )
             except Exception:
                 logger.debug("failed to persist session cwd", exc_info=True)
     try:
@@ -3782,7 +3882,10 @@ def _init_session(
                     _sessions[sid]["cwd"] = row["cwd"]
         else:
             try:
-                db.update_session_cwd(key, _sessions[sid]["cwd"])
+                _cwd = _sessions[sid]["cwd"]
+                db.update_session_cwd(
+                    key, _cwd, _git_branch_for_cwd(_cwd), _git_repo_root_for_cwd(_cwd)
+                )
             except Exception:
                 logger.debug("failed to persist resumed session cwd", exc_info=True)
     _register_session_cwd(_sessions[sid])
@@ -8069,6 +8172,454 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5001, str(e))
 
     return _err(rid, 4002, f"unknown config key: {key}")
+
+
+# ---------------------------------------------------------------------------
+# Projects — first-class, per-profile, multi-folder workspaces
+# ---------------------------------------------------------------------------
+
+
+def _projects_payload(conn) -> dict:
+    from hermes_cli import projects_db as pdb
+
+    return {
+        "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
+        "active_id": pdb.get_active_id(conn),
+    }
+
+
+@method("projects.list")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            return _ok(rid, _projects_payload(conn))
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.get")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            proj = pdb.get_project(conn, str(params.get("id") or ""))
+            if proj is None:
+                return _err(rid, 5062, "no such project")
+            return _ok(rid, {"project": proj.to_dict()})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.create")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            pid = pdb.create_project(
+                conn,
+                name=str(params.get("name") or ""),
+                slug=params.get("slug"),
+                folders=params.get("folders") or [],
+                primary_path=params.get("primary_path"),
+                description=params.get("description"),
+                icon=params.get("icon"),
+                color=params.get("color"),
+                board_slug=params.get("board_slug"),
+            )
+            if params.get("use"):
+                pdb.set_active(conn, pid)
+            proj = pdb.get_project(conn, pid)
+            return _ok(rid, {"project": proj.to_dict() if proj else None})
+    except ValueError as e:
+        return _err(rid, 5063, str(e))
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.update")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pid = str(params.get("id") or "")
+        with pdb.connect_closing() as conn:
+            proj = pdb.get_project(conn, pid)
+            if proj is None:
+                return _err(rid, 5062, "no such project")
+            pdb.update_project(
+                conn,
+                proj.id,
+                name=params.get("name"),
+                description=params.get("description"),
+                icon=params.get("icon"),
+                color=params.get("color"),
+                board_slug=params.get("board_slug"),
+            )
+            return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+    except ValueError as e:
+        return _err(rid, 5063, str(e))
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.add_folder")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pid = str(params.get("id") or "")
+        with pdb.connect_closing() as conn:
+            proj = pdb.get_project(conn, pid)
+            if proj is None:
+                return _err(rid, 5062, "no such project")
+            pdb.add_folder(
+                conn,
+                proj.id,
+                str(params.get("path") or ""),
+                label=params.get("label"),
+                is_primary=bool(params.get("is_primary")),
+            )
+            return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+    except ValueError as e:
+        return _err(rid, 5063, str(e))
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.remove_folder")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pid = str(params.get("id") or "")
+        with pdb.connect_closing() as conn:
+            proj = pdb.get_project(conn, pid)
+            if proj is None:
+                return _err(rid, 5062, "no such project")
+            pdb.remove_folder(conn, proj.id, str(params.get("path") or ""))
+            return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.set_primary")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pid = str(params.get("id") or "")
+        with pdb.connect_closing() as conn:
+            proj = pdb.get_project(conn, pid)
+            if proj is None:
+                return _err(rid, 5062, "no such project")
+            pdb.set_primary(conn, proj.id, str(params.get("path") or ""))
+            return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.archive")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pid = str(params.get("id") or "")
+        with pdb.connect_closing() as conn:
+            proj = pdb.get_project(conn, pid)
+            if proj is None:
+                return _err(rid, 5062, "no such project")
+            if params.get("restore"):
+                pdb.restore_project(conn, proj.id)
+            else:
+                pdb.archive_project(conn, proj.id)
+            return _ok(rid, _projects_payload(conn))
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.delete")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pid = str(params.get("id") or "")
+        with pdb.connect_closing() as conn:
+            proj = pdb.get_project(conn, pid)
+            if proj is None:
+                return _err(rid, 5062, "no such project")
+            pdb.delete_project(conn, proj.id)
+            return _ok(rid, _projects_payload(conn))
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.set_active")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pid = params.get("id")
+        with pdb.connect_closing() as conn:
+            if pid:
+                proj = pdb.get_project(conn, str(pid))
+                if proj is None:
+                    return _err(rid, 5062, "no such project")
+                pdb.set_active(conn, proj.id)
+            else:
+                pdb.set_active(conn, None)
+            return _ok(rid, {"active_id": pdb.get_active_id(conn)})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.for_cwd")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli import projects_db as pdb
+
+        raw = str(params.get("cwd") or "").strip()
+        cwd = _completion_cwd({"cwd": raw} if raw else {})
+        with pdb.connect_closing() as conn:
+            proj = pdb.project_for_path(conn, cwd)
+            return _ok(
+                rid,
+                {
+                    "project": proj.to_dict() if proj else None,
+                    "cwd": cwd,
+                    "branch": _git_branch_for_cwd(cwd),
+                },
+            )
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+def _discover_repos_payload(db) -> list[dict]:
+    """Merge filesystem-scanned repos (cached) with session-derived repo roots.
+
+    Repo-first: the disk scan (persisted by `projects.record_repos`) surfaces
+    repos even with zero hermes sessions. Session-derived roots cover repos
+    outside the scan roots. Both are junk-filtered (hermes home subtree + bare
+    home) and carry their session totals for the overview.
+    """
+    from hermes_constants import get_hermes_home
+
+    home = os.path.realpath(os.path.expanduser("~"))
+    hermes_home = os.path.realpath(str(get_hermes_home()))
+
+    def _is_junk(root: str) -> bool:
+        real = os.path.realpath(root)
+        return real == home or real == hermes_home or real.startswith(hermes_home + os.sep)
+
+    repos: dict[str, dict] = {}
+
+    # Session-derived roots (probe each distinct cwd, cached) + backfill the column.
+    cwd_to_root: dict[str, str] = {}
+    for row in db.distinct_session_cwds():
+        cwd = str(row.get("cwd") or "")
+        root = _git_repo_root_for_cwd(cwd)
+        if not root:
+            continue
+        cwd_to_root[cwd] = root
+        if _is_junk(root):
+            continue
+        agg = repos.setdefault(root, {"root": root, "label": "", "sessions": 0, "last_active": 0.0})
+        agg["sessions"] += int(row.get("sessions") or 0)
+        agg["last_active"] = max(agg["last_active"], float(row.get("last_active") or 0))
+
+    try:
+        db.backfill_repo_roots(cwd_to_root)
+    except Exception:
+        logger.debug("failed to backfill repo roots", exc_info=True)
+
+    # Filesystem-scanned roots from the cache (may have zero sessions).
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            for entry in pdb.list_discovered_repos(conn):
+                root = str(entry.get("root") or "")
+                if not root or _is_junk(root):
+                    continue
+                agg = repos.setdefault(root, {"root": root, "label": "", "sessions": 0, "last_active": 0.0})
+                if entry.get("label"):
+                    agg["label"] = entry["label"]
+                agg["last_active"] = max(agg["last_active"], float(entry.get("last_seen") or 0))
+    except Exception:
+        logger.debug("failed to read discovered repo cache", exc_info=True)
+
+    out = sorted(repos.values(), key=lambda r: r["last_active"], reverse=True)
+    for r in out:
+        r["label"] = r["label"] or os.path.basename(r["root"].rstrip("/\\")) or r["root"]
+    return out
+
+
+@method("projects.discover_repos")
+def _(rid, params: dict) -> dict:
+    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
+    try:
+        db = _get_db()
+        if db is None:
+            return _ok(rid, {"repos": []})
+        return _ok(rid, {"repos": _discover_repos_payload(db)})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.record_repos")
+def _(rid, params: dict) -> dict:
+    """Persist git repo roots found by the client's filesystem scan, then return
+    the merged repo list. The native crawl runs on the desktop (local fs); this
+    caches the result so later reads are instant instead of re-walking disk."""
+    try:
+        from hermes_cli import projects_db as pdb
+
+        pairs: list[tuple[str, str | None]] = []
+        for item in params.get("repos") or []:
+            if isinstance(item, str):
+                pairs.append((item, None))
+            elif isinstance(item, dict) and item.get("root"):
+                pairs.append((str(item["root"]), item.get("label")))
+
+        with pdb.connect_closing() as conn:
+            pdb.record_discovered_repos(conn, pairs, replace=True)
+
+        db = _get_db()
+        return _ok(rid, {"repos": _discover_repos_payload(db) if db is not None else []})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+# Sources excluded from the project tree: cron runs and tool/subagent children
+# are not user conversations. Subagent/compression children are already dropped
+# by list_sessions_rich(include_children=False); cron has its own section.
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron"]
+
+
+def _project_tree_row(r: dict) -> dict:
+    """Project a SessionDB row to the minimal shape the sidebar renders.
+
+    Keeps the fields the grouping needs (cwd / git_branch / git_repo_root) plus
+    everything ``SidebarSessionRow`` reads, and drops the heavy columns
+    (system_prompt, model_config, ...) so the tree payload stays lean.
+    """
+    return {
+        "id": r.get("id"),
+        "_lineage_root_id": r.get("_lineage_root_id"),
+        "title": r.get("title"),
+        "preview": r.get("preview"),
+        "started_at": r.get("started_at") or 0,
+        "ended_at": r.get("ended_at"),
+        "last_active": r.get("last_active") or r.get("started_at") or 0,
+        "source": r.get("source"),
+        "archived": bool(r.get("archived")),
+        "message_count": r.get("message_count") or 0,
+        "tool_call_count": r.get("tool_call_count") or 0,
+        "input_tokens": r.get("input_tokens") or 0,
+        "output_tokens": r.get("output_tokens") or 0,
+        "model": r.get("model"),
+        "is_active": False,
+        "cwd": r.get("cwd"),
+        "git_branch": r.get("git_branch"),
+        "git_repo_root": r.get("git_repo_root"),
+    }
+
+
+def _project_tree_inputs(db, session_limit: int) -> tuple[list[dict], list[dict], list[dict], str | None]:
+    """Gather (sessions, projects, discovered_repos, active_id) for build_tree."""
+    rows = db.list_sessions_rich(
+        limit=session_limit,
+        offset=0,
+        order_by_last_active=True,
+        min_message_count=1,
+        include_children=False,
+        exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
+        include_archived=False,
+    )
+    sessions = [_project_tree_row(r) for r in rows]
+
+    from hermes_cli import projects_db as pdb
+
+    with pdb.connect_closing() as conn:
+        projects = [p.to_dict() for p in pdb.list_projects(conn)]
+        active_id = pdb.get_active_id(conn)
+
+    discovered = _discover_repos_payload(db)
+    return sessions, projects, discovered, active_id
+
+
+@method("projects.tree")
+def _(rid, params: dict) -> dict:
+    """Authoritative project overview: project -> repo -> lane structure with
+    counts + a few preview sessions per project, plus the flat set of session
+    ids claimed by any project (so the desktop excludes them from flat Recents).
+    Lanes carry no session rows here; drill-in uses ``projects.project_sessions``.
+    """
+    try:
+        from tui_gateway import project_tree
+
+        db = _get_db()
+        if db is None:
+            return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
+
+        preview_limit = int(params.get("preview_limit") or 3)
+        session_limit = int(params.get("session_limit") or 2000)
+        sessions, projects, discovered, active_id = _project_tree_inputs(db, session_limit)
+
+        tree = project_tree.build_tree(
+            projects,
+            sessions,
+            discovered,
+            _resolve_cwd_git,
+            preview_limit=preview_limit,
+            hydrate=False,
+        )
+        return _ok(
+            rid,
+            {
+                "projects": tree["projects"],
+                "active_id": active_id,
+                "scoped_session_ids": tree["scoped_session_ids"],
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.project_sessions")
+def _(rid, params: dict) -> dict:
+    """Fully hydrated lanes (repo -> lane -> session rows) for one project,
+    built from the same authoritative grouping as ``projects.tree`` so ids and
+    membership match exactly. Used when the user enters a project."""
+    try:
+        from tui_gateway import project_tree
+
+        project_id = str(params.get("project_id") or "")
+        if not project_id:
+            return _err(rid, 5063, "project_id required")
+
+        db = _get_db()
+        if db is None:
+            return _ok(rid, {"project": None})
+
+        session_limit = int(params.get("session_limit") or 5000)
+        sessions, projects, discovered, _active = _project_tree_inputs(db, session_limit)
+
+        tree = project_tree.build_tree(
+            projects,
+            sessions,
+            discovered,
+            _resolve_cwd_git,
+            preview_limit=0,
+            hydrate=True,
+        )
+        proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
+        return _ok(rid, {"project": proj})
+    except Exception as e:
+        return _err(rid, 5061, str(e))
 
 
 @method("config.get")
