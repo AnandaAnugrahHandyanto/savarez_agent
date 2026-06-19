@@ -219,6 +219,8 @@ def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
     args = list(argv)
     if args and Path(args[0]).name == "init":
         args = args[1:]
+    if args and args[0].endswith("entrypoint-dispatch.sh"):
+        args = args[1:]
     if args and args[0].endswith("main-wrapper.sh"):
         args = args[1:]
     if args and Path(args[0]).name == "hermes":

@@ -532,6 +532,7 @@ def test_default_slot_autostarts_when_root_state_running(tmp_path: Path) -> None
     "container_argv",
     [
         ("gateway", "run"),
+        ("/opt/hermes/docker/entrypoint-dispatch.sh", "gateway", "run"),
         ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run"),
     ],
 )
@@ -565,6 +566,7 @@ def test_legacy_gateway_run_cmd_seeds_default_running_state(
     "container_argv",
     [
         ("gateway", "run", "--no-supervise"),
+        ("/opt/hermes/docker/entrypoint-dispatch.sh", "gateway", "run", "--no-supervise"),
         ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run", "--no-supervise"),
     ],
 )
