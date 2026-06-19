@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+
 import pytest
 
 import tui_gateway.server as server
@@ -78,3 +81,31 @@ def test_delete_removes_project(tmp_path):
 
     assert all(p["id"] != pid for p in payload["projects"])
     assert "projects.delete" in server._methods
+
+
+def test_discover_repos_is_registered_long_handler():
+    assert "projects.discover_repos" in server._methods
+    assert "projects.discover_repos" in server._LONG_HANDLERS
+
+
+def test_discover_repos_from_full_history(tmp_path):
+    repo = tmp_path / "myrepo"
+    (repo / "src").mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    db = server._get_db()
+    db.create_session("s1", "cli", cwd=str(repo))
+    db.create_session("s2", "cli", cwd=str(repo / "src"))
+    db.create_session("s3", "cli", cwd=str(plain))  # not a git repo → excluded
+
+    repos = _call("projects.discover_repos")["repos"]
+    by_label = {r["label"]: r for r in repos}
+
+    assert "myrepo" in by_label
+    assert by_label["myrepo"]["sessions"] == 2  # both repo cwds aggregate
+    assert "plain" not in by_label  # non-git dir never promoted
+
+    # The probe is persisted back onto the session rows (membership at the source).
+    assert os.path.realpath(db.get_session("s1")["git_repo_root"]) == os.path.realpath(str(repo))

@@ -178,6 +178,7 @@ _LONG_HANDLERS = frozenset(
         "browser.manage",
         "cli.exec",
         "plugins.manage",
+        "projects.discover_repos",
         "projects.for_cwd",
         "session.branch",
         "session.compress",
@@ -1143,6 +1144,37 @@ def _git_branch_for_cwd(cwd: str) -> str:
         return ""
 
 
+_repo_root_cache: dict[str, str] = {}
+
+
+def _git_repo_root_for_cwd(cwd: str) -> str:
+    """Top-level git repo root for ``cwd`` (``""`` when not a repo). Cached.
+
+    Runs where the gateway runs, so it resolves repos for both local and remote
+    backends — unlike the desktop's electron probe, which only sees the local fs.
+    """
+    if not cwd:
+        return ""
+    if cwd in _repo_root_cache:
+        return _repo_root_cache[cwd]
+    root = ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            root = result.stdout.strip()
+    except Exception:
+        root = ""
+    _repo_root_cache[cwd] = root
+    return root
+
+
 def _session_cwd(session: dict | None) -> str:
     if session and session.get("cwd"):
         return str(session["cwd"])
@@ -1304,7 +1336,10 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
         if db is not None:
             try:
                 db.update_session_cwd(
-                    session.get("session_key", ""), resolved, _git_branch_for_cwd(resolved)
+                    session.get("session_key", ""),
+                    resolved,
+                    _git_branch_for_cwd(resolved),
+                    _git_repo_root_for_cwd(resolved),
                 )
             except Exception:
                 logger.debug("failed to persist session cwd", exc_info=True)
@@ -3762,7 +3797,9 @@ def _init_session(
         else:
             try:
                 _cwd = _sessions[sid]["cwd"]
-                db.update_session_cwd(key, _cwd, _git_branch_for_cwd(_cwd))
+                db.update_session_cwd(
+                    key, _cwd, _git_branch_for_cwd(_cwd), _git_repo_root_for_cwd(_cwd)
+                )
             except Exception:
                 logger.debug("failed to persist resumed session cwd", exc_info=True)
     _register_session_cwd(_sessions[sid])
@@ -8270,6 +8307,58 @@ def _(rid, params: dict) -> dict:
                     "branch": _git_branch_for_cwd(cwd),
                 },
             )
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("projects.discover_repos")
+def _(rid, params: dict) -> dict:
+    """Git repos inferred from the FULL session history.
+
+    Groups every distinct session cwd by its git repo root (probed server-side),
+    so the desktop can auto-surface the repos a user has actually worked in —
+    not just the ones in the loaded recents page. The hermes home subtree and the
+    bare home directory are excluded so `.hermes` / launch-dir noise never reads
+    as a project.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        db = _get_db()
+        if db is None:
+            return _ok(rid, {"repos": []})
+
+        home = os.path.realpath(os.path.expanduser("~"))
+        hermes_home = os.path.realpath(str(get_hermes_home()))
+
+        repos: dict[str, dict] = {}
+        cwd_to_root: dict[str, str] = {}
+        for row in db.distinct_session_cwds():
+            cwd = str(row.get("cwd") or "")
+            root = _git_repo_root_for_cwd(cwd)
+            if root:
+                cwd_to_root[cwd] = root
+            if not root:
+                continue
+            real = os.path.realpath(root)
+            if real == home or real == hermes_home or real.startswith(hermes_home + os.sep):
+                continue
+            agg = repos.setdefault(root, {"root": root, "sessions": 0, "last_active": 0.0})
+            agg["sessions"] += int(row.get("sessions") or 0)
+            agg["last_active"] = max(agg["last_active"], float(row.get("last_active") or 0))
+
+        # Persist the resolved roots so session rows self-describe their project
+        # (grouping reads the column; future calls skip the probe).
+        try:
+            db.backfill_repo_roots(cwd_to_root)
+        except Exception:
+            logger.debug("failed to backfill repo roots", exc_info=True)
+
+        out = sorted(repos.values(), key=lambda r: r["last_active"], reverse=True)
+        for r in out:
+            r["label"] = os.path.basename(r["root"].rstrip("/\\")) or r["root"]
+            r["branch"] = _git_branch_for_cwd(r["root"])
+        return _ok(rid, {"repos": out})
     except Exception as e:
         return _err(rid, 5061, str(e))
 

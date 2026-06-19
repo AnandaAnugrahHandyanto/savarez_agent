@@ -109,6 +109,39 @@ class TestSessionLifecycle:
         assert session["cwd"] == "/work/repo"
         assert session["git_branch"] is None
 
+    def test_update_session_cwd_persists_git_repo_root(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo/src", git_repo_root="/work/repo")
+
+        assert db.get_session("s1")["git_repo_root"] == "/work/repo"
+
+    def test_update_session_cwd_empty_repo_root_does_not_clobber(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo", git_repo_root="/work/repo")
+        db.update_session_cwd("s1", "/work/repo", git_repo_root="")
+
+        assert db.get_session("s1")["git_repo_root"] == "/work/repo"
+
+    def test_distinct_session_cwds_aggregates_history(self, db):
+        db.create_session("s1", "cli", cwd="/repo")
+        db.create_session("s2", "cli", cwd="/repo")
+        db.create_session("s3", "cli", cwd="/other")
+        db.create_session("s4", "cli")  # no cwd — excluded
+
+        rows = {r["cwd"]: r["sessions"] for r in db.distinct_session_cwds()}
+        assert rows == {"/repo": 2, "/other": 1}
+
+    def test_backfill_repo_roots_fills_only_empty(self, db):
+        db.create_session("s1", "cli", cwd="/repo/a")
+        db.create_session("s2", "cli", cwd="/repo/b")
+        db.update_session_cwd("s2", "/repo/b", git_repo_root="/already")
+
+        db.backfill_repo_roots({"/repo/a": "/repo", "/repo/b": "/repo"})
+
+        assert db.get_session("s1")["git_repo_root"] == "/repo"
+        # Pre-existing root is preserved, not clobbered.
+        assert db.get_session("s2")["git_repo_root"] == "/already"
+
     def test_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
         db.end_session("s1", end_reason="user_exit")

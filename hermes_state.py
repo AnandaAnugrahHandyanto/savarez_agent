@@ -536,6 +536,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     reasoning_tokens INTEGER DEFAULT 0,
     cwd TEXT,
     git_branch TEXT,
+    git_repo_root TEXT,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -1345,29 +1346,62 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def update_session_cwd(self, session_id: str, cwd: str, git_branch: str = None) -> None:
+    def update_session_cwd(
+        self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
+    ) -> None:
         """Persist the session working directory when a frontend knows it.
 
         ``git_branch`` records the git branch checked out in ``cwd`` at the time
         the session started/resumed. The sidebar groups main-checkout sessions
         by this so feature-branch work doesn't pile under a single "main" row
         (the main checkout's *current* branch is transient and would
-        misattribute past sessions). Only written when non-empty so a probe
-        failure never clobbers a previously-captured branch.
+        misattribute past sessions).
+
+        ``git_repo_root`` records the git repo this cwd belongs to — the
+        authoritative project key. Resolving it here, at the lowest level, means
+        every surface reads the same membership instead of re-probing git in the
+        GUI over a partial page. Each field is only written when non-empty so a
+        probe failure never clobbers a previously-captured value.
         """
         if not session_id or not cwd:
             return
 
         branch = (git_branch or "").strip()
+        repo_root = (git_repo_root or "").strip()
+
+        sets = ["cwd = ?"]
+        params: List[Any] = [cwd]
+        if branch:
+            sets.append("git_branch = ?")
+            params.append(branch)
+        if repo_root:
+            sets.append("git_repo_root = ?")
+            params.append(repo_root)
+        params.append(session_id)
 
         def _do(conn):
-            if branch:
+            conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", params)
+
+        self._execute_write(_do)
+
+    def backfill_repo_roots(self, cwd_to_root: Dict[str, str]) -> None:
+        """Persist resolved git repo roots for cwds that don't have one yet.
+
+        Backfills history so projects light up for sessions created before the
+        column existed, without clobbering an already-recorded root. Only
+        non-empty roots are written (a non-git cwd stays NULL).
+        """
+        pairs = [(root, cwd) for cwd, root in cwd_to_root.items() if root and cwd]
+        if not pairs:
+            return
+
+        def _do(conn):
+            for root, cwd in pairs:
                 conn.execute(
-                    "UPDATE sessions SET cwd = ?, git_branch = ? WHERE id = ?",
-                    (cwd, branch, session_id),
+                    "UPDATE sessions SET git_repo_root = ? "
+                    "WHERE cwd = ? AND COALESCE(git_repo_root, '') = ''",
+                    (root, cwd),
                 )
-            else:
-                conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (cwd, session_id))
 
         self._execute_write(_do)
     # ──────────────────────────────────────────────────────────────────────
@@ -1998,6 +2032,32 @@ class SessionDB:
                 return current
             current = row["id"]
         return current
+
+    def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
+        """Distinct non-empty session cwds with usage stats, for repo discovery.
+
+        Aggregates across ALL session history (not a single page), so the desktop
+        can surface every git repo the user has worked in — not just the repos
+        that happen to be in the currently-loaded recents. Children/branches
+        count: a worktree session is still a real workspace signal.
+        """
+        where = "cwd IS NOT NULL AND TRIM(cwd) != ''"
+        if not include_archived:
+            where += " AND archived = 0"
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT cwd AS cwd, COUNT(*) AS sessions, "
+                "MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
+                f"FROM sessions WHERE {where} GROUP BY cwd"
+            ).fetchall()
+        return [
+            {
+                "cwd": r["cwd"],
+                "sessions": int(r["sessions"] or 0),
+                "last_active": float(r["last_active"] or 0),
+            }
+            for r in rows
+        ]
 
     def list_sessions_rich(
         self,
