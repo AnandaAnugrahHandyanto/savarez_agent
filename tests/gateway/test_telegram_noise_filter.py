@@ -17,6 +17,7 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         "⏳ Retrying in 4.2s (attempt 1/3)...",
         "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
         "⚠️ Max retries (3) exhausted — trying fallback...",
+        "🔄 Primary model failed — switching to fallback: gpt-5.4-mini via openai-api",
     ]
 
     for message in noisy_messages:
@@ -107,6 +108,36 @@ def test_ochied_whatsapp_final_response_uses_guest_safe_provider_wording(monkeyp
     assert "Codex response" not in sanitized
     assert "provider" not in sanitized.lower()
     assert "continuation attempts" not in sanitized
+
+
+def test_ochied_whatsapp_final_response_sanitizes_quota_errors(monkeypatch):
+    """Ochied WhatsApp chats should not see raw quota/billing provider errors."""
+    monkeypatch.setenv("HERMES_PROFILE", "ochied")
+    monkeypatch.setenv("HERMES_HOME", "/home/test/.hermes/profiles/ochied")
+    raw = (
+        "You exceeded your current quota, please check your plan and billing details. "
+        "For more information, read https://platform.openai.com/docs/guides/error-codes/api-errors."
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.WHATSAPP, raw)
+
+    assert "Ochied" in sanitized
+    assert "gangguan sebentar" in sanitized
+    assert "quota" not in sanitized.lower()
+    assert "billing" not in sanitized.lower()
+    assert "platform.openai.com" not in sanitized
+    assert "provider" not in sanitized.lower()
+
+
+def test_ochied_whatsapp_status_suppresses_fallback_switch_notice(monkeypatch):
+    """Ochied WhatsApp chats should not see internal fallback-routing notices."""
+    monkeypatch.setenv("HERMES_PROFILE", "ochied")
+    monkeypatch.setenv("HERMES_HOME", "/home/test/.hermes/profiles/ochied")
+    raw = "Primary model failed — switching to fallback: gpt-5.4-mini via openai-api"
+
+    sanitized = _prepare_gateway_status_message(Platform.WHATSAPP, "warn", raw)
+
+    assert sanitized is None
 
 
 def test_ochied_whatsapp_status_uses_guest_safe_provider_wording(monkeypatch):
