@@ -848,7 +848,12 @@ def _run_post_setup(post_setup_key: str):
                 # --workspaces=false restricts the install to the repo root
                 # only, avoiding the apps/* glob which would pull in
                 # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
-                [npm_bin, "install", "--silent", "--workspaces=false"],
+                # --ignore-scripts prevents agent-browser's postinstall from
+                # replacing the global npm symlink with a path into
+                # node_modules/ — that local path disappears on the next
+                # hermes update, leaving a dangling symlink.  See #48521.
+                [npm_bin, "install", "--silent", "--workspaces=false",
+                 "--ignore-scripts"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
