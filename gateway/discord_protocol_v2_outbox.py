@@ -84,6 +84,38 @@ def split_discord_message(content: str) -> list[str]:
     return chunks
 
 
+def _allowed_mentions_none() -> Any:
+    """Return a discord.py AllowedMentions.none() value, with a test fallback."""
+
+    def _is_safe(candidate: Any) -> bool:
+        return all(
+            getattr(candidate, attr, None) is False
+            for attr in ("everyone", "roles", "users", "replied_user")
+        )
+
+    try:
+        import discord  # type: ignore
+
+        allowed_mentions = getattr(discord, "AllowedMentions", None)
+        none = getattr(allowed_mentions, "none", None)
+        if callable(none):
+            candidate = none()
+            if _is_safe(candidate):
+                return candidate
+        if callable(allowed_mentions):
+            candidate = allowed_mentions(
+                everyone=False,
+                roles=False,
+                users=False,
+                replied_user=False,
+            )
+            if _is_safe(candidate):
+                return candidate
+    except Exception:
+        pass
+    return {"parse": []}
+
+
 def create_response_outbox_delivery(
     store: DiscordProtocolV2Store,
     *,
@@ -370,7 +402,9 @@ async def default_send_discord_part(
     send = getattr(channel, "send", None)
     if not callable(send):
         raise MissingDiscordClientError(f"channel {target_id} cannot send")
-    return await _maybe_await(send(content=content, reference=None))
+    return await _maybe_await(
+        send(content=content, reference=None, allowed_mentions=_allowed_mentions_none())
+    )
 
 
 def record_outbox_message_map(

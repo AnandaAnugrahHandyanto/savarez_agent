@@ -9,9 +9,18 @@ from gateway.config import DiscordNativeMultibotConfig, DiscordNativeMultibotIde
 from gateway.discord_identity_registry import DiscordIdentityRegistry
 from gateway.discord_protocol_v2_handoffs import (
     accept_handoff,
+    complete_handoff,
     request_consult,
     request_handoff,
     request_review,
+)
+from gateway.handoff_observability import (
+    KNOWN_DISCORD_MESSAGE_IDS,
+    KNOWN_THREAD_ID,
+    LEDGER_FILENAME,
+    backfill_known_thread_handoff_ids,
+    build_timeout_post_mortem,
+    handoff_correlation_id,
 )
 from gateway.discord_protocol_v2_ingest import DiscordProtocolV2Ingestor
 from gateway.discord_protocol_v2_outbox import (
@@ -170,7 +179,64 @@ def test_internal_handoff_creates_target_delivery_and_projection_outbox(tmp_path
         assert result.outbox_delivery["source_agent_event_id"] == "evt_handoff_requested_0001"
         assert store.count_rows("inbound_deliveries") == 1
         assert store.count_rows("outbox_deliveries") == 1
-        assert json.loads(result.event["payload_json"])["api_token"] == "<redacted>"
+        event_payload = json.loads(result.event["payload_json"])
+        assert event_payload["api_token"] == "<redacted>"
+        assert event_payload["correlation_id"] == handoff_correlation_id("evt_handoff_requested_0001")
+        outbox_payload = json.loads(result.outbox_delivery["payload_json"])
+        assert outbox_payload["correlation_id"] == handoff_correlation_id("evt_handoff_requested_0001")
+        assert outbox_payload["mentions"] == []
+        assert outbox_payload["allowed_mentions"] == {"parse": []}
+        assert "<@" not in outbox_payload["content"]
+        assert "agent-b: accepted" in outbox_payload["content"]
+
+
+def test_handoff_observability_ledger_records_progress_result_and_close(tmp_path):
+    with DiscordProtocolV2Store(tmp_path / "discord-v2.sqlite3") as store:
+        _seed(store)
+        request_handoff(
+            store,
+            agent_event_id="evt_handoff_ledger_0001",
+            source_agent_id="agent-a",
+            target_agent_id="agent-b",
+            topic_id="guild-1/channel-1/root",
+            payload={"task": "ship it", "api_token": "sk-secret"},
+        )
+        complete_handoff(
+            store,
+            agent_event_id="evt_handoff_ledger_0001",
+            actor_agent_id="agent-b",
+            payload={"summary": "done"},
+        )
+
+    ledger_path = tmp_path / LEDGER_FILENAME
+    records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert [record["event"] for record in records] == ["handoff.progress", "handoff.result", "handoff.close"]
+    assert {record["correlation_id"] for record in records} == {handoff_correlation_id("evt_handoff_ledger_0001")}
+    assert records[0]["payload"] == {"source_event_type": "handoff.requested"}
+    assert "sk-secret" not in ledger_path.read_text(encoding="utf-8")
+
+
+def test_timeout_post_mortem_and_known_discord_id_backfill_are_safe_jsonl(tmp_path):
+    payload = build_timeout_post_mortem(
+        last_tool="terminal",
+        elapsed_seconds=37.2,
+        status="infra timeout",
+        partial_verdict="PRELIMINARY PASS",
+    )
+    assert payload == {
+        "elapsed_seconds": 37.2,
+        "last_tool": "terminal",
+        "partial_verdict": "PRELIMINARY PASS",
+        "status": "infra timeout",
+        "timeout_classification": "infra_timeout",
+    }
+
+    record = backfill_known_thread_handoff_ids(tmp_path)
+    assert record["discord_thread_id"] == KNOWN_THREAD_ID
+    assert record["discord_message_ids"] == KNOWN_DISCORD_MESSAGE_IDS
+    ledger = (tmp_path / LEDGER_FILENAME).read_text(encoding="utf-8")
+    assert "1517005917260877970" in ledger
+    assert "Bohumil" not in ledger
 
 
 def test_replay_same_internal_review_and_consult_create_no_duplicate_deliveries(tmp_path):

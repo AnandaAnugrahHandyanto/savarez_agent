@@ -11,6 +11,7 @@ from gateway.discord_protocol_v2_outbox import (
     PossibleSendCommittedError,
     create_projection_outbox_delivery,
     create_response_outbox_delivery,
+    default_send_discord_part,
 )
 from gateway.discord_protocol_v2_store import (
     DiscordProtocolV2Store,
@@ -23,10 +24,12 @@ class FakeChannel:
     def __init__(self, client_name: str) -> None:
         self.client_name = client_name
         self.sent: list[str] = []
+        self.sent_kwargs: list[dict] = []
 
-    async def send(self, *, content: str, reference=None):
+    async def send(self, *, content: str, reference=None, **kwargs):
         assert reference is None
         self.sent.append(content)
+        self.sent_kwargs.append({"content": content, "reference": reference, **kwargs})
         return SimpleNamespace(id=f"{self.client_name}-message-{len(self.sent)}")
 
 
@@ -43,6 +46,31 @@ class FakeDiscordClient:
 
     async def fetch_channel(self, channel_id: int):
         return self.get_channel(channel_id)
+
+
+def _assert_allowed_mentions_none(allowed_mentions):
+    if isinstance(allowed_mentions, dict):
+        assert allowed_mentions == {"parse": []}
+    else:
+        assert allowed_mentions.everyone is False
+        assert allowed_mentions.roles is False
+        assert allowed_mentions.users is False
+
+
+@pytest.mark.asyncio
+async def test_default_send_discord_part_suppresses_mentions_for_projection_content():
+    client = FakeDiscordClient("reviewer")
+
+    await default_send_discord_part(
+        client,
+        channel_id="100",
+        content="hi <@123> @everyone",
+    )
+
+    [sent] = client.channel.sent_kwargs
+    assert sent["content"] == "hi <@123> @everyone"
+    assert "allowed_mentions" in sent
+    _assert_allowed_mentions_none(sent["allowed_mentions"])
 
 
 def _parts(store: DiscordProtocolV2Store) -> list[dict]:
@@ -184,7 +212,7 @@ async def test_same_projection_is_sent_once_and_uses_projection_idempotency(tmp_
             target_agent_id="reviewer",
             topic_id="topic-1",
             channel_id="100",
-            content="Reviewer, please inspect this handoff.",
+            content="Reviewer, please inspect this handoff: <@123> @everyone",
             mentions=["reviewer"],
         )
         replay = create_projection_outbox_delivery(
@@ -210,7 +238,8 @@ async def test_same_projection_is_sent_once_and_uses_projection_idempotency(tmp_
         assert result.status == "sent"
         assert idle is None
         assert store.count_rows("outbox_deliveries") == 1
-        assert client.channel.sent == ["Reviewer, please inspect this handoff."]
+        assert client.channel.sent == ["Reviewer, please inspect this handoff: <@123> @everyone"]
+        _assert_allowed_mentions_none(client.channel.sent_kwargs[0]["allowed_mentions"])
         assert first["idempotency_key"] == projection_idempotency_key(
             event["agent_event_id"], "reviewer"
         )

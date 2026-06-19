@@ -41,6 +41,7 @@ class DiscordProtocolV2InvocationContext:
     session_source: SessionSource
     message_text: str
     channel_prompt: str
+    thread_context_envelope: dict[str, Any]
     metadata: dict[str, Any]
 
 
@@ -288,16 +289,30 @@ class DiscordProtocolV2Worker:
             "guild_id": topic.get("guild_id"),
             "channel_id": topic.get("channel_id"),
             "thread_id": topic.get("thread_id"),
+            "parent_channel_id": topic.get("parent_channel_id"),
+            "thread_name": topic.get("title"),
             "route_reason": delivery.get("route_reason"),
         }
+        envelope = build_discord_thread_context_envelope(
+            delivery=delivery,
+            topic=topic,
+            payload=payload,
+            target_agent_id=target_agent_id,
+            hermes_profile=identity.hermes_profile,
+        )
+        metadata["thread_context_envelope"] = envelope
         return DiscordProtocolV2InvocationContext(
             delivery=delivery,
             identity=identity,
             topic=topic,
             session=session,
             session_source=source,
-            message_text=str(payload.get("content") or ""),
+            message_text=build_discord_v2_invocation_message(
+                content=str(payload.get("content") or ""),
+                envelope=envelope,
+            ),
             channel_prompt=build_discord_v2_channel_prompt(metadata),
+            thread_context_envelope=envelope,
             metadata=metadata,
         )
 
@@ -333,16 +348,114 @@ def build_discord_v2_session_source(
 
 
 def build_discord_v2_channel_prompt(metadata: dict[str, Any]) -> str:
-    """Return a compact prompt fragment with v2 routing identity."""
+    """Return a compact stable prompt fragment with v2 routing identity.
+
+    Volatile per-turn values (delivery key, triggering message id, latest
+    feedback, active owner/status) belong in the thread context envelope, not in
+    this stable prompt fragment.  Keeping this stable preserves prompt-cache
+    reuse across turns in the same topic × agent session.
+    """
 
     return (
         "[Discord protocol v2 delivery]\n"
         f"Target agent: {metadata['target_agent_id']}\n"
         f"Hermes profile: {metadata['hermes_profile']}\n"
-        f"Topic: {metadata['topic_id']}\n"
-        f"Delivery key: {metadata['delivery_key']}\n"
-        f"Source type: {metadata['source_type']}"
+        f"Topic: {metadata['topic_id']}"
     )
+
+
+def build_discord_v2_invocation_message(*, content: str, envelope: dict[str, Any]) -> str:
+    """Attach the compact v0.3 thread envelope to the per-turn user message."""
+
+    envelope_json = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if content:
+        return f"{content}\n\n[Discord thread context envelope]\n{envelope_json}"
+    return f"[Discord thread context envelope]\n{envelope_json}"
+
+
+def build_discord_thread_context_envelope(
+    *,
+    delivery: dict[str, Any],
+    topic: dict[str, Any],
+    payload: dict[str, Any],
+    target_agent_id: str,
+    hermes_profile: str,
+) -> dict[str, Any]:
+    """Build compact Discord protocol v0.3 context for one resume/handoff turn.
+
+    This is intentionally not a raw Discord message dump. Only routing,
+    identity, and compact thread-state hints are included.
+    """
+
+    topic_state = _decode_json_object(topic.get("state_json"))
+    message_id = delivery.get("discord_message_id") or payload.get("discord_message_id")
+    return {
+        "protocol": "discord_thread_context_v0.3",
+        "topic": {
+            "topic_id": str(topic.get("topic_id") or delivery.get("topic_id") or ""),
+            "guild_id": _string_or_none(topic.get("guild_id")),
+            "channel_id": _string_or_none(topic.get("channel_id")),
+            "thread_id": _string_or_none(topic.get("thread_id")),
+            "parent_channel_id": _string_or_none(topic.get("parent_channel_id")),
+            "thread_name": _string_or_none(topic.get("title")),
+        },
+        "trigger": {
+            "source_type": str(delivery.get("source_type") or ""),
+            "message_id": _string_or_none(message_id),
+            "sender_kind": str(delivery.get("author_kind") or payload.get("author_kind") or "system"),
+            "sender_id": _string_or_none(delivery.get("author_id") or payload.get("author_id") or delivery.get("source_id")),
+            "route_reason": str(delivery.get("route_reason") or payload.get("route_reason") or ""),
+        },
+        "agent": {
+            "target_agent_id": target_agent_id,
+            "hermes_profile": hermes_profile,
+            "source_agent_id": _string_or_none(payload.get("source_agent_id") or delivery.get("source_agent_id")),
+        },
+        "thread_state": {
+            "goal": str(payload.get("goal") or topic_state.get("goal") or ""),
+            "decisions": _compact_string_list(payload.get("decisions") or topic_state.get("decisions")),
+            "open_questions": _compact_string_list(
+                payload.get("open_questions") or topic_state.get("open_questions")
+            ),
+            "recent_human_feedback": _compact_string_list(
+                payload.get("recent_human_feedback") or topic_state.get("recent_human_feedback")
+            ),
+            "active_owner": _string_or_none(payload.get("active_owner") or topic_state.get("active_owner")),
+            "status": str(payload.get("status") or topic_state.get("status") or "accepted"),
+        },
+    }
+
+
+def _decode_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        decoded = json.loads(str(value or "{}"))
+    except Exception:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _compact_string_list(value: Any, *, limit: int = 5, max_chars: int = 240) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        items = [value]
+    compact: list[str] = []
+    for item in items[:limit]:
+        text = str(item).strip()
+        if text:
+            compact.append(text[:max_chars])
+    return compact
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
 
 
 class GatewayRunnerDiscordV2Invoker:

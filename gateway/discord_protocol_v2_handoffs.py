@@ -26,6 +26,7 @@ from gateway.discord_protocol_v2_store import (
     DiscordProtocolV2Store,
     projection_idempotency_key,
 )
+from gateway.handoff_observability import append_handoff_ledger_record, handoff_correlation_id
 
 _REQUEST_KIND_TO_EVENT_TYPE = {
     "handoff": "handoff.requested",
@@ -265,6 +266,7 @@ def transition_handoff(
     event_payload = safe_event_payload(
         {
             **dict(payload or {}),
+            "correlation_id": handoff_correlation_id(request_event_id),
             "handoff_id": handoff["handoff_id"],
             "request_agent_event_id": request_event_id,
             "status": status,
@@ -284,6 +286,7 @@ def transition_handoff(
         status=status,
         payload={**_json_load(handoff.get("payload_json"), {}), **event_payload},
     )
+    _append_transition_ledger(store, event=event, handoff=updated, status=status, payload=event_payload)
     return InternalEventResult(event=event, delivery=None, outbox_delivery=None, handoff=updated)
 
 
@@ -298,13 +301,14 @@ def _persist_requested_event(
 ) -> InternalEventResult:
     if envelope.event_type not in REQUEST_EVENT_TYPES:
         raise ValueError("requested event type required")
+    event_payload = {**envelope.payload, "correlation_id": handoff_correlation_id(envelope.agent_event_id)}
     event = store.create_agent_event(
         agent_event_id=envelope.agent_event_id,
         event_type=envelope.event_type,
         source_agent_id=envelope.source_agent_id,
         target_agent_id=envelope.target_agent_id,
         topic_id=envelope.topic_id,
-        payload=envelope.payload,
+        payload=event_payload,
         status="requested",
     )
     delivery = store.create_internal_event_delivery(
@@ -312,7 +316,12 @@ def _persist_requested_event(
         target_agent_id=envelope.target_agent_id,
         topic_id=envelope.topic_id,
         route_reason=envelope.event_type,
-        payload={**envelope.payload, "agent_event_id": envelope.agent_event_id},
+        payload={
+            **event_payload,
+            "agent_event_id": envelope.agent_event_id,
+            "source_agent_id": envelope.source_agent_id,
+            "target_agent_id": envelope.target_agent_id,
+        },
     )
     handoff = None
     if envelope.event_type == "handoff.requested":
@@ -323,7 +332,7 @@ def _persist_requested_event(
             target_agent_id=envelope.target_agent_id,
             topic_id=envelope.topic_id,
             status="requested",
-            payload=envelope.payload,
+            payload=event_payload,
         )
     store.record_route_decision(
         source_type=INTERNAL_SOURCE_TYPE,
@@ -333,7 +342,7 @@ def _persist_requested_event(
         decision="delivered",
         target_agent_ids=[envelope.target_agent_id],
         reason=envelope.event_type,
-        payload=envelope.payload,
+        payload=event_payload,
     )
     outbox = _create_projection(
         store,
@@ -343,7 +352,59 @@ def _persist_requested_event(
         thread_id=thread_id,
         projection_content=projection_content,
     )
+    _append_request_ledger(store, envelope=envelope, handoff=handoff)
     return InternalEventResult(event=event, delivery=delivery, outbox_delivery=outbox, handoff=handoff)
+
+
+def _append_request_ledger(
+    store: DiscordProtocolV2Store,
+    *,
+    envelope: AgentEventEnvelope,
+    handoff: dict[str, Any] | None,
+) -> None:
+    append_handoff_ledger_record(
+        store.db_path.parent,
+        event="handoff.progress",
+        correlation_id=handoff_correlation_id(envelope.agent_event_id),
+        status="requested",
+        agent_event_id=envelope.agent_event_id,
+        handoff_id=str(handoff["handoff_id"]) if handoff else None,
+        source_agent_id=envelope.source_agent_id,
+        target_agent_id=envelope.target_agent_id,
+        topic_id=envelope.topic_id,
+        payload={"source_event_type": envelope.event_type},
+    )
+
+
+def _append_transition_ledger(
+    store: DiscordProtocolV2Store,
+    *,
+    event: dict[str, Any],
+    handoff: dict[str, Any] | None,
+    status: str,
+    payload: Mapping[str, Any],
+) -> None:
+    request_event_id = str(payload.get("request_agent_event_id") or event.get("agent_event_id") or "")
+    common = {
+        "correlation_id": handoff_correlation_id(request_event_id),
+        "status": status,
+        "agent_event_id": request_event_id,
+        "handoff_id": str(handoff["handoff_id"]) if handoff else str(payload.get("handoff_id") or ""),
+        "source_agent_id": str(event.get("source_agent_id") or "") or None,
+        "target_agent_id": str(event.get("target_agent_id") or "") or None,
+        "topic_id": str(event.get("topic_id") or "") or None,
+        "payload": {
+            "transition_event_id": event.get("agent_event_id"),
+            "source_event_type": event.get("event_type"),
+        },
+    }
+    if status == "accepted":
+        append_handoff_ledger_record(store.db_path.parent, event="handoff.progress", **common)
+    elif status == "completed":
+        append_handoff_ledger_record(store.db_path.parent, event="handoff.result", **common)
+        append_handoff_ledger_record(store.db_path.parent, event="handoff.close", **common)
+    else:
+        append_handoff_ledger_record(store.db_path.parent, event="handoff.close", **common)
 
 
 def _create_projection(
@@ -360,12 +421,13 @@ def _create_projection(
     if not effective_channel_id:
         raise ValueError("channel_id is required when topic is not persisted")
     effective_thread_id = thread_id if thread_id is not None else (topic or {}).get("thread_id")
-    mention_id = _target_bot_mention_id(store, envelope.target_agent_id)
-    mentions = [mention_id] if mention_id else []
+    # v0.3 invariant: Discord projection is human-visible status only.  The
+    # durable inbound delivery above is the authoritative handoff transport, so
+    # never create a bot-to-bot Discord mention here.
+    mentions: list[str] = []
     content = projection_content or _default_projection_content(
         kind=kind,
         envelope=envelope,
-        mention_id=mention_id,
     )
     return create_projection_outbox_delivery(
         store,
@@ -379,8 +441,10 @@ def _create_projection(
         payload={
             "content": content,
             "mentions": mentions,
+            "allowed_mentions": {"parse": []},
             "agent_event_id": envelope.agent_event_id,
             "event_type": envelope.event_type,
+            "correlation_id": handoff_correlation_id(envelope.agent_event_id),
             "source_agent_id": envelope.source_agent_id,
             "target_agent_id": envelope.target_agent_id,
             "idempotency_key": projection_idempotency_key(
@@ -395,12 +459,11 @@ def _default_projection_content(
     *,
     kind: str,
     envelope: AgentEventEnvelope,
-    mention_id: str | None,
 ) -> str:
-    mention = f"<@{mention_id}>" if mention_id else envelope.target_agent_id
     source = envelope.source_agent_id or "internal"
     summary = envelope.payload.get("summary") or envelope.payload.get("task") or envelope.event_type
-    return f"[{kind}] {mention} requested by {source}: {summary}"
+    status = "accepted" if kind == "handoff" else "requested"
+    return f"{envelope.target_agent_id}: {status} — {kind} from {source}: {summary}"
 
 
 def _target_bot_mention_id(store: DiscordProtocolV2Store, target_agent_id: str) -> str | None:

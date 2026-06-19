@@ -17,7 +17,11 @@ from gateway.discord_protocol_v2_outbox import (
     DiscordProtocolV2OutboxSender,
 )
 from gateway.discord_protocol_v2_store import DiscordProtocolV2Store, response_idempotency_key
-from gateway.discord_protocol_v2_worker import DiscordProtocolV2Worker, GatewayRunnerDiscordV2Invoker
+from gateway.discord_protocol_v2_worker import (
+    DiscordProtocolV2Worker,
+    GatewayRunnerDiscordV2Invoker,
+    build_discord_v2_channel_prompt,
+)
 from gateway.session import SessionSource
 
 
@@ -68,10 +72,12 @@ class _FakeSessionStore:
 class _FakeDiscordChannel:
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.sent_kwargs: list[dict] = []
 
-    async def send(self, *, content: str, reference=None):
+    async def send(self, *, content: str, reference=None, **kwargs):
         assert reference is None
         self.sent.append(content)
+        self.sent_kwargs.append({"content": content, "reference": reference, **kwargs})
         return SimpleNamespace(id=f"bohumil-discord-{len(self.sent)}")
 
 
@@ -160,7 +166,8 @@ async def test_worker_invokes_fake_agent_and_enqueues_one_outbox_response(tmp_pa
             calls.append(context)
             assert context.delivery["delivery_key"] == delivery["delivery_key"]
             assert context.identity.hermes_profile == "bohumil-profile"
-            assert context.message_text == "hello bohumil"
+            assert context.message_text.startswith("hello bohumil")
+            assert "discord_thread_context_v0.3" in context.message_text
             assert context.session_source.platform.value == "discord"
             assert context.session_source.chat_id == "channel-1"
             assert context.metadata["target_agent_id"] == "bohumil"
@@ -228,7 +235,7 @@ async def test_active_bohumil_fake_path_invokes_once_sends_once_and_maps(tmp_pat
         async def fake_invoker(context):
             invocations.append(context)
             assert context.delivery["target_agent_id"] == "bohumil"
-            assert context.message_text == "ahoj Bohumile"
+            assert context.message_text.startswith("ahoj Bohumile")
             return {"final_response": "deterministic Bohumil response"}
 
         worker_result = await _worker(store, fake_invoker).run_once(target_agent_id="bohumil")
@@ -647,3 +654,117 @@ def test_gateway_run_agent_suppressed_queued_followup_has_no_inline_delivery_reg
         "                    hermes_profile=hermes_profile,\n"
         "                    hermes_home=hermes_home,"
     ) in text
+
+
+@pytest.mark.asyncio
+async def test_worker_builds_v03_thread_context_envelope_without_raw_discord_dump(tmp_path):
+    with DiscordProtocolV2Store(tmp_path / "discord-v2.sqlite3") as store:
+        store.upsert_identity(
+            agent_id="bohumil",
+            hermes_profile="bohumil-profile",
+            discord_application_id="app-bohumil",
+            discord_bot_user_id="bot-bohumil",
+            token_secret_ref="secret://discord/bohumil-token",
+            capabilities=["chat"],
+            scopes={"guild_ids": ["guild-1"]},
+            enabled=True,
+        )
+        store.upsert_topic(
+            topic_id="guild-1/parent-1/thread-1",
+            guild_id="guild-1",
+            channel_id="thread-1",
+            thread_id="thread-1",
+            parent_channel_id="parent-1",
+            title="Implement protocol v0.3",
+            state={
+                "goal": "Ship v0.3 slice",
+                "decisions": ["canonical agent_id owns session"],
+                "open_questions": ["none"],
+                "recent_human_feedback": ["keep compact"],
+                "active_owner": "bohumil",
+                "status": "accepted",
+                "raw_discord_dump": {"must": "not leak"},
+            },
+        )
+        store.create_discord_inbound_deliveries(
+            discord_message_id="discord-message-2",
+            guild_id="guild-1",
+            channel_id="thread-1",
+            topic_id="guild-1/parent-1/thread-1",
+            author_id="human-1",
+            author_kind="human",
+            target_agent_ids=["bohumil"],
+            route_reason="explicit_mention",
+            payload={
+                "discord_message_id": "discord-message-2",
+                "content": "resume this thread",
+                "author_id": "human-1",
+                "recent_human_feedback": ["latest feedback lives in the envelope"],
+            },
+        )
+        contexts = []
+
+        async def fake_invoker(context):
+            contexts.append(context)
+            return {"final_response": "ok"}
+
+        result = await _worker(store, fake_invoker).run_once(target_agent_id="bohumil")
+
+        assert result is not None
+        assert len(contexts) == 1
+        envelope = contexts[0].thread_context_envelope
+        assert envelope["protocol"] == "discord_thread_context_v0.3"
+        assert envelope["topic"] == {
+            "topic_id": "guild-1/parent-1/thread-1",
+            "guild_id": "guild-1",
+            "channel_id": "thread-1",
+            "thread_id": "thread-1",
+            "parent_channel_id": "parent-1",
+            "thread_name": "Implement protocol v0.3",
+        }
+        assert envelope["trigger"] == {
+            "source_type": "discord_message",
+            "message_id": "discord-message-2",
+            "sender_kind": "human",
+            "sender_id": "<redacted>",
+            "route_reason": "explicit_mention",
+        }
+        assert envelope["agent"] == {
+            "target_agent_id": "bohumil",
+            "hermes_profile": "bohumil-profile",
+            "source_agent_id": None,
+        }
+        assert envelope["thread_state"]["goal"] == "Ship v0.3 slice"
+        assert envelope["thread_state"]["recent_human_feedback"] == [
+            "latest feedback lives in the envelope"
+        ]
+        serialized = json.dumps(envelope)
+        assert "raw_discord_dump" not in serialized
+        assert "must" not in serialized
+        assert "Discord thread context envelope" in contexts[0].message_text
+
+
+def test_stable_channel_prompt_excludes_volatile_delivery_fields():
+    prompt_a = build_discord_v2_channel_prompt(
+        {
+            "target_agent_id": "bohumil",
+            "hermes_profile": "bohumil-profile",
+            "topic_id": "topic-1",
+            "delivery_key": "delivery-a",
+            "source_type": "discord_message",
+        }
+    )
+    prompt_b = build_discord_v2_channel_prompt(
+        {
+            "target_agent_id": "bohumil",
+            "hermes_profile": "bohumil-profile",
+            "topic_id": "topic-1",
+            "delivery_key": "delivery-b",
+            "source_type": "internal_event",
+        }
+    )
+
+    assert prompt_a == prompt_b
+    assert "Delivery key" not in prompt_a
+    assert "delivery-a" not in prompt_a
+    assert "Source type" not in prompt_a
