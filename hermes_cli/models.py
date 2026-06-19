@@ -73,6 +73,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
+    ("openrouter/fusion",                      "multi-model panel + judge deliberation (priced as sum of all calls)"),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
@@ -1309,6 +1310,21 @@ def _openrouter_model_is_free(pricing: Any) -> bool:
         return False
 
 
+# OpenRouter "router" model aliases (openrouter/<router>). These are not models
+# themselves - they dispatch each request to an underlying tool-capable model -
+# so the router alias advertises ``supported_parameters: []`` in /api/v1/models
+# even though the request that reaches the chosen model fully supports tools.
+# The plain tool-support filter below would therefore drop every router from the
+# picker (openrouter/pareto-code is already shipped and hits exactly this),
+# leaving the curated entry inert. Treat known routers as tool-capable so they
+# survive the filter. Keep this list explicit (not a prefix glob) so a future
+# non-router ``openrouter/*`` model that genuinely lacks tools is still filtered.
+_OPENROUTER_TOOL_CAPABLE_ROUTERS = frozenset({
+    "openrouter/pareto-code",
+    "openrouter/fusion",
+})
+
+
 def _openrouter_model_supports_tools(item: Any) -> bool:
     """Return True when the model's ``supported_parameters`` advertise tool calling.
 
@@ -1323,9 +1339,18 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     so the picker doesn't silently empty for those users. Only hide models
     whose ``supported_parameters`` is an explicit list that omits ``tools``.
 
+    **Router aliases are tool-capable.** OpenRouter router models
+    (``openrouter/pareto-code``, ``openrouter/fusion``) report an empty
+    ``supported_parameters`` because the alias itself isn't the executor - it
+    routes to an underlying tool-capable model. Without this allowance the
+    filter silently drops them from the picker. See
+    ``_OPENROUTER_TOOL_CAPABLE_ROUTERS`` above.
+
     Ported from Kilo-Org/kilocode#9068.
     """
     if not isinstance(item, dict):
+        return True
+    if str(item.get("id") or "").strip() in _OPENROUTER_TOOL_CAPABLE_ROUTERS:
         return True
     params = item.get("supported_parameters")
     if not isinstance(params, list):
