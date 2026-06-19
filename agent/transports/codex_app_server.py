@@ -41,7 +41,10 @@ def _resolve_codex_bin(codex_bin: str) -> str:
     (e.g. `codex.CMD`); fall back to the original name so the existing
     not-found handling still fires when codex genuinely isn't installed.
     """
-    return shutil.which(codex_bin) or codex_bin
+    if os.path.isabs(codex_bin) and os.path.isfile(codex_bin):
+        return codex_bin
+    resolved = shutil.which(codex_bin)
+    return resolved or codex_bin
 
 
 @dataclass
@@ -87,7 +90,7 @@ class CodexAppServerClient:
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
     ) -> None:
-        self._codex_bin = codex_bin
+        self._codex_bin = _resolve_codex_bin(codex_bin)
         spawn_env = os.environ.copy()
         if env:
             spawn_env.update(env)
@@ -124,7 +127,7 @@ class CodexAppServerClient:
                 ]
             )
 
-        cmd = [_resolve_codex_bin(codex_bin), "app-server"] + app_server_args
+        cmd = [self._codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
@@ -386,16 +389,18 @@ def check_codex_binary(
     """Verify codex CLI is installed and meets minimum version.
 
     Returns (ok, message). Used by setup wizard and runtime startup."""
+    resolved_bin = _resolve_codex_bin(codex_bin)
     try:
         proc = subprocess.run(
-            [_resolve_codex_bin(codex_bin), "--version"],
+            [resolved_bin, "--version"],
             capture_output=True,
             text=True,
             timeout=10,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return False, (
-            f"codex CLI not found at {codex_bin!r}. Install with: "
+            f"codex CLI not found at {resolved_bin!r}. Install with: "
             f"npm i -g @openai/codex"
         )
     except subprocess.TimeoutExpired:
