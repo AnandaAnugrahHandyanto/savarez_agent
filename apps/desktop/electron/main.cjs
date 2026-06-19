@@ -150,6 +150,20 @@ if (REMOTE_DISPLAY_REASON) {
   )
 }
 
+// Must run before app `ready` — Chromium switches only apply pre-launch.
+// Set HERMES_DESKTOP_PASSWORD_STORE to select the keychain backend on Linux.
+// Valid values: gnome-libsecret, kwallet, kwallet5, kwallet6, basic.
+const _VALID_PASSWORD_STORES = new Set(['gnome-libsecret', 'kwallet', 'kwallet5', 'kwallet6', 'basic'])
+const PASSWORD_STORE_OVERRIDE = process.env.HERMES_DESKTOP_PASSWORD_STORE
+if (PASSWORD_STORE_OVERRIDE) {
+  if (_VALID_PASSWORD_STORES.has(PASSWORD_STORE_OVERRIDE)) {
+    app.commandLine.appendSwitch('password-store', PASSWORD_STORE_OVERRIDE)
+    console.log(`[hermes] using password store backend: ${PASSWORD_STORE_OVERRIDE}`)
+  } else {
+    console.warn(`[hermes] ignoring unknown HERMES_DESKTOP_PASSWORD_STORE value: ${PASSWORD_STORE_OVERRIDE}`)
+  }
+}
+
 // Keep the renderer running at full speed while the window is in the background
 // or occluded. The chat transcript streams to screen through a
 // requestAnimationFrame-gated flush; Chromium pauses rAF (and clamps timers)
