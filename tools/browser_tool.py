@@ -141,8 +141,13 @@ def _read_subprocess_text(path: str) -> str:
     tool non-functional (#47456). Decode with ``errors="surrogateescape"`` so
     arbitrary bytes round-trip losslessly and the call never raises; the
     ASCII/UTF-8 JSON control payload downstream is unaffected.
+
+    ``newline=""`` disables universal-newline translation so CR/CRLF bytes are
+    preserved verbatim — without it, text mode rewrites ``\r\n``/``\r`` to
+    ``\n``, which would break the lossless round-trip the docstring promises
+    (notably on Windows, the exact platform this resilient decode targets).
     """
-    with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+    with open(path, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
         return f.read()
 
 

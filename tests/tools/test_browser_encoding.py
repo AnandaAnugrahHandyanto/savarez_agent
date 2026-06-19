@@ -41,3 +41,22 @@ def test_read_subprocess_text_plain_utf8_unaffected(tmp_path):
     p.write_text("正常 UTF-8 텍스트 ✓", encoding="utf-8")
     out = bt._read_subprocess_text(str(p))
     assert out == "正常 UTF-8 텍스트 ✓"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"line1\r\nline2\r\n", id="crlf"),
+        pytest.param(b"line1\rline2\r", id="lone_cr"),
+        pytest.param(b"a\r\nb \xb2\xbb\rc", id="mixed_crlf_cr_non_utf8"),
+    ],
+)
+def test_read_subprocess_text_preserves_newline_bytes(tmp_path, raw):
+    # Text mode defaults to universal-newline translation (newline=None), which
+    # rewrites \r\n and lone \r to \n and would break the lossless round-trip
+    # the docstring promises (the Windows non-UTF-8 case this targets). The read
+    # must preserve the raw CR/CRLF bytes verbatim.
+    p = tmp_path / "out.txt"
+    p.write_bytes(raw)
+    out = bt._read_subprocess_text(str(p))
+    assert out.encode("utf-8", errors="surrogateescape") == raw
