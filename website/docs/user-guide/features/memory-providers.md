@@ -365,18 +365,12 @@ hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 
 **Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|oss>` or edit `mem0.json` directly.
 
-**Telemetry:** The Mem0 plugin collects anonymous usage telemetry via PostHog (no PII, no hardware fingerprint) to help improve the integration.
+**Telemetry:** The Mem0 plugin collects anonymous usage telemetry via PostHog (no PII) to help improve the integration. To opt out:
 
-To disable entirely:
 ```bash
 export MEM0_TELEMETRY=false
 # Or persist in your profile env:
 echo "MEM0_TELEMETRY=false" >> ~/.hermes/.env
-```
-
-To reduce the sample rate instead of disabling fully (0.0 = no events, 1.0 = all events):
-```bash
-export MEM0_TELEMETRY_SAMPLE_RATE=0.1   # sample 10% of events
 ```
 
 ---
