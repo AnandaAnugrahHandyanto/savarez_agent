@@ -345,7 +345,15 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             # Make naive timestamps timezone-aware at parse time so the stored
             # value doesn't depend on the system timezone matching at check time.
             if dt.tzinfo is None:
-                dt = dt.astimezone()  # Interpret as local timezone
+                # Interpret a bare wall-clock in the user's configured Hermes
+                # timezone (HERMES_TIMEZONE / config `timezone:`), not the server
+                # process's local zone. A bare datetime.astimezone() attaches the
+                # server tz, so a one-shot scheduled as e.g. "2026-07-01T09:00" on
+                # a UTC container with `timezone: Asia/Kolkata` would fire at the
+                # wrong wall-clock hour. _hermes_now().tzinfo is the configured zone,
+                # falling back to server-local when none is set (so single-zone
+                # deployments are unchanged).
+                dt = dt.replace(tzinfo=_hermes_now().tzinfo)
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),

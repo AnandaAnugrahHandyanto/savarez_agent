@@ -101,6 +101,25 @@ class TestParseSchedule:
         assert result["kind"] == "once"
         assert "2030-01-15" in result["run_at"]
 
+    def test_naive_iso_timestamp_uses_hermes_timezone(self, monkeypatch):
+        # A naive one-shot wall-clock must be interpreted in the configured
+        # HERMES_TIMEZONE, not the server process's local zone. Pinning the env
+        # var makes this deterministic regardless of the CI runner's tz.
+        import hermes_time
+
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Kolkata")
+        hermes_time.reset_cache()
+        try:
+            result = parse_schedule("2026-07-01T09:00:00")
+            dt = datetime.fromisoformat(result["run_at"])
+            # Wall clock is preserved as 09:00 *in IST* (not shifted), and the
+            # stored offset is IST (+05:30), so the encoded instant is correct.
+            assert dt.hour == 9 and dt.minute == 0
+            assert dt.utcoffset() == timedelta(hours=5, minutes=30)
+        finally:
+            monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+            hermes_time.reset_cache()
+
     def test_invalid_schedule_raises(self):
         with pytest.raises(ValueError):
             parse_schedule("not_a_schedule")
