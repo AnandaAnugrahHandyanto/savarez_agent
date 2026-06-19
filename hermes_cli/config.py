@@ -1012,6 +1012,13 @@ DEFAULT_CONFIG = {
         "image_input_mode": "auto",
         "disabled_toolsets": [],
     },
+    "harness_engineering": {
+        # Soft Harness / Agenting Engineering preflight mode for engineering-like
+        # user requests. Values: "advisory" (default), "strict", or "off".
+        # HERMES_HARNESS_PREFLIGHT, when set, takes precedence for operators who
+        # need per-process overrides without editing config.yaml.
+        "preflight_mode": "advisory",
+    },
     
     "terminal": {
         "backend": "local",
