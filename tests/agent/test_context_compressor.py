@@ -7,6 +7,7 @@ from agent.context_compressor import (
     ContextCompressor,
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
+    _summarize_tool_result,
 )
 
 
@@ -86,6 +87,26 @@ class TestPreflightDeferral:
 
         assert compressor.should_defer_preflight_to_real_usage(93_000) is False
 
+
+
+class TestSummarizeToolResult:
+    @pytest.mark.parametrize("tool_args", [
+        '[{"code": "print(1)"}]',
+        '"not an object"',
+        "123",
+        "true",
+        "null",
+    ])
+    def test_non_object_tool_args_do_not_crash(self, tool_args):
+        """Regression: pre-compression pruning may see legacy non-dict args."""
+        summary = _summarize_tool_result(
+            "execute_code",
+            tool_args,
+            '{"output": "1", "exit_code": 0}',
+        )
+
+        assert summary.startswith("[execute_code]")
+        assert "lines output" in summary
 
 
 class TestCompress:
