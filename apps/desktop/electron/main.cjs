@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   Menu,
   Notification,
+  Tray,
   clipboard,
   dialog,
   ipcMain,
@@ -122,6 +123,8 @@ const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
 const APP_ROOT = app.getAppPath()
+let isQuitting = false
+let tray = null
 
 function hiddenWindowsChildOptions(options = {}) {
   if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {
@@ -5213,6 +5216,13 @@ function createWindow() {
 
   wireCommonWindowHandlers(mainWindow)
 
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow.hide()
+    }
+  })
+
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
 
@@ -6469,6 +6479,7 @@ if (!_gotSingleInstanceLock) {
     if (url) handleDeepLink(url)
     else if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
+      if (!mainWindow.isVisible()) mainWindow.show()
       mainWindow.focus()
     }
   })
@@ -6494,6 +6505,7 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  createTray()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -6535,6 +6547,7 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  isQuitting = true
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {
@@ -6566,3 +6579,57 @@ app.on('before-quit', () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+function getTrayIcon() {
+  const isWindows = process.platform === 'win32'
+  const iconName = isWindows ? 'icon.ico' : 'icon.png'
+  const paths = [
+    path.join(APP_ROOT, 'assets', iconName),
+    path.join(process.resourcesPath || '', iconName),
+    path.join(APP_ROOT, 'public', 'favicon.ico')
+  ]
+  const found = paths.find(fs.existsSync)
+  if (found) {
+    return nativeImage.createFromPath(found)
+  }
+  return nativeImage.createEmpty()
+}
+
+function createTray() {
+  try {
+    const icon = getTrayIcon()
+    tray = new Tray(icon)
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: '显示主界面',
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            if (mainWindow.isMinimized()) mainWindow.restore()
+            mainWindow.show()
+            mainWindow.focus()
+          }
+        }
+      },
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+    tray.setToolTip('Hermes')
+    tray.setContextMenu(contextMenu)
+    
+    tray.on('double-click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+        mainWindow.focus()
+      }
+    })
+  } catch (error) {
+    rememberLog(`Tray creation failed: ${error.stack || error.message}`)
+  }
+}
