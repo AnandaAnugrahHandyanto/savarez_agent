@@ -384,6 +384,7 @@ export function DesktopController() {
       // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
 
+      setMessagingPlatformTotals({})
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
       // so platform sections offer their own per-platform "load more".
@@ -944,6 +945,7 @@ export function DesktopController() {
           .then(() => refreshCronJobs())
           .catch(() => undefined)
       }}
+      onRefreshMessaging={() => refreshMessagingSessions()}
     />
   )
 
