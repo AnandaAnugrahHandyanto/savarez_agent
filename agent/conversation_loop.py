@@ -415,6 +415,14 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         if stored_skills_hash != current_skills_hash:
             return False
 
+    current_mcp_hash = str(
+        project_signature.get("project.mcp_manifest_hash") or ""
+    ).strip()
+    stored_mcp_hash = line_value("Project MCP manifest")
+    if current_mcp_hash or stored_mcp_hash:
+        if stored_mcp_hash != current_mcp_hash:
+            return False
+
     return True
 
 

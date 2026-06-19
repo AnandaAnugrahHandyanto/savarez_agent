@@ -156,6 +156,45 @@ class TestStoredPromptReuse:
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
+    def test_present_row_with_stale_project_mcp_manifest_rebuilds(self, caplog):
+        """A changed project-local MCP manifest must not reuse old prompt bytes."""
+        stored = (
+            "Project ID: git:abc123\n"
+            "Project MCP manifest: old-hash\n\n"
+            "Conversation started: Tuesday, June 16, 2026\n"
+            "Session ID: test-session-id\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(
+            session_db=db,
+            prebuilt_prompt=(
+                "Project ID: git:abc123\n"
+                "Project MCP manifest: new-hash\n\n"
+                "Conversation started: Tuesday, June 16, 2026\n"
+                "Session ID: test-session-id\n"
+                "Model: test-model\n"
+                "Provider: openrouter"
+            ),
+        )
+        agent.project_local_state = ProjectLocalState(
+            canonical_id="git:abc123",
+            mcp_manifest=(("config_sha256", "sha256"),),
+            mcp_manifest_hash="new-hash",
+        )
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert "Project MCP manifest: new-hash" in agent._cached_system_prompt
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id, agent._cached_system_prompt
+        )
+        assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # Legitimate fresh-build paths (no history, no DB)

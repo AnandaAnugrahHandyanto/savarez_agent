@@ -122,6 +122,15 @@ def test_recognized_files_detect_mcp_config(tmp_path: Path):
     assert rejected == ""
     assert state.recognized is True
     assert state.mcp_manifest
+    assert state.mcp_manifest_hash
+    assert state.cache_signature() == {
+        "project.canonical_id": state.canonical_id,
+        "project.mcp_manifest_hash": state.mcp_manifest_hash,
+    }
+
+    before = state.mcp_manifest_hash
+    config.write_text("mcp_servers:\n  local:\n    command: changed\n", encoding="utf-8")
+    assert resolve_project_local_state(repo).mcp_manifest_hash != before
 
 
 def test_recognized_file_cache_tracks_new_skill_under_existing_dir(tmp_path: Path):

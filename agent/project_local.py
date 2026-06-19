@@ -69,6 +69,7 @@ class ProjectLocalState:
     skills_manifest_hash: str = ""
     consent_decision: str = ""
     mcp_manifest: tuple[tuple[str, str], ...] = ()
+    mcp_manifest_hash: str = ""
     rejected_reason: str = ""
 
     @property
@@ -78,10 +79,14 @@ class ProjectLocalState:
     def cache_signature(self) -> dict[str, str]:
         if not (self.recognized or self.rejected_reason):
             return {}
-        return {
+        signature = {
             "project.canonical_id": self.canonical_id,
-            "project.skills_manifest_hash": self.skills_manifest_hash,
         }
+        if self.skills_manifest_hash:
+            signature["project.skills_manifest_hash"] = self.skills_manifest_hash
+        if self.mcp_manifest_hash:
+            signature["project.mcp_manifest_hash"] = self.mcp_manifest_hash
+        return signature
 
 
 def clear_project_local_cache() -> None:
@@ -375,6 +380,13 @@ def _mcp_manifest(identity: ProjectIdentity) -> tuple[tuple[str, str], ...]:
         return ()
 
 
+def _mcp_manifest_hash(entries: tuple[tuple[str, str], ...]) -> str:
+    if not entries:
+        return ""
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _consent_decision(canonical_id: str, manifest_hash: str) -> str:
     if not canonical_id or not manifest_hash:
         return ""
@@ -415,6 +427,7 @@ def resolve_project_local_state(
     skill_roots, skills = _project_skills(identity)
     manifest_hash = _manifest_hash(skills)
     mcp = _mcp_manifest(identity)
+    mcp_hash = _mcp_manifest_hash(mcp)
     return ProjectLocalState(
         canonical_id=identity.canonical_id,
         worktree_root=identity.worktree_root,
@@ -424,6 +437,7 @@ def resolve_project_local_state(
         skills_manifest_hash=manifest_hash,
         consent_decision=_consent_decision(identity.canonical_id, manifest_hash),
         mcp_manifest=mcp,
+        mcp_manifest_hash=mcp_hash,
         rejected_reason=rejected_reason,
     )
 

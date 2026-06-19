@@ -935,7 +935,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
         home_token = None
         profile_home = current.get("profile_home")
         try:
-            tokens = _set_session_context_with_cwd(key, _session_cwd(current))
+            tokens = _set_session_context(key, cwd=_session_cwd(current))
             # Build against the session's profile (global-remote): bind its
             # HERMES_HOME so config/skills/model resolve to it, and hand the
             # agent that profile's db so turns persist to the right state.db.
@@ -1419,15 +1419,6 @@ def _set_session_context(session_key: str, cwd: str | None = None) -> list:
         return set_session_vars(session_key=session_key, cwd=resolved)
     except Exception:
         return []
-
-
-def _set_session_context_with_cwd(session_key: str, cwd: str | None) -> list:
-    try:
-        return _set_session_context(session_key, cwd=cwd)
-    except TypeError as exc:
-        if "unexpected keyword argument 'cwd'" not in str(exc):
-            raise
-        return _set_session_context(session_key)
 
 
 def _clear_session_context(tokens: list) -> None:
@@ -4633,7 +4624,7 @@ def _(rid, params: dict) -> dict:
             : max(0, len(display_history) - len(history))
         ]
         messages = _history_to_messages(display_history)
-        tokens = _set_session_context_with_cwd(target, profile_resume_cwd)
+        tokens = _set_session_context(target, cwd=profile_resume_cwd)
         try:
             # Pass the profile's db so the agent persists turns to the right
             # state.db; home override is active here so config/skills/model
@@ -7408,7 +7399,7 @@ def _(rid, params: dict) -> dict:
     task_id = f"bg_{uuid.uuid4().hex[:6]}"
 
     def run():
-        session_tokens = _set_session_context_with_cwd(task_id, _session_cwd(session))
+        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
         try:
             from run_agent import AIAgent
 
@@ -7505,9 +7496,9 @@ def _(rid, params: dict) -> dict:
     def run():
         # Pin the validated preview cwd, else the parent workspace — never an
         # invalid client path, which would silently fall back to the launch dir.
-        session_tokens = _set_session_context_with_cwd(
+        session_tokens = _set_session_context(
             task_id,
-            preview_cwd or _session_cwd(session),
+            cwd=preview_cwd or _session_cwd(session),
         )
         try:
             from run_agent import AIAgent

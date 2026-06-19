@@ -412,6 +412,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         ).strip()
         if skills_hash:
             project_lines.append(f"Project skills manifest: {skills_hash}")
+        mcp_hash = str(
+            project_signature.get("project.mcp_manifest_hash") or ""
+        ).strip()
+        if mcp_hash:
+            project_lines.append(f"Project MCP manifest: {mcp_hash}")
         stable_parts.append("\n".join(project_lines))
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
