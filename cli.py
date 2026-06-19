@@ -6824,6 +6824,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        self._default_headers = result.default_headers
 
         if self.agent is not None:
             try:
@@ -6833,6 +6834,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    default_headers=result.default_headers,
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
