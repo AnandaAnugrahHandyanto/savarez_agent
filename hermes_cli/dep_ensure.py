@@ -24,8 +24,50 @@ from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
 
+def _hermes_node_bin() -> Path:
+    # Hermes-managed Node lives at $HERMES_HOME/node. The directory holding the
+    # executables differs by platform: the POSIX tarball (scripts/install.sh)
+    # keeps node/npm/npx under node/bin/, while the Windows portable zip
+    # (scripts/install.ps1) drops node.exe and the npm/npx shims directly in
+    # node/ (and `npm -g --prefix node` lands .cmd shims there too).
+    from hermes_constants import get_hermes_home
+    base = get_hermes_home() / "node"
+    return base if _IS_WINDOWS else base / "bin"
+
+
+def _has_private_hermes_node() -> bool:
+    node = _hermes_node_bin() / ("node.exe" if _IS_WINDOWS else "node")
+    return node.is_file() and os.access(node, os.X_OK)
+
+
+def _prepend_private_hermes_node_bin() -> None:
+    if shutil.which("node") is not None:
+        return
+    node_bin = _hermes_node_bin()
+    if not node_bin.is_dir():
+        return
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    node_bin_s = str(node_bin)
+    if node_bin_s not in parts:
+        os.environ["PATH"] = os.pathsep.join([node_bin_s, *parts])
+
+
+def _has_node_runtime() -> bool:
+    return shutil.which("node") is not None or _has_private_hermes_node()
+
+
+def _remove_legacy_node_symlinks() -> None:
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.uninstall import remove_node_symlinks
+        remove_node_symlinks(get_hermes_home())
+    except Exception:
+        # Cleanup is best-effort. Dependency checks must remain fail-open.
+        pass
+
+
 _DEP_CHECKS = {
-    "node": lambda: shutil.which("node") is not None,
+    "node": _has_node_runtime,
     "browser": lambda: (
         shutil.which("agent-browser") is not None
         or _has_system_browser()
@@ -105,11 +147,15 @@ def ensure_dependency(
     interactive: bool = True,
 ) -> bool:
     """Ensure a non-Python dependency is available. Returns True if available."""
+    if dep in {"node", "browser"}:
+        _remove_legacy_node_symlinks()
     check = _DEP_CHECKS.get(dep)
     if check is None:
         # Unknown dep — don't silently forward to install script.
         return False
     if check():
+        if dep == "node":
+            _prepend_private_hermes_node_bin()
         return True
 
     script, shell = _find_install_script()
@@ -155,5 +201,8 @@ def ensure_dependency(
         return False
 
     if check:
-        return check()
+        ok = check()
+        if ok and dep == "node":
+            _prepend_private_hermes_node_bin()
+        return ok
     return True
