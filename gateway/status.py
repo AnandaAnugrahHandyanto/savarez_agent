@@ -458,6 +458,16 @@ def _pid_exists(pid: int) -> bool:
         except (OSError, AttributeError):
             return False
     else:
+        # Check for zombie processes before signalling. A zombie exists in
+        # the process table (kill(pid, 0) succeeds) but is already dead —
+        # SIGKILL has no effect on it. Treating a zombie as alive causes
+        # --replace to wait 15s and then abort with exit 1 (issue #42126).
+        try:
+            stat_fields = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8").split()
+            if stat_fields[2] == "Z":
+                return False
+        except (FileNotFoundError, IndexError, PermissionError, OSError):
+            pass
         try:
             os.kill(int(pid), 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
             return True

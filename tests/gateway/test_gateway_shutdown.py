@@ -445,3 +445,47 @@ async def test_signal_initiated_restart_still_persists_stopped(tmp_path, monkeyp
     assert _stopped_state_persisted(runner), (
         "a restart must persist gateway_state=stopped via the normal path"
     )
+
+
+
+def test_pid_exists_returns_false_for_zombie_process():
+    """Zombie processes (state Z in /proc/<pid>/stat) must not be treated as alive.
+
+    Regression guard for issue #42126: without the zombie check,
+    _pid_exists returns True for zombies because os.kill(pid, 0) only
+    verifies the PID is still in the process table. This causes
+    --replace to wait 15s, fail, and exit 1 in a crash loop on
+    systems where systemd has not yet reaped the old gateway process.
+    """
+    from unittest.mock import patch, MagicMock
+    from gateway.status import _pid_exists
+
+    import os
+    # Use the current process PID so os.kill(pid, 0) would succeed without
+    # the zombie check — confirming the check itself is what returns False.
+    zombie_pid = os.getpid()
+    fake_stat = f"{zombie_pid} (defunct) Z 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+
+    fake_path_instance = MagicMock()
+    fake_path_instance.read_text.return_value = fake_stat
+
+    # _pid_exists imports psutil inline. Force ImportError so the test
+    # exercises the POSIX /proc zombie-check branch rather than the
+    # psutil.pid_exists fast path (which would return False for any
+    # non-existent PID, masking whether the zombie check ran at all).
+    import builtins
+    real_import = builtins.__import__
+
+    def _no_psutil(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("psutil disabled for zombie test")
+        return real_import(name, *args, **kwargs)
+
+    with patch("gateway.status.Path", return_value=fake_path_instance), \
+         patch.object(builtins, "__import__", _no_psutil):
+        result = _pid_exists(zombie_pid)
+
+    assert result is False, (
+        "zombie process must be reported as not existing; "
+        "otherwise --replace waits 15s and aborts with exit 1"
+    )
