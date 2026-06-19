@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from "react";
 
 /**
  * Lightweight markdown renderer for LLM output.
- * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
+ * Handles: code blocks, inline code, bold, italic, headers, links, lists, tables, horizontal rules.
  * NOT a full CommonMark parser — optimized for typical assistant message patterns.
  *
  * `streaming` renders a blinking caret at the tail of the last block so it
@@ -54,7 +54,69 @@ type BlockNode =
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
   | { type: "list"; ordered: boolean; items: string[] }
+  | {
+      type: "table";
+      headers: string[];
+      alignments: TableAlignment[];
+      rows: string[][];
+    }
   | { type: "paragraph"; content: string };
+
+type TableAlignment = "left" | "center" | "right" | null;
+
+const TABLE_SEPARATOR_CELL_RE = /^:?-{3,}:?$/;
+
+function splitTableRow(row: string): string[] {
+  const trimmed = row.trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let cell = "";
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (char === "\\" && trimmed[i + 1] === "|") {
+      cell += "|";
+      i++;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(cell.trim());
+      cell = "";
+      continue;
+    }
+    cell += char;
+  }
+
+  cells.push(cell.trim());
+  return cells;
+}
+
+function isTableSeparatorLine(row: string, columnCount?: number): boolean {
+  const cells = splitTableRow(row);
+  return (
+    cells.length > 1 &&
+    (columnCount === undefined || cells.length === columnCount) &&
+    cells.every((cell) => TABLE_SEPARATOR_CELL_RE.test(cell))
+  );
+}
+
+function tableAlignment(separatorCell: string): TableAlignment {
+  const trimmed = separatorCell.trim();
+  const left = trimmed.startsWith(":");
+  const right = trimmed.endsWith(":");
+  if (left && right) return "center";
+  if (right) return "right";
+  if (left) return "left";
+  return null;
+}
+
+function normalizeTableRow(row: string, columnCount: number): string[] {
+  const cells = splitTableRow(row);
+  if (cells.length === columnCount) return cells;
+  if (cells.length < columnCount) {
+    return [...cells, ...Array<string>(columnCount - cells.length).fill("")];
+  }
+  return [...cells.slice(0, columnCount - 1), cells.slice(columnCount - 1).join(" | ")];
+}
 
 /* ------------------------------------------------------------------ */
 /*  Block parser                                                       */
@@ -93,6 +155,24 @@ function parseBlocks(text: string): BlockNode[] {
       });
       i++;
       continue;
+    }
+
+    // Pipe table: header row + separator row + zero or more body rows.
+    if (line.includes("|") && i + 1 < lines.length) {
+      const headers = splitTableRow(line);
+      if (isTableSeparatorLine(lines[i + 1], headers.length)) {
+        const alignments = splitTableRow(lines[i + 1]).map(tableAlignment);
+        const rows: string[][] = [];
+        i += 2;
+        while (i < lines.length && lines[i].trim() !== "" && lines[i].includes("|")) {
+          if (!isTableSeparatorLine(lines[i])) {
+            rows.push(normalizeTableRow(lines[i], headers.length));
+          }
+          i++;
+        }
+        blocks.push({ type: "table", headers, alignments, rows });
+        continue;
+      }
     }
 
     // Horizontal rule
@@ -139,7 +219,12 @@ function parseBlocks(text: string): BlockNode[] {
       !lines[i].match(/^#{1,4}\s/) &&
       !lines[i].match(/^[-*+]\s/) &&
       !lines[i].match(/^\d+[.)]\s/) &&
-      !lines[i].match(/^[-*_]{3,}\s*$/)
+      !lines[i].match(/^[-*_]{3,}\s*$/) &&
+      !(
+        lines[i].includes("|") &&
+        i + 1 < lines.length &&
+        isTableSeparatorLine(lines[i + 1], splitTableRow(lines[i]).length)
+      )
     ) {
       paraLines.push(lines[i]);
       i++;
@@ -155,6 +240,10 @@ function parseBlocks(text: string): BlockNode[] {
 /* ------------------------------------------------------------------ */
 /*  Block renderer                                                     */
 /* ------------------------------------------------------------------ */
+
+function tableCellStyle(alignment: TableAlignment): { textAlign: "left" | "center" | "right" } | undefined {
+  return alignment ? { textAlign: alignment } : undefined;
+}
 
 function Block({
   block,
@@ -214,6 +303,47 @@ function Block({
             </li>
           ))}
         </Tag>
+      );
+    }
+
+    case "table": {
+      const lastBodyRow = block.rows.length - 1;
+      const lastColumn = block.headers.length - 1;
+      return (
+        <div className="overflow-x-auto">
+          <table className="min-w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-border">
+                {block.headers.map((header, i) => (
+                  <th
+                    key={i}
+                    className="px-2 py-1.5 text-left font-semibold align-top"
+                    style={tableCellStyle(block.alignments[i])}
+                  >
+                    <InlineContent text={header} highlightTerms={highlightTerms} />
+                    {block.rows.length === 0 && i === lastColumn ? caret : null}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, rowIndex) => (
+                <tr key={rowIndex} className="border-b border-border/60 last:border-0">
+                  {row.map((cell, cellIndex) => (
+                    <td
+                      key={cellIndex}
+                      className="px-2 py-1.5 align-top"
+                      style={tableCellStyle(block.alignments[cellIndex])}
+                    >
+                      <InlineContent text={cell} highlightTerms={highlightTerms} />
+                      {rowIndex === lastBodyRow && cellIndex === lastColumn ? caret : null}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       );
     }
 
