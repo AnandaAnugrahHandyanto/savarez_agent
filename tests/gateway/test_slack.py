@@ -69,6 +69,7 @@ import gateway.platforms.slack as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig  # noqa: E402
 
 
 async def _pending_for_fake_task():
@@ -117,13 +118,20 @@ def adapter():
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    """Point caches to tmp_path and isolate tests from local Slack env."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
+    for key in (
+        "SLACK_ALLOWED_CHANNELS",
+        "SLACK_FREE_RESPONSE_CHANNELS",
+        "SLACK_REQUIRE_MENTION",
+        "SLACK_STRICT_MENTION",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1948,6 +1956,7 @@ class TestSendTyping:
             channel="C123",
             ts="reply_ts",
             text="done",
+            blocks=[{"type": "markdown", "text": "done"}],
         )
         adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
@@ -3074,10 +3083,13 @@ class TestMessageSplitting:
 
     @pytest.mark.asyncio
     async def test_send_explicitly_enables_mrkdwn(self, adapter):
+        # Legacy mrkdwn path is now opt-out; verify it still sets mrkdwn=True.
+        adapter.config.extra["rich_output"] = "legacy"
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
         await adapter.send("C123", "**hello**")
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert kwargs.get("mrkdwn") is True
+        assert "blocks" not in kwargs
 
     @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):
@@ -3095,6 +3107,292 @@ class TestMessageSplitting:
         await adapter.send("C123", "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
+# TestSlackRichMarkdownBlocks
+# ---------------------------------------------------------------------------
+
+
+class TestSlackRichMarkdownBlocks:
+    """Opt-in Slack markdown block output preserves legacy fallback behavior."""
+
+    def _rich_adapter(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"rich_output": "markdown_block"},
+        )
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._bot_user_id = "U_BOT"
+        a._running = True
+        a.handle_message = AsyncMock()
+        return a
+
+    def test_rich_output_is_enabled_by_default(self, adapter):
+        # Rich Block Kit markdown output is now the default (no config needed).
+        assert adapter.REQUIRES_EDIT_FINALIZE is True
+        assert adapter._should_attempt_markdown_block("## Title") is True
+
+    def test_rich_output_opt_out_restores_legacy(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"rich_output": "legacy"},
+        )
+        a = SlackAdapter(config)
+        assert a.REQUIRES_EDIT_FINALIZE is False
+        assert a._should_attempt_markdown_block("## Title") is False
+
+    def test_markdown_block_payload_preserves_rich_markdown(self):
+        adapter = self._rich_adapter()
+        content = (
+            "## Title\n\n"
+            "| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+            "- [x] done\n- [ ] todo\n\n"
+            "```python\nprint('hi')\n```"
+        )
+
+        payload = adapter._build_markdown_block_payload(content)
+
+        assert payload["blocks"] == [{"type": "markdown", "text": content}]
+        assert "*Title*" in payload["text"]
+        assert "```python\nprint('hi')\n```" in payload["text"]
+
+    def test_markdown_block_payload_caps_only_top_level_fallback_text(self):
+        adapter = self._rich_adapter()
+        content = "## Long fallback\n\n" + "x" * (
+            adapter.MARKDOWN_BLOCK_FALLBACK_TEXT_LIMIT + 500
+        )
+
+        payload = adapter._build_markdown_block_payload(content)
+
+        assert payload["blocks"] == [{"type": "markdown", "text": content}]
+        assert len(payload["text"]) == adapter.MARKDOWN_BLOCK_FALLBACK_TEXT_LIMIT
+        assert payload["text"].endswith(
+            adapter.MARKDOWN_BLOCK_FALLBACK_TRUNCATION_SUFFIX
+        )
+        assert len(payload["blocks"][0]["text"]) > len(payload["text"])
+
+    def test_markdown_block_payload_sanitizes_slack_entities(self):
+        adapter = self._rich_adapter()
+        payload = adapter._build_markdown_block_payload(
+            "Hi <@U123> <!channel> <#C123> https://example.com"
+        )
+
+        assert "&lt;@U123&gt;" in payload["blocks"][0]["text"]
+        assert "&lt;!channel&gt;" in payload["blocks"][0]["text"]
+        assert "&lt;#C123&gt;" in payload["blocks"][0]["text"]
+        assert "https://example.com" in payload["blocks"][0]["text"]
+        assert "<@U123>" not in payload["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_legacy_path_when_disabled(self, adapter):
+        adapter.config.extra["rich_output"] = "legacy"
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "## Title\n**bold**")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["text"].startswith("*Title*")
+        assert kwargs["mrkdwn"] is True
+        assert "blocks" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_markdown_block_when_enabled(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        result = await adapter.send(
+            "C123",
+            "## Title\n**bold**",
+            metadata={"thread_id": "parent_ts"},
+        )
+
+        assert result.success is True
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["thread_ts"] == "parent_ts"
+        assert kwargs["text"].startswith("*Title*")
+        assert kwargs["blocks"] == [
+            {"type": "markdown", "text": "## Title\n**bold**"}
+        ]
+        assert "mrkdwn" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_uses_markdown_block_by_default(self, adapter):
+        # Default adapter (no rich_output config) now emits rich blocks.
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "## Title\n**bold**")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["blocks"] == [
+            {"type": "markdown", "text": "## Title\n**bold**"}
+        ]
+        assert kwargs["text"].startswith("*Title*")
+        assert "mrkdwn" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_markdown_block_preserves_reply_broadcast(self):
+        adapter = self._rich_adapter()
+        adapter.config.extra["reply_broadcast"] = True
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "rich", metadata={"thread_id": "parent_ts"})
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["thread_ts"] == "parent_ts"
+        assert kwargs["reply_broadcast"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_legacy_on_block_validation_error(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=[RuntimeError("invalid_blocks"), {"ts": "legacy_ts"}]
+        )
+
+        result = await adapter.send("C123", "Hi <@U123> <!channel> <#C123>")
+
+        assert result.success is True
+        assert result.message_id == "legacy_ts"
+        assert adapter._app.client.chat_postMessage.call_count == 2
+        first = adapter._app.client.chat_postMessage.call_args_list[0].kwargs
+        second = adapter._app.client.chat_postMessage.call_args_list[1].kwargs
+        assert "blocks" in first
+        assert "&lt;@U123&gt;" in first["blocks"][0]["text"]
+        assert "blocks" not in second
+        assert second["mrkdwn"] is True
+        assert second["text"] == "Hi &lt;@U123&gt; &lt;!channel&gt; &lt;#C123&gt;"
+        assert "<@U123>" not in second["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_long_content_uses_legacy_fallback(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        content = "Hi <@U123> <!channel> <#C123>\n" + "x" * (
+            adapter.MARKDOWN_BLOCK_TEXT_LIMIT + 1
+        )
+
+        await adapter.send("C123", content)
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "blocks" not in kwargs
+        assert kwargs["mrkdwn"] is True
+        assert "&lt;@U123&gt;" in kwargs["text"]
+        assert "<!channel>" not in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_streaming_preview_metadata_uses_legacy_path(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "## preview", metadata={"expect_edits": True})
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "blocks" not in kwargs
+        assert kwargs["text"] == "*preview*"
+
+    @pytest.mark.asyncio
+    async def test_edit_non_final_streaming_update_uses_legacy_path(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        result = await adapter.edit_message("C123", "ts1", "## streaming", finalize=False)
+
+        assert result.success is True
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"] == "*streaming*"
+        assert "blocks" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_edit_final_update_uses_markdown_block(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        result = await adapter.edit_message("C123", "ts1", "## final", finalize=True)
+
+        assert result.success is True
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"] == "*final*"
+        assert kwargs["blocks"] == [{"type": "markdown", "text": "## final"}]
+
+    @pytest.mark.asyncio
+    async def test_edit_fallback_clears_stale_blocks(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_update = AsyncMock(
+            side_effect=[RuntimeError("invalid_blocks"), {"ok": True}]
+        )
+
+        result = await adapter.edit_message(
+            "C123", "ts1", "Hi <@U123> <!channel> <#C123>", finalize=True
+        )
+
+        assert result.success is True
+        assert adapter._app.client.chat_update.call_count == 2
+        first = adapter._app.client.chat_update.call_args_list[0].kwargs
+        second = adapter._app.client.chat_update.call_args_list[1].kwargs
+        assert "blocks" in first
+        assert second["blocks"] == []
+        assert second["text"] == "Hi &lt;@U123&gt; &lt;!channel&gt; &lt;#C123&gt;"
+        assert "<@U123>" not in second["text"]
+
+    @pytest.mark.asyncio
+    async def test_stream_consumer_preview_legacy_then_final_edit_markdown_block(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "preview_ts"})
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        content = "## Title\n\n**bold** and <@U123>"
+        cfg = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=5,
+            cursor=" ▉",
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "C123",
+            cfg,
+            metadata={"thread_id": "parent_ts"},
+        )
+
+        consumer.on_delta(content)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        post_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert post_kwargs["thread_ts"] == "parent_ts"
+        assert post_kwargs["mrkdwn"] is True
+        assert "blocks" not in post_kwargs
+        assert "*Title*" in post_kwargs["text"]
+        assert "&lt;@U123&gt;" in post_kwargs["text"]
+        assert "<@U123>" not in post_kwargs["text"]
+
+        update_kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert update_kwargs["channel"] == "C123"
+        assert update_kwargs["ts"] == "preview_ts"
+        assert update_kwargs["text"].startswith("*Title*")
+        assert "<@U123>" not in update_kwargs["text"]
+        assert update_kwargs["blocks"] == [
+            {"type": "markdown", "text": "## Title\n\n**bold** and &lt;@U123&gt;"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_edit_long_final_content_clears_stale_blocks_with_legacy(self):
+        adapter = self._rich_adapter()
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        content = "Hi <@U123> <!channel> <#C123>\n" + "x" * (
+            adapter.MARKDOWN_BLOCK_TEXT_LIMIT + 1
+        )
+
+        await adapter.edit_message("C123", "ts1", content, finalize=True)
+
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["blocks"] == []
+        assert "&lt;@U123&gt;" in kwargs["text"]
+        assert "<!channel>" not in kwargs["text"]
 
 
 # ---------------------------------------------------------------------------
