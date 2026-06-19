@@ -1690,6 +1690,10 @@ _RETRYABLE_ERROR_PATTERNS = (
     "broken pipe",
     "remotedisconnected",
     "eoferror",
+    # WeChat/Weixin iLink rate limit errors (issue #21061)
+    "rate limited",
+    "ilink sendmessage rate limited",
+    "ret=-2",
 )
 
 
