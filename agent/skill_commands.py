@@ -255,7 +255,15 @@ def _build_skill_message(
 
     content = str(loaded_skill.get("content") or "")
 
-    # ── Template substitution and inline-shell expansion ──
+    # First-line defense: detect empty / malformed skill bodies before
+    # they reach the model context (#4521c40f).
+    if not content.strip():
+        logger.warning(
+            "skill_commands: loaded skill %s has empty body",
+            loaded_skill.get("name", "unknown"),
+        )
+
+    # -- Template substitution and inline-shell expansion --
     # Done before anything else so downstream blocks (setup notes,
     # supporting-file hints) see the expanded content.
     skills_cfg = _load_skills_config()

@@ -65,11 +65,30 @@ Usage:
     # View a reference file within a skill (loads linked file)
     content = skill_view("axolotl", "references/dataset-formats.md")
 """
+import os, sys, builtins
+
+# [HOTFIX] Fix Git Bash -> Windows path mangling
+_original_open = builtins.open
+def _safe_open(file, mode="r", *args, **kwargs):
+    if isinstance(file, str):
+        bs = chr(92)
+        bad_prefix = "c:" + bs + "c" + bs
+        if file.lower().startswith(bad_prefix):
+            file = "C:" + bs + file[4:]
+        elif file.startswith(("/c/", "/C/")):
+            file = "C:" + bs + file[3:].replace("/", bs)
+        file = os.path.normpath(file)
+    return _original_open(file, mode, *args, **kwargs)
+
+if any(("C:" + chr(92) + "c" + chr(92)) in arg or "/c/" in arg for arg in sys.argv + [os.getcwd()]):
+    builtins.open = _safe_open
+
+import os, sys, builtins
 
 import json
 import logging
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home, normalize_windows_path
 import os
 import re
 from enum import Enum
@@ -614,6 +633,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     skills = []
     seen_names: set = set()
+    # 去重策略：dirs_to_scan 已按优先级排列
+    # SKILLS_DIR 优先级最高，external_dirs 按 config 顺序
+    # 如果同一技能目录名已在更高优先级目录中出现，跳过
+    seen_dirs: set = set()
 
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
@@ -626,6 +649,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            # 目录级去重：同一技能目录名已在高优先级目录中出现则跳过
+            dir_name = skill_md.parent.name
+            if dir_name in seen_dirs:
+                continue
+            seen_dirs.add(dir_name)
+
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
@@ -983,8 +1012,8 @@ def skill_view(
         # Build list of all skill directories to search
         all_dirs = []
         if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
-        all_dirs.extend(get_external_skills_dirs())
+            all_dirs.append(normalize_windows_path(SKILLS_DIR))
+        all_dirs.extend(normalize_windows_path(d) for d in get_external_skills_dirs())
 
         if not all_dirs:
             return json.dumps(
@@ -1080,28 +1109,22 @@ def skill_view(
                     _record(None, found_md)
 
         if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
+            # 去重策略：candidates 已按 all_dirs 顺序填充
+            # all_dirs = [SKILLS_DIR] + get_external_skills_dirs()
+            # SKILLS_DIR = ~/.hermes/skills/（共享目录，优先级最高）
+            # external_dirs 按 config.yaml 顺序排列
+            # 自动选取第一个（最高优先级），WARNING 记录跳过的候选项
+            chosen_dir, chosen_md = candidates[0]
+            skipped_paths = [
+                str(smd)
+                for _, smd in candidates[1:]
+            ]
             logging.getLogger(__name__).warning(
-                "Skill name collision for '%s': %d candidates — %s",
-                name, len(candidates), "; ".join(paths),
+                "Skill '%s' found in %d locations — auto-selecting highest priority: %s (skipped: %s)",
+                name, len(candidates), str(chosen_md), "; ".join(skipped_paths),
             )
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        f"Ambiguous skill name '{name}': {len(candidates)} skills "
-                        "match across your local skills dir and external_dirs. "
-                        "Refusing to guess — load one explicitly by its categorized path."
-                    ),
-                    "matches": paths,
-                    "hint": (
-                        "Pass the full relative path instead of the bare name "
-                        "(e.g., 'category/skill-name'), or rename one of the "
-                        "colliding skills so each name is unique."
-                    ),
-                },
-                ensure_ascii=False,
-            )
+            # 覆盖 candidates 为单元素列表，让后续正常流程接管
+            candidates[:] = [(chosen_dir, chosen_md)]
 
         if candidates:
             skill_dir, skill_md = candidates[0]

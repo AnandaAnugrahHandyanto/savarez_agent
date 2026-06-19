@@ -781,7 +781,7 @@ def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
         host = _kb._claimer_id().split(":", 1)[0]
         tid = kb.create_task(conn, title="crash", assignee="a")
 
-        for i in range(2):  # DEFAULT_FAILURE_LIMIT == 2
+        for i in range(3):  # DEFAULT_FAILURE_LIMIT == 3
             pid = 60000 + i
             conn.execute(
                 "UPDATE tasks SET status='running', worker_pid=?, "

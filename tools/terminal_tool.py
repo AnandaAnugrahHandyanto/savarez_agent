@@ -42,8 +42,12 @@ import threading
 import atexit
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
+from hermes_constants import normalize_windows_path
+from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 
 from utils import env_var_enabled
 
@@ -56,6 +60,7 @@ logger = logging.getLogger(__name__)
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+from tools.resource_limits import detect_heavy_imports, inject_resource_limits, TERMINAL_MEMORY_LIMIT_MB
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
@@ -1831,7 +1836,7 @@ def _resolve_command_cwd(
     ``workdir=`` must still override everything.
     """
     if workdir:
-        return workdir
+        return str(normalize_windows_path(workdir))
 
     live_cwd = getattr(env, "cwd", None)
     if isinstance(live_cwd, str) and live_cwd.strip():
@@ -2109,6 +2114,19 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
+        # --- Resource limit injection (Layer 2 defence) ---
+        resource_warnings: list = []
+        _detected, _hw = detect_heavy_imports(command)
+        if _hw:
+            resource_warnings.append(_hw)
+        # Inject psutil memory limit for Python commands
+        command_before = command
+        command = inject_resource_limits(command, memory_mb=TERMINAL_MEMORY_LIMIT_MB)
+        if command != command_before:
+            logger.debug("Resource limits injected into command (%.0f→%.0f chars)",
+                         len(command_before), len(command))
+        # --- End resource limit injection ---
+
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty
@@ -2154,7 +2172,8 @@ def terminal_tool(
                     )
 
                 result_data = {
-                    "output": "Background process started",
+                    "output": "Background process started" + ("\\n" + "\\n".join(resource_warnings) if resource_warnings else ""),
+                    "resource_warnings": resource_warnings if resource_warnings else [],
                     "session_id": proc_session.id,
                     "pid": proc_session.pid,
                     "exit_code": 0,
@@ -2440,10 +2459,15 @@ def terminal_tool(
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
             exit_note = _interpret_exit_code(command, returncode)
 
+            # Prepend resource warnings if any
+            if resource_warnings:
+                output = "\n".join(resource_warnings) + "\n" + output if output else "\n".join(resource_warnings)
+
             result_dict = {
                 "output": output,
                 "exit_code": returncode,
                 "error": None,
+                "resource_warnings": resource_warnings if resource_warnings else [],
             }
             if approval_note:
                 result_dict["approval"] = approval_note

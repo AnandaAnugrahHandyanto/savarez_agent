@@ -8,6 +8,7 @@ import os
 import threading
 from pathlib import Path
 
+from hermes_constants import normalize_windows_path
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
@@ -1304,6 +1305,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _resolved_paths: list[str] = []
         _seen: set[str] = set()
         for _p in _paths_to_check:
+            _p = str(normalize_windows_path(_p))
             try:
                 _r = str(_resolve_path_for_task(_p, task_id))
             except Exception:
