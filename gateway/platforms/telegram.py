@@ -462,6 +462,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
+        # Typing indicator task management (mirrors SignalAdapter pattern).
+        # The base adapter's _keep_typing loop is the primary mechanism, but
+        # gateway/run.py also calls stop_typing() directly — without these
+        # dicts that call is a no-op and any residual typing state persists.
+        self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_failures: Dict[str, int] = {}
+        self._typing_skip_until: Dict[str, float] = {}
         self._polling_error_callback_ref = None
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
@@ -2293,6 +2300,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks.clear()
         self._pending_photo_batches.clear()
 
+        # Cancel all typing tasks on shutdown
+        for task in self._typing_tasks.values():
+            task.cancel()
+        self._typing_tasks.clear()
+
         self._mark_disconnected()
         self._app = None
         self._bot = None
@@ -2347,11 +2359,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
-                        # Re-trigger typing like the legacy success path does.
-                        try:
-                            await self.send_typing(chat_id, metadata=metadata)
-                        except Exception:
-                            pass  # Typing failures are non-fatal
+                        pass  # _keep_typing loop handles typing indicator refresh
                     return rich_result
 
             # Format and split message if needed
@@ -2568,16 +2576,6 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
-
-            # Re-trigger typing indicator after sending a message.
-            # Telegram clears the typing state when a new message is delivered,
-            # so without this the "...typing" bubble disappears mid-response
-            # (especially noticeable when the agent sends intermediate progress
-            # messages like "Checking:" before running tools).
-            try:
-                await self.send_typing(chat_id, metadata=metadata)
-            except Exception:
-                pass  # Typing failures are non-fatal
 
             return SendResult(
                 success=True,
@@ -4969,6 +4967,26 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
+
+    async def _stop_typing_indicator(self, chat_id: str) -> None:
+        """Stop a typing indicator loop for a chat."""
+        task = self._typing_tasks.pop(chat_id, None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        # Reset per-chat typing backoff state so the next agent turn starts fresh
+        self._typing_failures.pop(chat_id, None)
+        self._typing_skip_until.pop(chat_id, None)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Public interface for stopping typing — called by base adapter's
+        _keep_typing finally block and by gateway/run.py to clean up
+        platform-level typing tasks.
+        """
+        await self._stop_typing_indicator(chat_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
