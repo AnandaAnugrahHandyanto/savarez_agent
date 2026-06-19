@@ -1,5 +1,5 @@
 """
-Hermes CLI - Unified command-line interface for Hermes Agent.
+Savarez CLI - Unified command-line interface for Savarez Agent (fork of Hermes Agent).
 
 Provides subcommands for:
 - hermes chat          - Interactive chat (same as ./hermes)
