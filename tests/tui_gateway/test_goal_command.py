@@ -185,15 +185,31 @@ def test_goal_requires_session(server):
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 
-def test_slash_exec_rejects_goal_routes_to_command_dispatch(server, session):
-    """slash.exec must reject /goal with 4018 so the TUI client falls through
-    to command.dispatch. Without this, the HermesCLI slash-worker subprocess
-    would set the goal but silently drop the kickoff — the queue is in-proc."""
+def test_slash_exec_goal_status_dispatches_internally(server, session):
+    """slash.exec must internally dispatch /goal so desktop clients do not
+    swallow the text while waiting for a frontend fallback path."""
     sid, _, _ = session
     r = _call(server, "slash.exec", command="goal status", session_id=sid)
-    assert "error" in r
-    assert r["error"]["code"] == 4018
-    assert "command.dispatch" in r["error"]["message"]
+    assert "error" not in r
+    assert r["result"]["type"] == "exec"
+    assert "No active goal" in r["result"]["output"]
+
+
+def test_slash_exec_goal_set_returns_send_with_notice(server, session):
+    sid, session_key, _ = session
+    r = _call(server, "slash.exec", command="goal build a rocket", session_id=sid)
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "build a rocket"
+    assert "Goal set" in result["notice"]
+    assert "20-turn budget" in result["notice"]
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    assert mgr.state is not None
+    assert mgr.state.goal == "build a rocket"
+    assert mgr.state.status == "active"
 
 
 def test_pending_input_commands_includes_goal(server):
