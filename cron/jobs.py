@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_hermes_home().resolve()
+HERMES_DIR = get_default_hermes_root().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 
