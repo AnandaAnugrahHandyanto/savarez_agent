@@ -882,6 +882,7 @@ def mcp_command(args):
                 host=getattr(args, "host", "127.0.0.1"),
                 port=getattr(args, "port", 8765),
                 streamable_http_path=getattr(args, "streamable_http_path", "/mcp"),
+                public_url=getattr(args, "public_url", None),
             )
         else:
             mcp_serve.run_mcp_server(verbose=getattr(args, "verbose", False))

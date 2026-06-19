@@ -1781,10 +1781,21 @@ def test_mcp_serve_profile_router_parser_flag_sets_explicit_surface():
     assert args.transport == "stdio"
     assert args.host == "127.0.0.1"
     assert args.port == 8765
+    assert args.public_url is None
 
     http_args = parser.parse_args(["mcp", "serve", "--profile-router", "--http"])
     assert http_args.profile_router is True
     assert http_args.http is True
+
+    public_args = parser.parse_args([
+        "mcp",
+        "serve",
+        "--profile-router",
+        "--http",
+        "--public-url",
+        "https://mcp.example.com",
+    ])
+    assert public_args.public_url == "https://mcp.example.com"
 
 
 def test_mcp_command_routes_profile_router_serve(monkeypatch):
@@ -1801,6 +1812,7 @@ def test_mcp_command_routes_profile_router_serve(monkeypatch):
         host="127.0.0.1",
         port=8765,
         streamable_http_path="/mcp",
+        public_url=None,
     )
 
     mock_run.reset_mock()
@@ -1813,6 +1825,7 @@ def test_mcp_command_routes_profile_router_serve(monkeypatch):
         host="127.0.0.1",
         port=9999,
         streamable_http_path="/router",
+        public_url="https://mcp.example.com",
     )
     mcp_command(args)
     mock_run.assert_called_once_with(
@@ -1821,6 +1834,7 @@ def test_mcp_command_routes_profile_router_serve(monkeypatch):
         host="127.0.0.1",
         port=9999,
         streamable_http_path="/router",
+        public_url="https://mcp.example.com",
     )
 
 
@@ -1907,6 +1921,36 @@ def test_profile_router_bearer_verifier_and_audit_log_are_secret_safe(tmp_path):
     assert entry["bytes"] == len(result.encode("utf-8"))
 
 
+def test_profile_router_public_url_validation_for_remote_metadata(monkeypatch):
+    import mcp_serve
+
+    assert mcp_serve._profile_router_http_base_url("0.0.0.0", 8765) == "http://127.0.0.1:8765"
+    assert (
+        mcp_serve._profile_router_http_base_url(
+            "127.0.0.1",
+            8765,
+            public_url="https://mcp.example.com/",
+        )
+        == "https://mcp.example.com"
+    )
+
+    monkeypatch.setenv("HERMES_PROFILE_ROUTER_PUBLIC_URL", "https://env-mcp.example.com")
+    assert mcp_serve._profile_router_http_base_url("127.0.0.1", 8765) == "https://env-mcp.example.com"
+
+    for invalid_public_url in (
+        "mcp.example.com",
+        "ftp://mcp.example.com",
+        "https://mcp.example.com/mcp",
+        "https://mcp.example.com?token=bad",
+    ):
+        with pytest.raises(ValueError, match="public URL must be an origin"):
+            mcp_serve._profile_router_http_base_url(
+                "127.0.0.1",
+                8765,
+                public_url=invalid_public_url,
+            )
+
+
 def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_tools(
     monkeypatch,
     tmp_path,
@@ -1920,6 +1964,7 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
         http_auth=True,
         host="127.0.0.1",
         port=8765,
+        public_url="https://mcp.example.com/",
         token_store_path=str(tmp_path / "tokens.json"),
         audit_log_path=str(tmp_path / "audit.jsonl"),
     )
@@ -1933,6 +1978,8 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     assert server_kwargs["host"] == "127.0.0.1"
     assert server_kwargs["port"] == 8765
     assert server_kwargs["streamable_http_path"] == "/mcp"
+    assert str(server_kwargs["auth"].issuer_url).rstrip("/") == "https://mcp.example.com"
+    assert str(server_kwargs["auth"].resource_server_url).rstrip("/") == "https://mcp.example.com/mcp"
     assert server_kwargs["token_verifier"].store.path == tmp_path / "tokens.json"
     assert server_kwargs["auth"].required_scopes == []
     assert "terminal_run" not in tools

@@ -39,6 +39,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger("hermes.mcp_serve")
 
@@ -859,8 +860,37 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     return mcp
 
 
-def _profile_router_http_base_url(host: str, port: int) -> str:
-    """Return a local URL suitable for MCP auth metadata."""
+def _profile_router_http_base_url(host: str, port: int, public_url: str | None = None) -> str:
+    """Return the URL origin used in MCP auth metadata.
+
+    Local development can derive the origin from ``host``/``port``. Remote
+    deployments behind TLS reverse proxies should pass ``public_url`` (or set
+    ``HERMES_PROFILE_ROUTER_PUBLIC_URL`` / ``PROFILE_ROUTER_PUBLIC_URL``) so
+    ChatGPT and other remote MCP clients see the externally reachable HTTPS
+    origin instead of the localhost backend URL.
+    """
+
+    configured_public_url = (
+        public_url
+        or os.environ.get("HERMES_PROFILE_ROUTER_PUBLIC_URL")
+        or os.environ.get("PROFILE_ROUTER_PUBLIC_URL")
+    )
+    if configured_public_url:
+        text = configured_public_url.strip().rstrip("/")
+        parsed = urlparse(text)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError(
+                "profile-router public URL must be an origin such as "
+                "https://mcp.example.com; do not include /mcp, query, or fragment"
+            )
+        return text
 
     public_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     if ":" in public_host and not public_host.startswith("["):
@@ -874,6 +904,7 @@ def create_profile_router_mcp_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     streamable_http_path: str = "/mcp",
+    public_url: str | None = None,
     token_store_path: str | None = None,
     audit_log_path: str | None = None,
 ):
@@ -922,7 +953,7 @@ def create_profile_router_mcp_server(
         from mcp.server.auth.settings import AuthSettings
 
         token_store = ProfileRouterTokenStore(token_store_path)
-        base_url = _profile_router_http_base_url(host, port)
+        base_url = _profile_router_http_base_url(host, port, public_url=public_url)
         auth_kwargs = {
             "token_verifier": ProfileRouterBearerTokenVerifier(token_store),
             "auth": AuthSettings(
@@ -1224,6 +1255,7 @@ def run_profile_router_mcp_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     streamable_http_path: str = "/mcp",
+    public_url: str | None = None,
     token_store_path: str | None = None,
     audit_log_path: str | None = None,
 ) -> None:
@@ -1251,6 +1283,7 @@ def run_profile_router_mcp_server(
         host=host,
         port=port,
         streamable_http_path=streamable_http_path,
+        public_url=public_url,
         token_store_path=token_store_path,
         audit_log_path=audit_log_path,
     )

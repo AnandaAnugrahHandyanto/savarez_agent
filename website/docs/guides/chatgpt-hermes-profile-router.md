@@ -47,6 +47,19 @@ hermes mcp profile-router-token create --name chatgpt
 hermes mcp serve --profile-router --http --host 127.0.0.1 --port 8765
 ```
 
+When running behind a TLS reverse proxy for a remote MCP client such as ChatGPT, pass the externally reachable origin with `--public-url` or `HERMES_PROFILE_ROUTER_PUBLIC_URL` so MCP auth metadata uses the public HTTPS URL instead of the localhost backend URL:
+
+```bash
+hermes mcp serve \
+  --profile-router \
+  --http \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --public-url https://mcp.example.com
+```
+
+`--public-url` must be an origin only (`https://mcp.example.com`), not the MCP path (`/mcp`) and not a URL containing query parameters or fragments. The MCP endpoint remains `https://mcp.example.com/mcp` when using the default path.
+
 The first command prints the raw bearer token **once**. Copy it immediately. Hermes stores only a server-side hash and cannot display the raw token again.
 
 If ChatGPT must reach the server, expose it yourself through a tunnel or reverse proxy that forwards to `127.0.0.1:8765`. Bearer token auth remains the security boundary; CORS/origin checks are defense-in-depth, not the primary auth model.
@@ -110,6 +123,71 @@ The primary v1 workflow focuses on:
 The server intentionally does **not** register or expose conversation messaging, `file_patch`, `file_write`, `terminal_run`, cron, deploy, Git push/merge, broad shell access, or agent-loop execution tools on the public v1 surface.
 
 In short: v1 does not expose conversation messaging, terminal, cron, deploy, or write tools.
+
+## Remote VPS shape for ChatGPT
+
+For ChatGPT testing, run the same profile-router code as a dedicated service on the VPS rather than creating a separate product/repository. The separation should be operational, not architectural:
+
+- same Hermes Agent checkout/package with this profile-router implementation
+- dedicated Unix user such as `hermes-mcp`
+- dedicated `HERMES_HOME` such as `/srv/hermes-profile-router/home`
+- dedicated allowed workspace root such as `/srv/hermes-profile-router/workspaces`
+- dedicated bearer token for ChatGPT
+- local bind only: `127.0.0.1:8765`
+- public HTTPS exposure only through a reverse proxy such as Caddy or Nginx
+- `--public-url https://mcp.example.com` so MCP metadata matches the public origin
+
+Recommended request path:
+
+```text
+ChatGPT / remote MCP client
+  -> https://mcp.example.com/mcp
+  -> reverse proxy with TLS
+  -> http://127.0.0.1:8765/mcp on the VPS
+  -> Hermes profile-router MCP service
+```
+
+Do not expose the backend port directly on the public interface. Keep firewall rules closed for `8765` and expose only `443` through the reverse proxy.
+
+A separate service or repo is only needed if the client cannot consume remote MCP and requires an OpenAPI Actions wrapper. In that case, add a thin OpenAPI-to-MCP adapter in front of this router; keep the router itself as the policy/security boundary.
+
+Minimal systemd shape:
+
+```ini
+[Unit]
+Description=Hermes Profile Router MCP
+After=network-online.target
+
+[Service]
+User=hermes-mcp
+WorkingDirectory=/srv/hermes-profile-router/app
+Environment=HERMES_HOME=/srv/hermes-profile-router/home
+ExecStart=/srv/hermes-profile-router/app/.venv/bin/hermes mcp serve --profile-router --http --host 127.0.0.1 --port 8765 --public-url https://mcp.example.com
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Minimal Nginx reverse-proxy shape:
+
+```nginx
+server {
+    server_name mcp.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8765;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+For a real VPS, replace `mcp.example.com`, install TLS (for example with Caddy or Certbot), and verify externally with a remote MCP client before adding the endpoint to ChatGPT.
 
 ## Required flow for ChatGPT
 

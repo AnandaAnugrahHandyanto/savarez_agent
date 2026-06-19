@@ -74,6 +74,13 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         default="/mcp",
         help="Streamable HTTP path for --profile-router --http (default: /mcp)",
     )
+    mcp_serve_p.add_argument(
+        "--public-url",
+        help=(
+            "Externally reachable origin for --profile-router --http behind a "
+            "TLS reverse proxy, e.g. https://mcp.example.com. Do not include /mcp."
+        ),
+    )
     add_accept_hooks_flag(mcp_serve_p)
 
     token_p = mcp_sub.add_parser(
