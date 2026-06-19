@@ -1549,20 +1549,50 @@ async def _send_matrix(token, extra, chat_id, message):
 
 
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
-    """Send via the Matrix adapter so native Matrix media uploads are preserved."""
-    try:
-        from gateway.platforms.matrix import MatrixAdapter
-    except ImportError:
-        return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
+    """Send via the Matrix adapter so native Matrix media uploads are preserved.
 
+    When the gateway is running in this process, reuses the live adapter
+    to avoid re-establishing an E2EE session per message (which exhausts
+    recipient one-time keys under burst sends — see #46310).
+
+    When running standalone (e.g. from cron), creates a one-shot adapter
+    but keeps it alive across all text + media chunks in the same call
+    so connect/disconnect only happens once.
+    """
     media_files = media_files or []
+    adapter = None
+    owns_adapter = False
+
+    # 1. Try the live gateway adapter first (avoids E2EE re-init entirely).
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    if runner is not None:
+        try:
+            adapter = runner.adapters.get(Platform.MATRIX)
+        except Exception:
+            adapter = None
+
+    # 2. Standalone fallback: create adapter once, connect, use, disconnect.
+    if adapter is None:
+        try:
+            from gateway.platforms.matrix import MatrixAdapter
+        except ImportError:
+            return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
+
+        try:
+            adapter = MatrixAdapter(pconfig)
+            connected = await adapter.connect()
+            if not connected:
+                return _error("Matrix connect failed")
+            owns_adapter = True
+        except Exception as e:
+            return _error(f"Matrix connect failed: {e}")
 
     try:
-        adapter = MatrixAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error("Matrix connect failed")
-
         metadata = {"thread_id": thread_id} if thread_id else None
         last_result = None
 
@@ -1602,10 +1632,11 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
     finally:
-        try:
-            await adapter.disconnect()
-        except Exception:
-            pass
+        if owns_adapter:
+            try:
+                await adapter.disconnect()
+            except Exception:
+                pass
 
 
 async def _send_dingtalk(extra, chat_id, message):
