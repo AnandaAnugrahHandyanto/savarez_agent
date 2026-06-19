@@ -585,7 +585,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_archived ON sessions(archived);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 """
@@ -597,6 +596,8 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_archived
+    ON sessions(archived);
 """
 
 FTS_SQL = """
@@ -3707,8 +3708,10 @@ class SessionDB:
     def session_count_by_source(self, include_archived: bool = True) -> Dict[str, int]:
         """Return a {source: count} histogram using a single aggregate query.
 
-        Uses the ``idx_sessions_source`` index so this is O(1) regardless of
-        the number of sessions -- suitable for the dashboard stats endpoint.
+        Replaces per-source ``session_count()`` calls with one GROUP BY query,
+        eliminating the O(N-sources) query fan-out in the dashboard stats
+        endpoint.  Runtime still scales with the number of sessions but issues
+        only a single round-trip to the DB.
 
         Args:
             include_archived: when False, exclude archived sessions from counts.
@@ -3718,7 +3721,7 @@ class SessionDB:
             cursor = self._conn.execute(
                 f"SELECT COALESCE(source, 'cli'), COUNT(*)"
                 f" FROM sessions{where_sql}"
-                f" GROUP BY source"
+                f" GROUP BY COALESCE(source, 'cli')"
             )
             return {row[0]: row[1] for row in cursor.fetchall()}
 
