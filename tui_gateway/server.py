@@ -8653,13 +8653,11 @@ def _resolve_name(name: str) -> str:
         return name
 
 
-@method("command.dispatch")
-def _(rid, params: dict) -> dict:
-    name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+def _dispatch_tui_command(rid, name: str, arg: str, session: dict | None) -> dict:
+    name = name.lstrip("/")
     resolved = _resolve_name(name)
     if resolved != name:
         name = resolved
-    session = _sessions.get(params.get("session_id", ""))
 
     qcmds = _load_cfg().get("quick_commands", {})
     if name in qcmds:
@@ -8976,6 +8974,16 @@ def _(rid, params: dict) -> dict:
             )
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
+
+
+@method("command.dispatch")
+def _(rid, params: dict) -> dict:
+    return _dispatch_tui_command(
+        rid,
+        name=params.get("name", ""),
+        arg=params.get("arg", ""),
+        session=_sessions.get(params.get("session_id", "")),
+    )
 
 
 # ── Methods: paste ────────────────────────────────────────────────────
@@ -9719,8 +9727,8 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
 
-    # Skill slash commands and _pending_input commands must NOT go through the
-    # slash worker — see _PENDING_INPUT_COMMANDS definition above. Plugin
+    # Skill slash commands and most _pending_input commands must NOT go through
+    # the slash worker — see _PENDING_INPUT_COMMANDS definition above. Plugin
     # commands must also avoid the worker, but unlike skills/pending-input they
     # still return normal slash.exec output so the TUI keeps the pager path.
     _cmd_text = cmd.lstrip("/") if cmd.startswith("/") else cmd
@@ -9729,6 +9737,13 @@ def _(rid, params: dict) -> dict:
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
 
     if _cmd_base in _PENDING_INPUT_COMMANDS:
+        if _cmd_base == "goal":
+            return _dispatch_tui_command(
+                rid,
+                name=_cmd_base,
+                arg=_cmd_arg,
+                session=session,
+            )
         return _err(
             rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}"
         )
