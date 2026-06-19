@@ -234,10 +234,13 @@ class TestConnectivityChecks:
         ok, msg = _check_qdrant_path(str(tmp_path / "qdrant"))
         assert ok is True
 
-    def test_qdrant_path_not_writable(self, monkeypatch):
-        monkeypatch.setattr(Path, "mkdir", lambda *a, **kw: (_ for _ in ()).throw(OSError("Permission denied")))
-        ok, msg = _check_qdrant_path("/nonexistent/deeply/nested/path")
+    def test_qdrant_path_not_writable(self, tmp_path, monkeypatch):
+        def _raise_oserror(*a, **kw):
+            raise OSError("Permission denied")
+        monkeypatch.setattr(Path, "mkdir", _raise_oserror)
+        ok, msg = _check_qdrant_path(str(tmp_path / "qdrant"))
         assert ok is False
+        assert "Permission denied" in msg
 
     def test_ollama_unreachable(self):
         ok, msg = _check_ollama("http://localhost:1")
