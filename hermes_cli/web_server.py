@@ -72,6 +72,7 @@ from gateway.status import (
     get_runtime_status_running_pid,
     read_runtime_status,
 )
+from hermes_cli.route_advisory import classify_route_advisory
 from utils import env_var_enabled
 
 try:
@@ -654,6 +655,12 @@ CONFIG_SCHEMA = _ordered_schema
 class ConfigUpdate(BaseModel):
     config: dict
     profile: Optional[str] = None
+
+
+class RouteAdvisoryRequest(BaseModel):
+    prompt: str
+    surface: str = "dashboard"
+    log: bool = False
 
 
 class EnvVarUpdate(BaseModel):
@@ -1694,6 +1701,20 @@ async def fs_git_root(path: str):
 async def fs_default_cwd():
     cwd = _fs_default_cwd()
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}
+
+
+@app.post("/api/route")
+async def post_route_advisory(payload: RouteAdvisoryRequest):
+    """Return an advisory-only profile route decision for dashboard composers."""
+    prompt = str(payload.prompt or "")
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+    surface = str(payload.surface or "dashboard").strip() or "dashboard"
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: classify_route_advisory(prompt, surface=surface, log=bool(payload.log)),
+    )
 
 
 @app.get("/api/status")
