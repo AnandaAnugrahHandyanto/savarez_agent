@@ -881,6 +881,12 @@ def set_approval_callback(*args, **kwargs):
     return _set_approval_callback(*args, **kwargs)
 
 
+def set_computer_use_approval_callback(*args, **kwargs):
+    from tools.computer_use.tool import set_approval_callback as _set_computer_use_approval_callback
+
+    return _set_computer_use_approval_callback(*args, **kwargs)
+
+
 def set_secret_capture_callback(*args, **kwargs):
     from tools.skills_tool import set_secret_capture_callback as _set_secret_capture_callback
 
@@ -3466,9 +3472,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _resolve_prefill_messages_file(CLI_CONFIG)
         )
         
-        # Reasoning config (OpenRouter reasoning effort level)
+        # Reasoning config (OpenRouter/Responses effort level).  The env var
+        # gives subprocess orchestrators (e.g. hermes update conflict resolver)
+        # a one-shot override without mutating the user's global config.
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            os.getenv("HERMES_REASONING_EFFORT", "")
+            or CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
@@ -6048,11 +6057,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        # Reasoning effort changes are session-scoped by default. A fresh
+        # session returns to the persisted default unless the user explicitly
+        # used `/reasoning <level> --global`.
+        self.reasoning_config = _parse_reasoning_config(
+            os.getenv("HERMES_REASONING_EFFORT", "")
+            or CLI_CONFIG["agent"].get("reasoning_effort", "")
+        )
         _sync_process_session_id(self.session_id)
 
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
+            self.agent.reasoning_config = self.reasoning_config
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
@@ -7886,6 +7903,161 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         return True
     
+    def _handle_background_command(self, cmd: str):
+        """Handle /background <prompt> — run a prompt in a separate background session.
+
+        Spawns a new AIAgent in a background thread with its own session.
+        When it completes, prints the result to the CLI without modifying
+        the active session's conversation history.
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /background <prompt>")
+            _cprint("  Example: /background Summarize the top HN stories today")
+            _cprint("  The task runs in a separate session and results display here when done.")
+            return
+
+        prompt = parts[1].strip()
+        self._background_task_counter += 1
+        task_num = self._background_task_counter
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        # Make sure we have valid credentials
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start background task: no valid credentials.")
+            return
+
+        _cprint(f"  🔄 Background task #{task_num} started: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+        _cprint(f"  Task ID: {task_id}")
+        _cprint("  You can continue chatting — results will appear when done.\n")
+
+        turn_route = self._resolve_turn_agent_config(prompt)
+
+        def run_background():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            set_computer_use_approval_callback(self._computer_use_approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
+            try:
+                bg_agent = AIAgent(
+                    model=turn_route["model"],
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
+                    max_tokens=turn_route["runtime"].get("max_tokens"),
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=self.enabled_toolsets,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=task_id,
+                    platform="cli",
+                    session_db=self._session_db,
+                    reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=self._providers_only,
+                    providers_ignored=self._providers_ignore,
+                    providers_order=self._providers_order,
+                    provider_sort=self._provider_sort,
+                    provider_require_parameters=self._provider_require_params,
+                    provider_data_collection=self._provider_data_collection,
+                    openrouter_min_coding_score=self._openrouter_min_coding_score,
+                    fallback_model=self._fallback_model,
+                )
+                # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
+                bg_agent._print_fn = lambda *_a, **_kw: None
+
+                def _bg_thinking(text: str) -> None:
+                    # Concurrent bg tasks may race on _spinner_text; acceptable for best-effort UI.
+                    if not self._agent_running:
+                        self._spinner_text = text
+                        if self._app:
+                            self._app.invalidate()
+
+                bg_agent.thinking_callback = _bg_thinking
+
+                result = bg_agent.run_conversation(
+                    user_message=prompt,
+                    task_id=task_id,
+                )
+
+                response = result.get("final_response", "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+
+                # Display result in the CLI (thread-safe via patch_stdout).
+                # Force a TUI refresh first so spinner/status bar don't overlap
+                # with the output (fixes #2718).
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)  # brief pause for refresh
+                print()
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                _cprint(f"  ✅ Background task #{task_num} complete")
+                _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                if response:
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _skin = get_active_skin()
+                        label = _skin.get_branding("response_label", "⚕ Hermes")
+                        _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+                        _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+                    except Exception:
+                        label = "⚕ Hermes"
+                        _resp_color = "#CD7F32"
+                        _resp_text = "#FFF8DC"
+
+                    _chat_console = ChatConsole()
+                    _chat_console.print(Panel(
+                        _render_final_assistant_content(response, mode=self.final_response_markdown),
+                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        style=_resp_text,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 4),
+                        width=self._scrollback_box_width(),
+                    ))
+                else:
+                    _cprint("  (No response generated)")
+
+                # Play bell if enabled
+                if self.bell_on_complete:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+
+            except Exception as e:
+                # Same TUI refresh pattern as success path (#2718)
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  ❌ Background task #{task_num} failed: {e}")
+            finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_computer_use_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
+                self._background_tasks.pop(task_id, None)
+                # Clear spinner only if no foreground agent owns it
+                if not self._agent_running:
+                    self._spinner_text = ""
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
+        self._background_tasks[task_id] = thread
+        thread.start()
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
@@ -10914,6 +11086,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # by acp_adapter/server.py for ACP sessions.
                 set_sudo_password_callback(self._sudo_password_callback)
                 set_approval_callback(self._approval_callback)
+                set_computer_use_approval_callback(self._computer_use_approval_callback)
                 try:
                     set_secret_capture_callback(self._secret_capture_callback)
                 except Exception:
@@ -10982,6 +11155,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     try:
                         set_sudo_password_callback(None)
                         set_approval_callback(None)
+                        set_computer_use_approval_callback(None)
                         set_secret_capture_callback(None)
                     except Exception:
                         pass

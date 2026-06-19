@@ -39,80 +39,96 @@ def noop_backend():
 # ---------------------------------------------------------------------------
 
 class TestSchema:
+    def _schemas(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        return {name: entry.schema for name, entry in registry._tools.items() if name.startswith("computer_use_")}
+
     def test_schema_is_universal_openai_function_format(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        assert COMPUTER_USE_SCHEMA["name"] == "computer_use"
-        assert "parameters" in COMPUTER_USE_SCHEMA
-        params = COMPUTER_USE_SCHEMA["parameters"]
-        assert params["type"] == "object"
-        assert "action" in params["properties"]
-        assert params["required"] == ["action"]
+        schemas = self._schemas()
+        assert "computer_use_get_app_state" in schemas
+        for name, schema in schemas.items():
+            assert schema["name"] == name
+            assert "parameters" in schema
+            assert schema["parameters"]["type"] == "object"
+            props = schema["parameters"].get("properties", {})
+            if name != "computer_use_daemon":
+                assert "action" not in props
 
     def test_schema_does_not_use_anthropic_native_types(self):
-        """Generic OpenAI schema — no `type: computer_20251124`."""
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        assert COMPUTER_USE_SCHEMA.get("type") != "computer_20251124"
-        # The word should not appear in the description either.
-        dumped = json.dumps(COMPUTER_USE_SCHEMA)
+        """Generic OpenAI schemas — no `type: computer_20251124`."""
+        dumped = json.dumps(self._schemas())
         assert "computer_20251124" not in dumped
 
-    def test_schema_supports_element_and_coordinate_targeting(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+    def test_click_schema_supports_element_and_coordinate_targeting(self):
+        props = self._schemas()["computer_use_click"]["parameters"]["properties"]
         assert "element" in props
         assert "coordinate" in props
         assert props["element"]["type"] == "integer"
         assert props["coordinate"]["type"] == "array"
 
-    def test_schema_lists_all_expected_actions(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
-        assert actions >= {
-            "capture", "click", "double_click", "right_click", "middle_click",
-            "drag", "scroll", "type", "key", "wait", "list_apps", "focus_app",
+    def test_explicit_schema_lists_all_expected_tools(self):
+        assert set(self._schemas()) >= {
+            "computer_use_list_apps",
+            "computer_use_launch_app",
+            "computer_use_get_app_state",
+            "computer_use_click",
+            "computer_use_perform_secondary_action",
+            "computer_use_scroll",
+            "computer_use_drag",
+            "computer_use_type_text",
+            "computer_use_set_value",
+            "computer_use_press_key",
+            "computer_use_select_text",
+            "computer_use_daemon",
         }
 
     def test_capture_mode_enum_has_som_vision_ax(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        modes = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["mode"]["enum"])
+        modes = set(self._schemas()["computer_use_get_app_state"]["parameters"]["properties"]["mode"]["enum"])
         assert modes == {"som", "vision", "ax"}
 
-    def test_schema_exposes_max_elements_cap_for_capture(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
-        assert "max_elements" in props
-        assert props["max_elements"]["type"] == "integer"
-        assert props["max_elements"].get("minimum", 1) >= 1
-
-    def test_schema_max_elements_documents_default_and_upper_bound(self):
-        """Schema description must agree with the runtime. The original PR
-        text said "Default 100" without a corresponding `default` field, and
-        had no upper bound — both Copilot findings.
-        """
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+    def test_runtime_still_exposes_max_elements_cap(self):
         from tools.computer_use.tool import (
             _DEFAULT_MAX_ELEMENTS,
             _MAX_ALLOWED_MAX_ELEMENTS,
+            _coerce_max_elements,
         )
-        prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_elements"]
-        assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
-        assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
+        assert _coerce_max_elements(None) == _DEFAULT_MAX_ELEMENTS
+        assert _coerce_max_elements(0) == _DEFAULT_MAX_ELEMENTS
+        assert _coerce_max_elements(_MAX_ALLOWED_MAX_ELEMENTS + 1) == _MAX_ALLOWED_MAX_ELEMENTS
 
 
 class TestRegistration:
-    def test_tool_registers_with_registry(self):
-        # Importing the shim registers the tool.
+    def test_explicit_tools_register_with_registry(self):
+        # Importing the shim registers explicit model-facing tools only.
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools.get("computer_use")
-        assert entry is not None
-        assert entry.toolset == "computer_use"
-        assert entry.schema["name"] == "computer_use"
+
+        assert "computer_use" not in registry._tools
+        expected = {
+            "computer_use_list_apps",
+            "computer_use_launch_app",
+            "computer_use_get_app_state",
+            "computer_use_click",
+            "computer_use_perform_secondary_action",
+            "computer_use_scroll",
+            "computer_use_drag",
+            "computer_use_type_text",
+            "computer_use_set_value",
+            "computer_use_press_key",
+            "computer_use_select_text",
+            "computer_use_daemon",
+        }
+        assert expected.issubset(registry._tools)
+        for name in expected:
+            entry = registry._tools[name]
+            assert entry.toolset == "computer_use"
+            assert entry.schema["name"] == name
 
     def test_check_fn_is_false_on_linux(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools["computer_use"]
+        entry = registry._tools["computer_use_get_app_state"]
         if sys.platform != "darwin":
             assert entry.check_fn() is False
 
@@ -977,10 +993,10 @@ class TestRunAgentMultimodalHelpers:
         }
 
         with patch.object(agent, "_model_supports_vision", return_value=False):
-            content = agent._tool_result_content_for_active_model("computer_use", result)
+            content = agent._tool_result_content_for_active_model("computer_use_get_app_state", result)
 
         parsed = json.loads(content)
-        assert "computer_use returned screenshot/image content" in parsed["error"]
+        assert "Computer Use returned screenshot/image content" in parsed["error"]
         assert parsed["text_summary"] == "screen captured"
         assert "image_url" not in content
 
@@ -997,7 +1013,7 @@ class TestRunAgentMultimodalHelpers:
         }
 
         with patch.object(agent, "_model_supports_vision", return_value=True):
-            content = agent._tool_result_content_for_active_model("computer_use", result)
+            content = agent._tool_result_content_for_active_model("computer_use_get_app_state", result)
 
         assert content is result["content"]
         assert any(part.get("type") == "image_url" for part in content)
@@ -1028,21 +1044,22 @@ class TestRunAgentMultimodalHelpers:
 # ---------------------------------------------------------------------------
 
 class TestUniversality:
-    def test_schema_is_valid_openai_function_schema(self):
-        """The schema must be round-trippable as a standard OpenAI tool definition."""
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        # OpenAI tool definition wrapper
-        wrapped = {"type": "function", "function": COMPUTER_USE_SCHEMA}
-        # Should serialize to JSON without error
-        blob = json.dumps(wrapped)
-        parsed = json.loads(blob)
-        assert parsed["function"]["name"] == "computer_use"
-
-    def test_no_provider_gating_in_tool_registration(self):
-        """Anthropic-only gating was a #4562 artefact — must not recur."""
+    def test_explicit_schema_is_valid_openai_function_schema(self):
+        """An explicit computer_use tool schema must round-trip as a standard OpenAI tool definition."""
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools["computer_use"]
+
+        schema = registry._tools["computer_use_get_app_state"].schema
+        wrapped = {"type": "function", "function": schema}
+        blob = json.dumps(wrapped)
+        parsed = json.loads(blob)
+        assert parsed["function"]["name"] == "computer_use_get_app_state"
+
+    def test_no_provider_gating_in_tool_registration(self):
+        """Computer Use availability checks must never provider-gate explicit tools."""
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        entry = registry._tools["computer_use_get_app_state"]
         # check_fn should only check platform + binary availability,
         # never provider.
         import inspect
@@ -1268,76 +1285,37 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
-class TestCuaDriverSessionReconnect:
-    def test_call_tool_reconnects_once_after_closed_resource(self):
-        """A daemon restart closes the cached MCP stdio channel; recover once."""
-        import threading
-        from typing import Any, cast
-        from anyio import ClosedResourceError
-        from tools.computer_use.cua_backend import _CuaDriverSession
+class TestCuaDriverCliTransport:
+    def test_call_uses_cua_driver_call_subcommand(self):
+        """Production transport should use `cua-driver call`, not MCP stdio."""
+        from types import SimpleNamespace
+        from tools.computer_use.cua_backend import CuaDriverBackend
 
-        class FakeBridge:
-            def __init__(self):
-                self.calls = []
-                # 1st call_tool -> closed; aexit ok; aenter ok; retried call_tool ok.
-                self.effects = [ClosedResourceError(), None, None, {"ok": True}]
+        backend = CuaDriverBackend()
+        proc = SimpleNamespace(returncode=0, stdout='{"data": {"ok": true}}', stderr="")
+        with patch("tools.computer_use.cua_backend.cua_driver_executable", return_value="/usr/local/bin/cua-driver"), \
+             patch("tools.computer_use.cua_backend.subprocess.run", return_value=proc) as run:
+            out = backend._call("list_apps", {"foo": "bar"})
 
-            def run(self, value, timeout=None):
-                self.calls.append((value, timeout))
-                effect = self.effects.pop(0)
-                if isinstance(effect, Exception):
-                    raise effect
-                return effect
+        assert out["isError"] is False
+        assert out["data"] == {"ok": True}
+        run.assert_called_once()
+        cmd = run.call_args.args[0]
+        assert cmd[:3] == ["/usr/local/bin/cua-driver", "call", "list_apps"]
+        assert json.loads(cmd[3]) == {"foo": "bar"}
 
-        bridge = FakeBridge()
-        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
-        session._bridge = bridge
-        session._session = object()
-        session._exit_stack = None
-        session._lock = threading.Lock()
-        session._started = True
-        session._call_tool_async = lambda name, args: ("call", name, args)
-        session._aexit = lambda: ("aexit",)
-        session._aenter = lambda: ("aenter",)
+    def test_call_surfaces_nonzero_exit_as_tool_error(self):
+        from types import SimpleNamespace
+        from tools.computer_use.cua_backend import CuaDriverBackend
 
-        assert session.call_tool("list_apps", {}) == {"ok": True}
-        # Reconnect-once sequence: failed call -> aexit -> aenter -> retried call.
-        assert bridge.calls[0][0] == ("call", "list_apps", {})
-        assert bridge.calls[1][0] == ("aexit",)
-        assert bridge.calls[2][0] == ("aenter",)
-        assert bridge.calls[3][0] == ("call", "list_apps", {})
-        assert len(bridge.calls) == 4
+        backend = CuaDriverBackend()
+        proc = SimpleNamespace(returncode=2, stdout="", stderr="boom")
+        with patch("tools.computer_use.cua_backend.cua_driver_executable", return_value="/usr/local/bin/cua-driver"), \
+             patch("tools.computer_use.cua_backend.subprocess.run", return_value=proc):
+            out = backend._call("list_apps", {})
 
-    def test_call_tool_does_not_retry_on_unrelated_error(self):
-        """Non-transport errors must propagate without a reconnect attempt."""
-        import threading
-        from typing import Any, cast
-        from tools.computer_use.cua_backend import _CuaDriverSession
-
-        class FakeBridge:
-            def __init__(self):
-                self.calls = []
-
-            def run(self, value, timeout=None):
-                self.calls.append((value, timeout))
-                raise ValueError("boom")
-
-        bridge = FakeBridge()
-        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
-        session._bridge = bridge
-        session._session = object()
-        session._exit_stack = None
-        session._lock = threading.Lock()
-        session._started = True
-        session._call_tool_async = lambda name, args: ("call", name, args)
-        session._aexit = lambda: ("aexit",)
-        session._aenter = lambda: ("aenter",)
-
-        import pytest
-        with pytest.raises(ValueError):
-            session.call_tool("list_apps", {})
-        # Exactly one attempt, no reconnect.
-        assert len(bridge.calls) == 1
+        assert out["isError"] is True
+        assert out["data"] == "boom"
 
 
 class TestCaptureAppFilterNoMatch:

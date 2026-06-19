@@ -598,6 +598,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_named_custom,
     _model_flow_copilot,
     _model_flow_copilot_acp,
+    _model_flow_cursor,
     _model_flow_kimi,
     _model_flow_stepfun,
     _model_flow_bedrock_api_key,
@@ -1550,9 +1551,9 @@ def _tui_need_rebuild(root: Path) -> bool:
     """True when ``dist/entry.js`` is missing or older than TUI inputs.
 
     The TUI bundle is self-contained. Rebuilding it on every launch adds a
-    visible cold-start tax on slow Termux CPUs, while a simple mtime freshness
-    check still rebuilds immediately after source updates, dependency updates,
-    or local edits. Set ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
+    visible warm-start tax, while a simple mtime freshness check still rebuilds
+    immediately after source updates, dependency updates, or local edits. Set
+    ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
     """
     force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
     if force in {"1", "true", "yes", "on"}:
@@ -1586,6 +1587,29 @@ def _ensure_tui_node() -> None:
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
+    # GUI-launched/login-shell-mismatched terminals on macOS can start Python
+    # with a PATH that misses Homebrew even though the user's interactive zsh
+    # can run `npm` just fine. Seed the usual locations before declaring Node
+    # missing; this also handles split installs such as node from a version
+    # manager and npm from Homebrew.
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    for extra in (
+        Path.home() / ".local" / "bin",
+        Path.home() / ".pocket-server" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/opt/homebrew/sbin"),
+        Path("/usr/local/bin"),
+        Path("/usr/local/sbin"),
+        Path("/usr/bin"),
+        Path("/bin"),
+        Path("/usr/sbin"),
+        Path("/sbin"),
+    ):
+        s = str(extra)
+        if extra.is_dir() and s not in parts:
+            parts.append(s)
+    os.environ["PATH"] = os.pathsep.join(parts)
+
     if shutil.which("node") and shutil.which("npm"):
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
@@ -1640,6 +1664,43 @@ def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
     return bundled if bundled.is_file() else None
 
 
+def _tui_skin_payload(config: Optional[dict] = None) -> Optional[dict]:
+    """Resolve the configured skin before Node starts so first paint is themed.
+
+    The gateway still sends ``gateway.ready.payload.skin`` as the authoritative
+    live value.  This tiny bootstrap payload only prevents the TUI from painting
+    the built-in gold theme and then visibly switching to the configured skin a
+    few seconds later.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.skin_engine import get_active_skin, init_skin_from_config
+
+        init_skin_from_config(config if config is not None else load_config())
+        skin = get_active_skin()
+        return {
+            "name": skin.name,
+            "colors": skin.colors,
+            "branding": skin.branding,
+            "banner_logo": skin.banner_logo,
+            "banner_hero": skin.banner_hero,
+            "tool_prefix": skin.tool_prefix,
+            "help_header": (skin.branding or {}).get("help_header", ""),
+        }
+    except Exception:
+        return None
+
+
+def _tui_initial_skin_env(config: Optional[dict] = None) -> Optional[str]:
+    payload = _tui_skin_payload(config)
+    if not payload:
+        return None
+    try:
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
@@ -1649,6 +1710,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             env_node = os.environ.get("HERMES_NODE")
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
                 return env_node
+        if bin == "npm":
+            env_npm = os.environ.get("HERMES_NPM")
+            if env_npm and os.path.isfile(env_npm) and os.access(env_npm, os.X_OK):
+                return env_npm
         path = shutil.which(bin)
         if not path and bin == "node":
             try:
@@ -1687,24 +1752,19 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
 
-    # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
+    # 2. Normal flow: install deps only when we actually need to build, then
+    #    run the self-contained bundle.  A fresh dist/entry.js does not need
+    #    node_modules at runtime, so dependency-cold launches can still start
+    #    immediately.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
-    #    Existing desktop behaviour runs npm from the workspace root.  Termux
-    #    scopes the install to ui-tui so launch does not pull desktop/web
-    #    dependencies into the hot path.
-    did_install = False
+    #    Desktop npm installs run from the workspace root (where package-lock.json
+    #    lives); Termux scopes the install to ui-tui so launch does not pull
+    #    desktop/web dependencies into the hot path.
     termux_startup = _is_termux_startup_environment()
-    termux_need_rebuild = False
-    if termux_startup and not tui_dev:
-        termux_need_rebuild = _tui_need_rebuild(tui_dir)
+    should_build = (not tui_dev) and _tui_need_rebuild(tui_dir)
+    should_install = _tui_need_npm_install(tui_dir) if (tui_dev or should_build) else False
 
-    skip_install_for_fresh_termux_bundle = (
-        termux_startup and not tui_dev and not termux_need_rebuild
-    )
-    if (
-        not skip_install_for_fresh_termux_bundle
-        and _tui_need_npm_install(tui_dir)
-    ):
+    if should_install:
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
@@ -1730,6 +1790,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 "--no-fund",
                 "--no-audit",
                 "--progress=false",
+                "--include=dev",
             ],
             cwd=str(npm_cwd),
             stdout=subprocess.PIPE,
@@ -1746,8 +1807,6 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if preview:
                 print(preview)
             sys.exit(1)
-        did_install = True
-
     if tui_dev:
         # Keep the local @hermes/ink package exports in sync with source.
         # --dev runs src/entry.tsx directly, but @hermes/ink resolves through
@@ -1776,13 +1835,6 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
-
-    # Desktop/dev launches retain the historical "always rebuild" behaviour.
-    # Termux cold starts use the freshness check because esbuild startup is
-    # expensive on old mobile CPUs.
-    should_build = True
-    if termux_startup:
-        should_build = did_install or termux_need_rebuild
 
     if should_build:
         npm = _node_bin("npm")
@@ -2001,6 +2053,9 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
+    initial_skin = _tui_initial_skin_env()
+    if initial_skin:
+        env["HERMES_TUI_INITIAL_SKIN"] = initial_skin
     # Guarantee a generous V8 heap for the TUI. Default node cap is ~1.5–4GB
     # depending on version and can fatal-OOM on long sessions with large
     # transcripts / reasoning blobs. We target 8GB on an unconstrained host,
@@ -2031,6 +2086,10 @@ def _launch_tui(
         env["HERMES_TUI_RESUME"] = resume_session_id
 
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    # _make_tui_argv() may repair os.environ["PATH"] while finding node/npm.
+    # Keep the actual TUI subprocess on that repaired PATH instead of the stale
+    # copy taken at function entry.
+    env["PATH"] = os.environ.get("PATH", env.get("PATH", ""))
     code: Optional[int] = None
     try:
         try:
@@ -2996,6 +3055,8 @@ def select_provider_and_model(args=None):
         _model_flow_google_gemini_cli(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif selected_provider == "cursor":
+        _model_flow_cursor(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
@@ -4786,7 +4847,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     r1 = _run_npm_install_deterministic(
         npm,
         npm_cwd,
-        extra_args=(*npm_workspace_args, "--silent"),
+        extra_args=(*npm_workspace_args, "--include=dev", "--silent"),
     )
     if r1.returncode != 0:
         _say(
@@ -6582,6 +6643,132 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
 
 
+def _is_patched_fleet_maintainer() -> bool:
+    """Return True when this checkout should update Kamell's fork from upstream.
+
+    Consumers should only pull origin/patched-main. Exactly one maintainer machine
+    should set update.fork_maintainer=true (or HERMES_FORK_MAINTAINER=1).
+    """
+    env_value = os.getenv("HERMES_FORK_MAINTAINER", "").strip().lower()
+    if env_value in {"1", "true", "yes", "on"}:
+        return True
+    if env_value in {"0", "false", "no", "off"}:
+        return False
+    try:
+        from hermes_cli.config import load_config
+
+        update_cfg = (load_config() or {}).get("update", {})
+        if isinstance(update_cfg, dict):
+            return bool(update_cfg.get("fork_maintainer"))
+    except Exception:
+        pass
+    return False
+
+
+def _sync_patched_main_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
+    """Maintainer-only: refresh origin/main and merge upstream into patched-main.
+
+    Returns True when patched-main changed locally or remotely. Raises SystemExit
+    only for states that require manual conflict resolution.
+    """
+    if not _has_upstream_remote(git_cmd, cwd):
+        print("  ℹ patched-main maintainer mode needs an upstream remote; skipping upstream sync.")
+        print(f"    Add it with: git remote add upstream {OFFICIAL_REPO_URL}")
+        return False
+
+    print("→ Maintainer mode: syncing patched-main with upstream...")
+    try:
+        subprocess.run(git_cmd + ["fetch", "upstream", "--quiet"], cwd=cwd, capture_output=True, check=True)
+        subprocess.run(git_cmd + ["fetch", "origin", "--quiet"], cwd=cwd, capture_output=True, check=True)
+    except subprocess.CalledProcessError:
+        print("  ✗ Failed to fetch upstream/origin. Skipping maintainer sync.")
+        return False
+
+    origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
+    upstream_ahead = _count_commits_between(git_cmd, cwd, "origin/main", "upstream/main")
+    if origin_ahead < 0 or upstream_ahead < 0:
+        print("  ✗ Could not compare origin/main with upstream/main. Skipping maintainer sync.")
+        return False
+    if origin_ahead > 0:
+        print(f"  ⚠ origin/main has {origin_ahead} commit(s) not on upstream/main; not overwriting fork main.")
+        print("    Resolve manually before running maintainer sync again.")
+        return False
+
+    changed = False
+    if upstream_ahead > 0:
+        print(f"  → origin/main is {upstream_ahead} commit(s) behind upstream/main")
+        push_main = subprocess.run(
+            git_cmd + ["push", "origin", "upstream/main:main", "--force-with-lease"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if push_main.returncode == 0:
+            print("  ✓ Synced origin/main from upstream/main")
+            changed = True
+            subprocess.run(git_cmd + ["fetch", "origin", "--quiet"], cwd=cwd, capture_output=True, check=False)
+        else:
+            print("  ✗ Could not push upstream/main to origin/main.")
+            if push_main.stderr.strip():
+                print(f"    {push_main.stderr.strip().splitlines()[0]}")
+            return False
+    else:
+        print("  ✓ origin/main is up to date with upstream/main")
+
+    before = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    merge = subprocess.run(
+        git_cmd + ["merge", "--no-edit", "upstream/main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if merge.returncode != 0:
+        print("  ✗ Could not merge upstream/main into patched-main.")
+        if merge.stderr.strip():
+            print(f"    {merge.stderr.strip().splitlines()[0]}")
+        try:
+            from hermes_cli.update_conflict_resolver import run_patched_main_conflict_resolver
+
+            if run_patched_main_conflict_resolver(
+                git_cmd,
+                cwd,
+                merge_stderr=merge.stderr or "",
+            ):
+                return True
+        except Exception as exc:
+            print(f"    Auto-resolver failed before it could run cleanly: {exc}")
+        print("    Resolve conflicts manually, then push origin patched-main.")
+        sys.exit(1)
+
+    after = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    if after != before:
+        changed = True
+        print("  ✓ Merged upstream/main into patched-main")
+    else:
+        print("  ✓ patched-main already contains upstream/main")
+
+    push_patched = subprocess.run(
+        git_cmd + ["push", "origin", "patched-main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if push_patched.returncode == 0:
+        if changed:
+            print("  ✓ Pushed origin/patched-main")
+    else:
+        print("  ✗ Could not push patched-main to origin.")
+        if push_patched.stderr.strip():
+            print(f"    {push_patched.stderr.strip().splitlines()[0]}")
+        return changed
+
+    return changed
+
+
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
     reports a stale "commits behind" count after a successful update.
@@ -7857,6 +8044,24 @@ def _finalize_update_output(state):
             pass
 
 
+def _git_cmd_for_update() -> list[str]:
+    """Return a robust git command vector for update/check paths.
+
+    Some shell/env setups can leak a quoted git token (``git\"``) into update
+    plumbing. Resolve to an absolute executable up front so ``subprocess`` never
+    tries to exec the literal bad token.
+    """
+    git_exe = shutil.which("git")
+    if not git_exe and sys.platform == "darwin" and Path("/usr/bin/git").exists():
+        git_exe = "/usr/bin/git"
+    git_exe = git_exe or "git"
+    git_exe = git_exe.strip().strip('"').strip("'")
+    git_cmd = [git_exe]
+    if sys.platform == "win32":
+        git_cmd = [git_exe, "-c", "windows.appendAtomically=false"]
+    return git_cmd
+
+
 def _resolve_update_branch(args) -> str:
     """Normalize ``args.branch`` into a non-empty branch name.
 
@@ -7911,9 +8116,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
 
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    git_cmd = _git_cmd_for_update()
 
     # Fetch only the branch we compare against; prefer upstream as the canonical
     # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
@@ -8622,9 +8825,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
     # Build git command once — reused for fork detection and the update itself.
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    git_cmd = _git_cmd_for_update()
 
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
     # tracked package-lock.json files non-deterministically at install/build
@@ -8655,13 +8856,35 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Fetch and pull
     try:
 
-        # Resolve the target branch up front so the fetch can be scoped to it.
-        # A bare `git fetch origin` pulls every ref, and this repo carries
-        # thousands of auto-generated branches — an unscoped fetch can stall for
-        # minutes on a non-single-branch checkout. Fetch only what we update
-        # against.
-        branch = _resolve_update_branch(args)
+        # Get current branch (returns literal "HEAD" when detached)
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        current_branch = result.stdout.strip()
 
+        # Determine the target branch. Default is "main" (the long-standing
+        # CLI behavior); --branch overrides for callers that want to update
+        # against a non-default channel. For patched fork fleets, keep machines
+        # that are already on patched-main there when origin publishes it.
+        branch = _resolve_update_branch(args)
+        branch_explicit = bool(getattr(args, "branch", None))
+        if not branch_explicit and current_branch == "patched-main":
+            patched_remote = subprocess.run(
+                git_cmd + ["rev-parse", "--verify", "origin/patched-main"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if patched_remote.returncode == 0:
+                branch = "patched-main"
+                print("  ✓ Staying on patched-main for fork patch updates")
+
+        # Fetch only the branch we update against. A bare `git fetch origin`
+        # pulls every ref, and this repo carries thousands of generated branches.
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin", branch],
@@ -8685,16 +8908,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
-
-        # Get current branch (returns literal "HEAD" when detached)
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        current_branch = result.stdout.strip()
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
@@ -8745,6 +8958,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
+        maintainer_synced = False
+        force_maintainer_sync = bool(
+            getattr(args, "maintainer", False) or getattr(args, "sync_upstream", False)
+        )
+        if is_fork and branch == "patched-main" and (force_maintainer_sync or _is_patched_fleet_maintainer()):
+            maintainer_synced = _sync_patched_main_with_upstream(git_cmd, PROJECT_ROOT)
+
         prompt_for_restore = (
             auto_stash_ref is not None
             and not assume_yes
@@ -8761,7 +8981,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         commit_count = int(result.stdout.strip())
 
-        if commit_count == 0:
+        if commit_count == 0 and not maintainer_synced:
             _invalidate_update_cache()
 
             # Even if origin is up to date, the fork may be behind upstream
@@ -12029,22 +12249,32 @@ def main():
             install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
-            import shutil
-            import subprocess
-            path = shutil.which("cua-driver")
+            from tools.computer_use.cua_backend import cua_driver_executable, cua_driver_version_status
+            path = cua_driver_executable()
             if path:
-                version = ""
-                try:
-                    version = subprocess.run(
-                        ["cua-driver", "--version"],
-                        capture_output=True, text=True, timeout=5,
-                    ).stdout.strip()
-                except Exception:
-                    pass
+                status_version = cua_driver_version_status()
+                version = status_version.get("actual") or ""
                 if version:
                     print(f"cua-driver: installed at {path} ({version})")
+                    if not status_version.get("ok"):
+                        print(f"version: below recommended {status_version.get('minimum')}; run `hermes computer-use install --upgrade`")
                 else:
                     print(f"cua-driver: installed at {path}")
+                try:
+                    from tools.computer_use.cua_backend import cua_driver_permissions_status
+                    status = cua_driver_permissions_status()
+                    if status.get('ok') is True:
+                        print("permissions: ok")
+                    elif status.get('ok') is None:
+                        print("permissions: unknown")
+                    else:
+                        print("permissions: not ready")
+                    msg = (status.get('message') or '').strip()
+                    if msg:
+                        for line in msg.splitlines():
+                            print(f"  {line}")
+                except Exception as e:
+                    print(f"permissions: unknown ({e})")
                 print("  Refresh to latest: hermes computer-use install --upgrade")
                 return
             print("cua-driver: not installed")

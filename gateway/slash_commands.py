@@ -1863,7 +1863,7 @@ class GatewaySlashCommandsMixin:
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|channel|leave|stop|status|realtime ...] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
@@ -1889,10 +1889,20 @@ class GatewaySlashCommandsMixin:
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.tts_enabled")
+        elif args == "realtime" or args.startswith("realtime "):
+            return await self._handle_voice_realtime_command(event, args)
         elif args in {"channel", "join"}:
+            if self._get_discord_voice_backend(adapter) == "realtime":
+                return await self._handle_voice_realtime_command(event, "realtime join")
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
+            guild_id = self._get_guild_id(event)
+            sessions, _ = self._realtime_voice_state()
+            if guild_id in sessions or self._get_discord_voice_backend(adapter) == "realtime":
+                return await self._handle_voice_realtime_command(event, "realtime leave")
             return await self._handle_voice_channel_leave(event)
+        elif args == "stop":
+            return await self._handle_voice_channel_stop(event)
         elif args == "status":
             mode = self._voice_mode.get(voice_key, "off")
             labels = {
