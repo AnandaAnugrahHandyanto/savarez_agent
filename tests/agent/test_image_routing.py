@@ -279,15 +279,26 @@ class TestAutoModeRespectsOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert decide_image_input_mode("custom", "unknown", {}) == "text"
 
-    def test_explicit_aux_vision_override_still_wins(self):
-        # If the user has configured a dedicated vision aux backend, respect
-        # it even when supports_vision: true is also set.
+    def test_explicit_aux_vision_override_only_applies_when_main_model_not_vision(self):
+        # Aux override is a fallback: when the main model supports vision,
+        # images go native regardless of aux config. The aux override only
+        # applies when the main model is non-vision.
         cfg = {
             "model": {"supports_vision": True},
             "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
         }
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
-            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
+
+    def test_aux_vision_override_wins_when_main_model_not_vision(self):
+        # When the main model does NOT support vision, the explicit aux
+        # override still forces text routing.
+        cfg = {
+            "model": {"supports_vision": False},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "text-only-model", cfg) == "text"
 
 
 # ─── build_native_content_parts ──────────────────────────────────────────────
