@@ -2036,6 +2036,22 @@ class TestDispatchDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["override_acp_command"], "claude")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
 
+    @patch("tools.delegate_tool.delegate_task")
+    def test_model_and_reasoning_effort_forwarded(self, mock_delegate):
+        """Top-level model and reasoning_effort reach delegate_task via the helper."""
+        mock_delegate.return_value = '{"results": []}'
+        from run_agent import AIAgent
+
+        parent = _make_mock_parent(depth=0)
+        AIAgent._dispatch_delegate_task(parent, {
+            "goal": "test",
+            "model": "claude-sonnet-4-6",
+            "reasoning_effort": "medium",
+        })
+        _, kwargs = mock_delegate.call_args
+        self.assertEqual(kwargs["model"], "claude-sonnet-4-6")
+        self.assertEqual(kwargs["reasoning_effort"], "medium")
+
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
 
