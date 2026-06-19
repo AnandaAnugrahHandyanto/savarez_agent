@@ -219,7 +219,10 @@ class TestCmdUpdatePipUsesUvTool:
             _cmd_update_pip(SimpleNamespace())
 
         cmd = mock_run.call_args[0][0]
-        assert cmd[1:] == ["-m", "pip", "install", "--upgrade", "hermes-agent"]
+        assert cmd[1:] == [
+            "-m", "pip", "install", "--upgrade",
+            "--break-system-packages", "hermes-agent",
+        ]
 
     @patch("subprocess.run")
     def test_exits_nonzero_on_subprocess_failure(self, mock_run):
@@ -318,8 +321,16 @@ class TestCmdUpdatePipInstallLayouts:
              patch("hermes_cli.config.is_uv_tool_install", return_value=False):
             hm._cmd_update_pip(SimpleNamespace())
 
-        assert mock_run.call_args[0][0] == [
-            "/usr/bin/uv", "pip", "install", "--system", "--upgrade", "hermes-agent",
+        cmd = mock_run.call_args[0][0]
+        # --python must be pinned to sys.executable (#48721)
+        assert "--python" in cmd
+        assert cmd[cmd.index("--python") + 1] == hm.sys.executable
+        # --system and --break-system-packages for no-venv path
+        assert "--system" in cmd
+        assert "--break-system-packages" in cmd
+        assert cmd == [
+            "/usr/bin/uv", "pip", "install", "--python", hm.sys.executable,
+            "--system", "--upgrade", "--break-system-packages", "hermes-agent",
         ]
         assert "env" not in mock_run.call_args.kwargs
 
