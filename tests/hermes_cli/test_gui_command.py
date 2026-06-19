@@ -246,6 +246,83 @@ def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch)
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
 
 
+def test_gui_prefetches_electron_dist_after_clean_install_before_pack(tmp_path, monkeypatch):
+    """`npm ci` succeeds but leaves dist/ empty -> repopulate BEFORE the first pack.
+
+    This is the #47917 residual: `hermes update` reinstalls repo-root deps with
+    ``--workspaces=false``, so electron's dist-fetching postinstall never runs on
+    update and ``node_modules/electron/dist`` is empty even though the install
+    succeeded. Without a proactive repair, electron-builder silently falls
+    through to a fresh ``@electron/get`` download on every update. The first pack
+    must only run after dist/ has been repopulated.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    call_order: list[str] = []
+
+    def _record_prefetch(*_a, **_kw):
+        call_order.append("prefetch")
+        return True
+
+    def _record_run(cmd, *_a, **_kw):
+        if cmd[:3] == ["/usr/bin/npm", "run", "pack"]:
+            call_order.append("pack")
+            return pack_ok
+        return launch_ok
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._electron_pkg_staged_missing_dist", return_value=True), \
+         patch("hermes_cli.main._try_redownload_electron_dist", side_effect=_record_prefetch) as mock_prefetch, \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=_record_run), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    mock_prefetch.assert_called_once()
+    # The repair must happen BEFORE the first pack, not as after-failure recovery.
+    assert call_order[:2] == ["prefetch", "pack"]
+
+
+def test_gui_skips_electron_prefetch_when_dist_present(tmp_path, monkeypatch):
+    """Healthy dist/ after install -> no redundant pre-fetch, straight to pack."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._electron_pkg_staged_missing_dist", return_value=False), \
+         patch("hermes_cli.main._try_redownload_electron_dist") as mock_prefetch, \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    mock_prefetch.assert_not_called()
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
+
+
 @pytest.mark.parametrize(
     "argv",
     [

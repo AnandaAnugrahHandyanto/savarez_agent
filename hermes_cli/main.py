@@ -5461,6 +5461,25 @@ def cmd_gui(args: argparse.Namespace):
                     print("  ⚠ Dependency install failed with a missing Electron dist; "
                           "continuing to the build so electron-builder can attempt "
                           "the Electron fetch itself.")
+            elif not source_mode and _electron_pkg_staged_missing_dist(PROJECT_ROOT):
+                # `npm ci` succeeded but left ``node_modules/electron/dist`` empty.
+                # This is the steady-state cost of ``hermes update`` reinstalling
+                # repo-root deps with ``--workspaces=false`` (it does NOT reinstall
+                # the desktop workspace, so electron's postinstall — which fetches
+                # dist/ — never runs on update; #47917). electron-builder would
+                # then fall through to a fresh ``@electron/get`` download on every
+                # single update ("no local electron dist; …will fetch"), turning a
+                # near-no-op rebuild into a slow network round-trip — or a hard
+                # failure where GitHub's release host is blocked. Repopulate dist/
+                # proactively (canonical host, then mirror) so the first pack reuses
+                # the local binary instead of racing the network.
+                if _try_redownload_electron_dist(PROJECT_ROOT, env):
+                    print("  ⚠ Electron dist was missing after install (update reinstalls "
+                          "repo-root deps only); repopulated it before building.")
+                else:
+                    print("  ⚠ Electron dist missing after install and could not be "
+                          "pre-fetched; continuing so electron-builder can attempt "
+                          "the Electron fetch itself.")
 
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
