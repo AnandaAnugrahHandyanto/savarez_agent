@@ -239,6 +239,16 @@ termux-all = [
 ]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
 feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
+msteams = [
+  "botbuilder-core>=4.15,<5",
+  "botbuilder-schema>=4.15,<5",
+  "botframework-connector>=4.15,<5",
+  "msal>=1.28,<2",
+  "msal-extensions>=1.2,<2",
+  "azure-identity>=1.17,<2",
+  "msgraph-sdk>=1.4,<2",
+  "aiohttp>=3.13.3,<4",
+]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs).  Declared here so packagers (Nix, Homebrew) ship them with
@@ -291,6 +301,11 @@ all = [
   "hermes-agent[google]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
+  # MS Teams ships pure-Python wheels (botbuilder/msal/azure-identity/
+  # msgraph-sdk) that install cleanly on every platform, and the adapter's
+  # test suite imports them directly — so unlike the lazy-installed backends
+  # above, it stays eager here.
+  "hermes-agent[msteams]",
 ]
 
 [project.scripts]

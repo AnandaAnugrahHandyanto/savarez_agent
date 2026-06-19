@@ -6677,6 +6677,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             return MatrixAdapter(config)
 
+        elif platform == Platform.MSTEAMS:
+            from gateway.platforms.msteams import MsTeamsAdapter, check_msteams_requirements
+            if not check_msteams_requirements():
+                logger.warning(
+                    "MSTeams: botbuilder-core/msal/msgraph-sdk/aiohttp missing. "
+                    "Run: pip install 'hermes-agent[msteams]'"
+                )
+                return None
+            adapter = MsTeamsAdapter(config)
+            adapter.gateway_runner = self  # For cross-platform delivery
+            return adapter
+
         elif platform == Platform.API_SERVER:
             from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
             if not check_api_server_requirements():
@@ -6725,8 +6737,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return YuanbaoAdapter(config)
 
         return None
-
-
 
 
 

@@ -2142,7 +2142,6 @@ def _setup_webhooks():
     print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
     print()
     print_info("   Open config in your editor:  hermes config edit")
-    print_info("   Open config in your editor:  hermes config edit")
 
 
 def setup_gateway(config: dict):
