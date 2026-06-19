@@ -2794,6 +2794,12 @@ class GatewaySlashCommandsMixin:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    self._schedule_discord_thread_title_rename(
+                        source,
+                        session_id,
+                        sanitized,
+                        require_initial_name_match=False,
+                    )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
