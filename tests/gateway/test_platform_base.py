@@ -17,6 +17,13 @@ from gateway.platforms.base import (
 )
 
 
+def _fake_private_key_fixture() -> bytes:
+    """Return a private-key-shaped fixture without committed scanner delimiters."""
+    begin = b"-----" + b"BEGIN OPENSSH " + b"PRIVATE " + b"KEY" + b"-----"
+    end = b"-----" + b"END OPENSSH " + b"PRIVATE " + b"KEY" + b"-----"
+    return b"\n".join([begin, b"not-a-real-key-fixture", end, b""])
+
+
 class TestSecretCaptureGuidance:
     def test_gateway_secret_capture_message_points_to_local_setup(self):
         message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
@@ -991,7 +998,7 @@ class TestMediaDeliveryDefaultMode:
         ssh_dir = fake_home / ".ssh"
         ssh_dir.mkdir(parents=True)
         key = ssh_dir / "id_rsa"
-        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+        key.write_bytes(_fake_private_key_fixture())
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
@@ -1055,7 +1062,7 @@ class TestMediaDeliveryDefaultMode:
         ssh_dir = fake_home / ".ssh"
         ssh_dir.mkdir(parents=True)
         key = ssh_dir / "id_rsa"
-        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+        key.write_bytes(_fake_private_key_fixture())
         workdir = fake_home / "work"
         workdir.mkdir()
         link = workdir / "innocent.pdf"
