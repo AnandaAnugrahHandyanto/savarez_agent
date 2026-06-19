@@ -1,0 +1,12 @@
+name: mempalace_ladybug_projection
+version: 0.2.0
+description: MemPalace source-of-truth memory with mandatory read-only LadybugDB-compatible projection, Droid rebuilds, Aegis policy gate, and MCP read tools.
+kind: exclusive
+category: memory
+author: Warren L / EdgeGDE
+provides_tools:
+  - mempalace_ladybug_entity
+  - mempalace_ladybug_subgraph
+  - mempalace_ladybug_manifest
+pip_dependencies: []
+external_dependencies: []
