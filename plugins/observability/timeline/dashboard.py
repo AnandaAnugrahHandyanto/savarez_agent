@@ -122,9 +122,11 @@ def render_dashboard_html(data: dict[str, Any], *, api_url: str = "", poll_ms: i
     .lane-body {{ padding: 12px; display:flex; flex-direction:column; gap:12px; }}
     .lane-empty {{ color:var(--muted); font:12px var(--mono); padding:10px; }}
     .timeline {{ margin-top: 20px; position: relative; display:flex; flex-direction:column; gap: 12px; }}
-    .event {{ position: relative; display:grid; grid-template-columns: 92px 1fr; gap: 14px; align-items:start; }}
-    .event::before {{ content:""; position:absolute; left: 78px; top: 21px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 18px rgba(136,200,255,.65); }}
-    .etime {{ color: var(--muted); font: 11px var(--mono); padding-top: 3px; text-align:right; }}
+    .event {{ position: relative; display:grid; grid-template-columns: 154px 1fr; gap: 14px; align-items:start; }}
+    .event::before {{ content:""; position:absolute; left: 140px; top: 21px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 18px rgba(136,200,255,.65); }}
+    .etime {{ color: var(--muted); font: 11px var(--mono); padding-top: 1px; text-align:right; line-height:1.35; }}
+    .etime .abs {{ display:block; color:#d5e4db; }}
+    .etime .rel {{ display:block; color:var(--muted); }}
     .ecard {{ background: var(--panel-2); border: 1px solid var(--line); border-radius: 18px; padding: 13px 14px; }}
     .ename {{ display:flex; justify-content:space-between; gap:10px; font: 12px var(--mono); }}
     .etype {{ color: var(--blue); }} .gateway-message, .gateway-delivery {{ color: var(--green); }} .llm-request, .llm-response {{ color: var(--violet); }} .tool-call, .tool-result {{ color: var(--amber); }}
@@ -151,6 +153,7 @@ let selected = null;
 const laneOpenState = new Map();
 const $ = id => document.getElementById(id);
 const fmt = ts => ts ? new Date(ts * 1000).toLocaleString() : '';
+const fmtEvent = ts => ts ? new Date(ts * 1000).toLocaleString('ko-KR', {{year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false}}) : '';
 const ms = v => v == null ? '' : (v < 1000 ? `${{v}}ms` : `${{(v/1000).toFixed(2)}}s`);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
 const allEvents = data.runs.flatMap(r => r.events || []);
@@ -184,7 +187,9 @@ function runMetrics(run) {{
   }};
 }}
 function eventCard(e, start) {{
-  return `<div class="event"><div class="etime">+${{((e.ts || start) - start).toFixed(3)}}s</div><div class="ecard"><div class="ename"><span class="etype ${{esc(String(e.event_type||'').replaceAll('.','-'))}}">${{esc(e.event_type)}} / ${{esc(e.name || '')}}</span><span class="badge ${{esc(e.status || '')}}">${{esc(e.status || '')}}</span></div>${{e.summary ? `<div class="summary">${{esc(e.summary)}}</div>` : ''}}<details><summary>payload</summary><pre>${{esc(JSON.stringify(e.payload || {{}}, null, 2))}}</pre></details></div></div>`;
+  const eventTs = e.ts || start;
+  const relative = `+${{(eventTs - start).toFixed(3)}}s`;
+  return `<div class="event"><div class="etime"><span class="abs">${{esc(fmtEvent(eventTs))}}</span><span class="rel">${{relative}}</span></div><div class="ecard"><div class="ename"><span class="etype ${{esc(String(e.event_type||'').replaceAll('.','-'))}}">${{esc(e.event_type)}} / ${{esc(e.name || '')}}</span><span class="badge ${{esc(e.status || '')}}">${{esc(e.status || '')}}</span></div>${{e.summary ? `<div class="summary">${{esc(e.summary)}}</div>` : ''}}<details><summary>payload</summary><pre>${{esc(JSON.stringify(e.payload || {{}}, null, 2))}}</pre></details></div></div>`;
 }}
 function renderRuns() {{
   const rows = visibleRuns();
