@@ -69,6 +69,7 @@ import gateway.platforms.slack as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.slack_thread_titles import set_thread_title  # noqa: E402
 
 
 async def _pending_for_fake_task():
@@ -1049,6 +1050,85 @@ class TestSendPrivateNotice:
             mrkdwn=True,
             thread_ts="1234567890.123456",
         )
+
+
+class TestSlackThreadTitles:
+    @pytest.mark.asyncio
+    async def test_final_send_enforces_persisted_thread_title(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        store = tmp_path / "slack_thread_titles.json"
+        monkeypatch.setattr("gateway.slack_thread_titles.store_path", lambda: store)
+        set_thread_title("C123", "1234567890.123456", "Slack Preview Thread Title Policy")
+
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+
+        result = await adapter.send(
+            "C123",
+            "Implemented.",
+            metadata={"thread_id": "1234567890.123456", "notify": True},
+        )
+
+        assert result.success
+        text = adapter._app.client.chat_postMessage.call_args.kwargs["text"]
+        assert text == "Implemented.\n\n*Slack Preview Thread Title Policy:*"
+
+    @pytest.mark.asyncio
+    async def test_inbound_message_injects_thread_title_prompt(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        store = tmp_path / "slack_thread_titles.json"
+        monkeypatch.setattr("gateway.slack_thread_titles.store_path", lambda: store)
+        adapter._fetch_thread_context = AsyncMock(return_value="")
+        adapter._fetch_thread_parent_text = AsyncMock(
+            return_value="Slack quick preview title consistency request"
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Brian")
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "channel": "D123",
+                "channel_type": "im",
+                "user": "U123",
+                "text": "how do you think this approach could be improved?",
+                "ts": "2222222222.000002",
+                "thread_ts": "1111111111.000001",
+            }
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id == "1111111111.000001"
+        assert "[Slack thread title]" in event.channel_prompt
+        assert "**Slack Quick Preview Title Consistency Request:**" in event.channel_prompt
+        assert "final paragraph" in event.channel_prompt
+
+    @pytest.mark.asyncio
+    async def test_inbound_retitle_updates_persisted_thread_title(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        store = tmp_path / "slack_thread_titles.json"
+        monkeypatch.setattr("gateway.slack_thread_titles.store_path", lambda: store)
+        set_thread_title("D123", "1111111111.000001", "Old Preview Title Policy")
+        adapter._fetch_thread_context = AsyncMock(return_value="")
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="Original parent")
+        adapter._resolve_user_name = AsyncMock(return_value="Brian")
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "channel": "D123",
+                "channel_type": "im",
+                "user": "U123",
+                "text": "retitle this thread: Gateway Enforced Slack Thread Titles",
+                "ts": "2222222222.000003",
+                "thread_ts": "1111111111.000001",
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert "**Gateway Enforced Slack Thread Titles:**" in event.channel_prompt
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,14 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_video_from_bytes,
 )
+from gateway.slack_thread_titles import (
+    apply_title_prefix,
+    build_thread_title_prompt,
+    extract_retitle_request,
+    get_or_create_thread_title,
+    get_thread_title,
+    set_thread_title,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1151,13 +1159,20 @@ class SlackAdapter(BasePlatformAdapter):
                     content,
                 )
 
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            content = self._maybe_prefix_thread_title(
+                chat_id,
+                thread_ts,
+                content,
+                metadata,
+            )
+
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
 
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
 
             # reply_broadcast: also post thread replies to the main channel.
@@ -1248,11 +1263,20 @@ class SlackAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Slack message."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
+            thread_ts = self._resolve_thread_ts(None, metadata)
+            content = self._maybe_prefix_thread_title(
+                chat_id,
+                thread_ts,
+                content,
+                metadata,
+                final=finalize,
+            )
             formatted = self.format_message(content)
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
@@ -1330,6 +1354,39 @@ class SlackAdapter(BasePlatformAdapter):
         if raw is None:
             return True  # default: each DM thread is its own session
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _thread_titles_enabled(self) -> bool:
+        """Whether Slack thread-title prompting/enforcement is enabled."""
+        raw = self.config.extra.get("thread_titles")
+        if raw is None:
+            raw = self.config.extra.get("thread_titles_enabled")
+        if raw is None:
+            return True
+        if isinstance(raw, dict):
+            raw = raw.get("enabled", True)
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _maybe_prefix_thread_title(
+        self,
+        chat_id: str,
+        thread_ts: Optional[str],
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        final: bool = False,
+    ) -> str:
+        """Append the persisted Slack thread title to final user-visible text."""
+        if not self._thread_titles_enabled() or not thread_ts:
+            return content
+        md = metadata or {}
+        if md.get("suppress_slack_thread_title"):
+            return content
+        if not final and not md.get("notify"):
+            return content
+        title = get_thread_title(chat_id, thread_ts)
+        if not title:
+            return content
+        return apply_title_prefix(content, title)
 
     def _resolve_thread_ts(
         self,
@@ -2831,6 +2888,27 @@ class SlackAdapter(BasePlatformAdapter):
                 )
             except Exception:  # pragma: no cover - defensive
                 reply_to_text = None
+
+        if self._thread_titles_enabled() and thread_ts:
+            try:
+                requested_title = extract_retitle_request(text)
+                if requested_title:
+                    thread_title = set_thread_title(channel_id, thread_ts, requested_title)
+                else:
+                    seed_text = reply_to_text or text or original_text
+                    thread_title = get_or_create_thread_title(
+                        channel_id,
+                        thread_ts,
+                        seed_text,
+                    )
+                title_prompt = build_thread_title_prompt(thread_title)
+                _channel_prompt = (
+                    f"{_channel_prompt}\n\n{title_prompt}"
+                    if _channel_prompt
+                    else title_prompt
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("[Slack] thread-title prompt setup failed: %s", exc)
 
         msg_event = MessageEvent(
             text=text,

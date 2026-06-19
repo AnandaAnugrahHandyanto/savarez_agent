@@ -340,6 +340,13 @@ platforms:
       # (Slack's "Also send to channel" feature).
       # Only the first chunk of the first reply is broadcast.
       reply_broadcast: false
+
+      # Append each final thread reply with a stable bold title so Slack
+      # conversation previews remain scannable. The title is persisted per
+      # channel_id + thread_ts and shared across Hermes profiles on the same
+      # install. Users can rename it with:
+      # retitle this thread: New Slack Thread Title
+      thread_titles: true
 ```
 
 | Key | Default | Description |
@@ -347,6 +354,30 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
+| `platforms.slack.extra.thread_titles` | `true` | Stores a stable 5-10 word title per Slack thread, injects it into the agent prompt, and enforces it on final replies. Set `false` to disable. |
+
+### Slack thread preview titles
+
+When enabled, Hermes stores a short title for each Slack thread under
+`<Hermes root>/gateway/slack_thread_titles.json`. The key is
+`channel_id + thread_ts`, so all Slack-facing profiles on the same Hermes
+installation reuse the same title for the same Slack thread.
+
+Hermes uses that title in two places:
+
+1. It injects an ephemeral instruction telling the agent to end every
+   user-visible reply with exactly `**Title:**` as the final paragraph.
+2. It enforces the final title paragraph at Slack delivery time for final replies, including
+   streamed responses. Slack receives native mrkdwn, so `**Title:**` renders as
+   `*Title:*` in the API payload.
+
+To rename a thread title, reply in the thread:
+
+```text
+retitle this thread: Longhorn Volume Expansion Runbook
+```
+
+The new title is reused until explicitly retitled again.
 
 ### Session Isolation
 
