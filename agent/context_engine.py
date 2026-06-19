@@ -89,6 +89,7 @@ class ContextEngine(ABC):
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
         focus_topic: str = None,
+        deep: bool = False,
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -103,6 +104,8 @@ class ContextEngine(ABC):
                 Engines that support guided compression should prioritise
                 preserving information related to this topic.  Engines that
                 don't support it may simply ignore this argument.
+            deep: Optional archive-style mode for explicit user actions that
+                should keep a much smaller live tail than normal compression.
         """
 
     # -- Optional: pre-flight check ----------------------------------------
@@ -126,7 +129,9 @@ class ContextEngine(ABC):
 
     # -- Optional: manual /compress preflight ------------------------------
 
-    def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
+    def has_content_to_compress(
+        self, messages: List[Dict[str, Any]], *, deep: bool = False
+    ) -> bool:
         """Quick check: is there anything in ``messages`` that can be compacted?
 
         Used by the gateway ``/compress`` command as a preflight guard —

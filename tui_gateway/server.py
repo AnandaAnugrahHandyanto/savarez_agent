@@ -2317,6 +2317,7 @@ def _compress_session_history(
     approx_tokens: int | None = None,
     before_messages: list | None = None,
     history_version: int | None = None,
+    deep: bool = False,
 ) -> tuple[int, dict]:
     from agent.model_metadata import estimate_request_tokens_rough
 
@@ -2351,6 +2352,7 @@ def _compress_session_history(
         None,
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
+        deep=deep,
     )
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
@@ -5546,6 +5548,7 @@ def _(rid, params: dict) -> dict:
         )
     sid = params.get("session_id", "")
     focus_topic = str(params.get("focus_topic", "") or "").strip()
+    deep = bool(params.get("deep", False))
     try:
         from agent.manual_compression_feedback import summarize_manual_compression
         from agent.model_metadata import estimate_request_tokens_rough
@@ -5566,11 +5569,12 @@ def _(rid, params: dict) -> dict:
         )
 
         if before_count >= 4:
+            mode_prefix = "archiving" if deep else "compressing"
             focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
             _status_update(
                 sid,
                 "compressing",
-                f"⠋ compressing {before_count} messages "
+                f"⠋ {mode_prefix} {before_count} messages "
                 f"(~{before_tokens:,} tok){focus_suffix}…",
             )
 
@@ -5581,6 +5585,7 @@ def _(rid, params: dict) -> dict:
                 approx_tokens=before_tokens,
                 before_messages=before_messages,
                 history_version=history_version,
+                deep=deep,
             )
             with session["history_lock"]:
                 messages = list(session.get("history", []))

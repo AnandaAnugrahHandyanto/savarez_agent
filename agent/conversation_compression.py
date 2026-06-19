@@ -287,6 +287,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    deep: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -303,6 +304,9 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        deep: If True, run archive-style compression with a much smaller
+            protected tail.  This is only for explicit user actions such as
+            ``/archive`` or ``/compress --deep``.
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
@@ -441,10 +445,10 @@ def compress_context(
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force, deep=deep)
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
+        # focus_topic / force / deep — fall back to calling without them.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
     except BaseException:
         # ANY exception during compress() must release the lock so the
@@ -500,7 +504,7 @@ def compress_context(
 
     todo_snapshot = agent._todo_store.format_for_injection()
     if todo_snapshot:
-        compressed.append({"role": "user", "content": todo_snapshot})
+        compressed.append({"role": "assistant", "content": todo_snapshot})
 
     agent._invalidate_system_prompt()
     new_system_prompt = agent._build_system_prompt(system_message)

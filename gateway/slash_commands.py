@@ -2491,6 +2491,9 @@ class GatewaySlashCommandsMixin:
         summariser to preserve information related to *focus* while being
         more aggressive about discarding everything else.
 
+        ``/archive`` and ``/compress --deep`` run archive-style compression:
+        keep only a small live tail and summarize almost everything else.
+
         Also accepts the boundary-aware form ``/compress here [N]``:
         summarize everything except the most recent ``N`` exchanges
         (default 2), kept verbatim. Inspired by Claude Code's Rewind
@@ -2512,6 +2515,13 @@ class GatewaySlashCommandsMixin:
             split_history_for_partial_compress,
         )
         _raw_args = (event.get_command_args() or "").strip()
+        _command = (event.get_command() or "").strip().lower()
+        deep = _command == "archive"
+        if _raw_args:
+            _arg_parts = _raw_args.split(None, 1)
+            if _arg_parts and _arg_parts[0].lower() in {"--deep", "deep", "--archive", "archive"}:
+                deep = True
+                _raw_args = _arg_parts[1].strip() if len(_arg_parts) > 1 else ""
         partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
 
         try:
@@ -2569,13 +2579,17 @@ class GatewaySlashCommandsMixin:
                 )
 
                 compressor = tmp_agent.context_compressor
-                if not compressor.has_content_to_compress(head):
+                try:
+                    has_content = compressor.has_content_to_compress(head, deep=deep)
+                except TypeError:
+                    has_content = compressor.has_content_to_compress(head)
+                if not has_content:
                     return t("gateway.compress.nothing_to_do")
 
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
+                    lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True, deep=deep)
                 )
 
                 # Re-append the verbatim tail after the compressed head,
@@ -2643,7 +2657,8 @@ class GatewaySlashCommandsMixin:
                 # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
                 self._cleanup_agent_resources(tmp_agent)
-            lines = [f"🗜️ {summary['headline']}"]
+            prefix = "Archive" if deep else "Compression"
+            lines = [f"🗜️ {prefix}: {summary['headline']}"]
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))
             lines.append(summary["token_line"])

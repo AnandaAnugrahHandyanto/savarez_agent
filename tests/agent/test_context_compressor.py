@@ -192,6 +192,118 @@ class TestCompress:
         assert msgs[-2]["content"] in result[-2]["content"]
 
 
+class TestTurnAwareTail:
+    def _compressor(self, **kwargs):
+        defaults = {
+            "model": "test/model",
+            "threshold_percent": 0.85,
+            "protect_first_n": 0,
+            "protect_last_n": 8,
+            "quiet_mode": True,
+        }
+        defaults.update(kwargs)
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(**defaults)
+
+    def test_regular_tail_preserves_last_two_user_turns(self):
+        c = self._compressor(protect_last_n=8)
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "old user 1"},
+            {"role": "assistant", "content": "old assistant 1"},
+            {"role": "user", "content": "old user 2"},
+            {"role": "assistant", "content": "old assistant 2"},
+            {"role": "user", "content": "recent user A"},
+            {"role": "assistant", "content": "recent assistant A"},
+            {"role": "user", "content": "recent user B"},
+            {"role": "assistant", "content": "recent assistant B"},
+        ]
+
+        head_end = c._align_boundary_forward(messages, c._protect_head_size(messages))
+        cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=20,
+            protect_last_n=8,
+            max_tail_messages=8,
+            tail_user_turns=2,
+        )
+
+        assert cut <= 5
+        tail_contents = [m.get("content") for m in messages[cut:]]
+        assert "recent user A" in tail_contents
+        assert "recent assistant A" in tail_contents
+        assert "recent user B" in tail_contents
+        assert "recent assistant B" in tail_contents
+
+    def test_hard_message_cap_still_limits_turn_tail(self):
+        c = self._compressor(protect_last_n=5)
+        messages = [{"role": "system", "content": "System prompt"}]
+        for i in range(1, 7):
+            messages.extend([
+                {"role": "user", "content": f"user {i}"},
+                {"role": "assistant", "content": f"assistant {i}"},
+            ])
+
+        head_end = c._align_boundary_forward(messages, c._protect_head_size(messages))
+        cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=100000,
+            protect_last_n=5,
+            max_tail_messages=5,
+            tail_user_turns=2,
+        )
+
+        assert cut >= len(messages) - 5
+        assert len(messages) - cut <= 5
+
+    def test_turn_tail_does_not_split_tool_call_result_pair(self):
+        c = self._compressor(protect_last_n=8)
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "old user"},
+            {"role": "assistant", "content": "old assistant"},
+            {"role": "user", "content": "recent user A"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_recent",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"cmd":"npm test"}'},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_recent",
+                "content": "test output",
+            },
+            {"role": "assistant", "content": "recent assistant A"},
+            {"role": "user", "content": "recent user B"},
+            {"role": "assistant", "content": "recent assistant B"},
+        ]
+
+        head_end = c._align_boundary_forward(messages, c._protect_head_size(messages))
+        cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=20,
+            protect_last_n=8,
+            max_tail_messages=8,
+            tail_user_turns=2,
+        )
+
+        assert cut == 3
+        tail = messages[cut:]
+        assert any(m.get("tool_call_id") == "call_recent" for m in tail)
+        assert any(
+            m.get("role") == "assistant"
+            and any(tc.get("id") == "call_recent" for tc in m.get("tool_calls") or [])
+            for m in tail
+        )
+
+
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""
 
@@ -943,7 +1055,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
 
     def test_summary_failure_fallback_is_bounded(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=4)
 
         long_text = "important detail " * 2000
         msgs = [
@@ -961,7 +1073,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
             result = c.compress(msgs)
 
         fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
-        assert len(fallback) <= 8300
+        assert len(fallback) <= 45000
         assert "deterministic fallback" in fallback
         assert "important detail" in fallback
 
@@ -1226,7 +1338,7 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=4)
 
         # head_last=assistant, tail_first=assistant (same shape as the
         # existing consecutive-user test) → role resolves to "user".
@@ -1265,7 +1377,7 @@ class TestCompressWithClient:
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=4)
 
         # head_last=user → summary_role="assistant" (same setup as
         # test_summary_role_avoids_consecutive_user_when_head_ends_with_user).
@@ -1483,7 +1595,7 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=4)
 
         # Head: [system, user]        → last head = user
         # Tail: [assistant, user, assistant] → first tail = assistant
@@ -1784,6 +1896,51 @@ class TestTokenBudgetTailProtection:
         assert tail_size < 20, f"Tail {tail_size} messages — large tool outputs are blocking compaction"
         # But at least 3 (hard minimum)
         assert tail_size >= 3
+
+    def test_deep_mode_uses_small_archive_tail_on_long_context_model(self):
+        """Archive mode should not protect a huge 1M-model tail.
+
+        Normal compression may preserve roughly the configured 50K-token tail.
+        Deep compression keeps a much smaller absolute live tail so recovered
+        or bloated sessions actually turn into a compact handoff.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                summary_target_ratio=0.10,
+                protect_first_n=2,
+                protect_last_n=20,
+                quiet_mode=True,
+            )
+
+        messages = []
+        for i in range(120):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({"role": role, "content": f"message {i} " + ("x" * 2000)})
+
+        head_end = c._protect_head_size(messages)
+        normal_cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=c._tail_token_budget_for_mode(deep=False),
+            protect_last_n=c._protect_last_n_for_mode(deep=False),
+        )
+        deep_cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=c._tail_token_budget_for_mode(deep=True),
+            protect_last_n=c._protect_last_n_for_mode(deep=True),
+            max_tail_messages=c._max_tail_messages_for_mode(deep=True),
+        )
+
+        normal_tail = len(messages) - normal_cut
+        deep_tail = len(messages) - deep_cut
+
+        assert normal_tail > 60
+        assert deep_tail < normal_tail // 2
+        assert deep_tail <= 8
+        assert deep_tail >= 3
 
     def test_min_tail_always_3_messages(self, budget_compressor):
         """Even with a tiny token budget, at least 3 messages are protected."""

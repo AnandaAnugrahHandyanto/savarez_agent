@@ -1,8 +1,10 @@
 import { cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { getSessionMessages } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
 import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
@@ -11,6 +13,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
+  getSessionMessages: vi.fn(async () => ({ messages: [], session_id: null })),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
@@ -52,25 +55,37 @@ interface HarnessHandle {
   ) => Promise<boolean>
 }
 
-function Harness({
-  busyRef,
-  onReady,
-  onSeedState,
-  refreshSessions,
-  requestGateway,
-  resumeStoredSession,
-  seedMessages,
-  storedSessionId
-}: {
+interface HarnessProps {
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
+  onUpdateSessionState?: (sessionId: string, storedSessionId?: null | string) => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
   storedSessionId?: null | string
-}) {
+}
+
+function Harness(props: HarnessProps) {
+  return (
+    <MemoryRouter>
+      <HarnessInner {...props} />
+    </MemoryRouter>
+  )
+}
+
+function HarnessInner({
+  busyRef,
+  onReady,
+  onSeedState,
+  onUpdateSessionState,
+  refreshSessions,
+  requestGateway,
+  resumeStoredSession,
+  seedMessages,
+  storedSessionId
+}: HarnessProps) {
   const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
   const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
     current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
@@ -96,7 +111,8 @@ function Harness({
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
-    updateSessionState: (_sessionId, updater) => {
+    updateSessionState: (sessionId, updater, storedSessionId) => {
+      onUpdateSessionState?.(sessionId, storedSessionId)
       // Seed with interrupted:true so we can prove a fresh submit clears it.
       const next = updater(stateRef.current) as unknown as Record<string, unknown>
       stateRef.current = next as never
@@ -205,6 +221,60 @@ describe('usePromptActions /title', () => {
   })
 })
 
+describe('usePromptActions /compress', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('renders compression stats on the rotated session after hydration', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: '[CONTEXT COMPACTION]', role: 'assistant' }],
+      session_id: 'rotated-sid'
+    })
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'session.compress'
+        ? {
+            after_messages: 14,
+            before_messages: 263,
+            new_session_id: 'rotated-sid',
+            summary: {
+              headline: 'Compressed: 263 → 14 messages',
+              noop: false,
+              token_line: 'Approx request size: ~168,188 → ~23,361 tokens'
+            }
+          }
+        : {}) as never
+    )
+    const updates: Array<{ sessionId: string; storedSessionId?: null | string }> = []
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateSessionState={(sessionId, storedSessionId) => updates.push({ sessionId, storedSessionId })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/compress')
+
+    expect(requestGateway).toHaveBeenCalledWith('session.compress', { session_id: RUNTIME_SESSION_ID })
+    expect(getSessionMessages).toHaveBeenCalledWith('rotated-sid')
+    expect(updates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sessionId: RUNTIME_SESSION_ID }),
+        expect.objectContaining({ sessionId: 'rotated-sid', storedSessionId: 'rotated-sid' })
+      ])
+    )
+  })
+})
+
 describe('usePromptActions desktop slash pickers', () => {
   beforeEach(() => {
     setSessions(() => [sessionInfo({ id: '20260610_120000_abcdef', title: 'Loaded session' })])
@@ -270,6 +340,7 @@ describe('usePromptActions desktop slash pickers', () => {
 describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 

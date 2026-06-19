@@ -176,6 +176,10 @@ _AUTO_FOCUS_MAX_CHARS = 700
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+_REGULAR_COMPRESS_TAIL_USER_TURNS = 2
+_DEEP_COMPRESS_TAIL_USER_TURNS = 3
+_DEEP_COMPRESS_TAIL_TOKEN_BUDGET = 12_000
+_DEEP_COMPRESS_TAIL_MESSAGES = 8
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -818,10 +822,27 @@ class ContextCompressor(ContextEngine):
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        Also includes a cooldown: skip compression if one just completed
+        within the last 30 seconds to prevent double-fire (first summary
+        injected, context still above threshold, second summary created).
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        # Cooldown: don't re-compress within 30s of the last compression
+        # completing. Prevents the "two summaries back-to-back" bug where
+        # the first summary's injection is still above threshold.
+        import time
+        if hasattr(self, '_last_compression_finished_at'):
+            elapsed = time.monotonic() - self._last_compression_finished_at
+            if elapsed < 30:
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression skipped — last compression was %.1fs ago (cooldown: 30s)",
+                        elapsed,
+                    )
+                return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
@@ -841,6 +862,7 @@ class ContextCompressor(ContextEngine):
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
+        max_tail_count: int | None = None,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
 
@@ -912,6 +934,8 @@ class ContextCompressor(ContextEngine):
             # silently get truncated back down to `min_protect`.
             budget_protect_count = len(result) - boundary
             protected_count = max(budget_protect_count, min_protect)
+            if max_tail_count is not None:
+                protected_count = min(protected_count, max(max_tail_count, min_protect))
             prune_boundary = len(result) - protected_count
         else:
             prune_boundary = len(result) - protect_tail_count
@@ -2012,9 +2036,50 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Safety: never go back into the head region.
         return max(last_user_idx, head_end + 1)
 
+    def _message_token_estimate_for_tail(self, msg: Dict[str, Any]) -> int:
+        """Cheap per-message token estimate used only for tail budgeting."""
+        raw_content = msg.get("content") or ""
+        msg_tokens = _content_length_for_budget(raw_content) // _CHARS_PER_TOKEN + 10
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                args = tc.get("function", {}).get("arguments", "")
+                msg_tokens += len(args) // _CHARS_PER_TOKEN
+        return msg_tokens
+
+    def _find_tail_cut_by_recent_user_turns(
+        self,
+        messages: List[Dict[str, Any]],
+        head_end: int,
+        *,
+        turn_count: int,
+    ) -> int | None:
+        """Return the start index for the last N user turns.
+
+        A turn starts at a real user message and includes assistant/tool
+        aftermath until the next user message. This mirrors the stronger
+        harness pattern used by OpenCode-style compaction: preserve recent
+        conversational turns, not an arbitrary count of individual messages.
+        """
+        if turn_count <= 0:
+            return None
+        found = 0
+        for i in range(len(messages) - 1, head_end - 1, -1):
+            msg = messages[i]
+            if msg.get("role") != "user":
+                continue
+            if self._is_context_summary_content(msg.get("content")):
+                continue
+            found += 1
+            if found >= turn_count:
+                return max(i, head_end + 1)
+        return None
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
+        protect_last_n: int | None = None,
+        max_tail_messages: int | None = None,
+        tail_user_turns: int | None = None,
     ) -> int:
         """Walk backward from the end of messages, accumulating tokens until
         the budget is reached. Returns the index where the tail starts.
@@ -2023,24 +2088,30 @@ This compaction should PRIORITISE preserving all information related to the focu
         derived from ``summary_target_ratio * context_length``, so it
         scales automatically with the model's context window.
 
-        Token budget is the primary criterion.  A bounded message-count floor
-        keeps a short run of recent turns verbatim even when the budget is
-        exhausted, but the budget is allowed to exceed by up to 1.5x to avoid
-        cutting inside an oversized message (tool output, file read, etc.). If
-        even that floor exceeds 1.5x the budget, the cut is placed right after
-        the head so compression still runs.
+        Token budget is the primary criterion.  A bounded recent-user-turn
+        floor keeps the active tail semantically useful even when individual
+        message counts are misleading, and a small legacy message-count floor
+        preserves compatibility for unusual transcripts.  The budget is
+        allowed to exceed by up to 1.5x to avoid cutting inside an oversized
+        message (tool output, file read, etc.). If even that floor exceeds
+        1.5x the budget, the cut is placed right after the head so compression
+        still runs.
 
         Never cuts inside a tool_call/result group.  Always ensures the most
         recent user message is in the tail (see ``_ensure_last_user_message_in_tail``).
         """
         if token_budget is None:
             token_budget = self.tail_token_budget
+        if protect_last_n is None:
+            protect_last_n = self.protect_last_n
+        if tail_user_turns is None:
+            tail_user_turns = _REGULAR_COMPRESS_TAIL_USER_TURNS
         n = len(messages)
         # Hard minimum: always keep a bounded recent-message floor in the tail.
         # ``protect_last_n`` remains a minimum up to the cap; the cap avoids
         # preserving a whole run of bulky tool outputs on every compaction.
         available_tail = max(0, n - head_end - 1)
-        min_tail_floor = max(3, min(self.protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
+        min_tail_floor = max(3, min(protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
         # Leave at least two non-head messages available to summarize on short
         # transcripts; otherwise compression can replace a tiny middle with a
         # summary and save no messages at all.
@@ -2055,14 +2126,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            raw_content = msg.get("content") or ""
-            content_len = _content_length_for_budget(raw_content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+            msg_tokens = self._message_token_estimate_for_tail(msg)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -2088,13 +2152,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             raw_accumulated = 0
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
-                raw_content = raw_msg.get("content") or ""
-                raw_len = _content_length_for_budget(raw_content)
-                raw_tok = raw_len // _CHARS_PER_TOKEN + 10
-                for tc in raw_msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        raw_tok += len(args) // _CHARS_PER_TOKEN
+                raw_tok = self._message_token_estimate_for_tail(raw_msg)
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
                     break
@@ -2108,10 +2166,22 @@ This compaction should PRIORITISE preserving all information related to the focu
         fallback_cut = n - min_tail
         cut_idx = min(cut_idx, fallback_cut)
 
+        turn_cut = self._find_tail_cut_by_recent_user_turns(
+            messages,
+            head_end,
+            turn_count=tail_user_turns,
+        )
+        if turn_cut is not None:
+            cut_idx = min(cut_idx, turn_cut)
+
         # If the token budget would protect everything (small conversations),
         # force a cut after the head so compression can still remove middle turns.
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
+
+        if max_tail_messages is not None:
+            hard_tail_cut = max(head_end + 1, n - max_tail_messages)
+            cut_idx = max(cut_idx, hard_tail_cut)
 
         # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
@@ -2133,7 +2203,7 @@ This compaction should PRIORITISE preserving all information related to the focu
     # ContextEngine: manual /compress preflight
     # ------------------------------------------------------------------
 
-    def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
+    def has_content_to_compress(self, messages: List[Dict[str, Any]], *, deep: bool = False) -> bool:
         """Return True if there is a non-empty middle region to compact.
 
         Overrides the ABC default so the gateway ``/compress`` guard can
@@ -2141,14 +2211,64 @@ This compaction should PRIORITISE preserving all information related to the focu
         the protected head/tail.
         """
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_end = self._find_tail_cut_for_mode(messages, compress_start, deep=deep)
         return compress_start < compress_end
+
+    def _tail_token_budget_for_mode(self, *, deep: bool = False) -> int:
+        if not deep:
+            return self.tail_token_budget
+        return max(1, min(self.tail_token_budget, _DEEP_COMPRESS_TAIL_TOKEN_BUDGET))
+
+    def _protect_last_n_for_mode(self, *, deep: bool = False) -> int:
+        if not deep:
+            return self.protect_last_n
+        return max(3, min(self.protect_last_n, _DEEP_COMPRESS_TAIL_MESSAGES))
+
+    def _max_tail_messages_for_mode(self, *, deep: bool = False) -> int | None:
+        if not deep:
+            return self.protect_last_n
+        return self._protect_last_n_for_mode(deep=True)
+
+    def _tail_user_turns_for_mode(self, *, deep: bool = False) -> int:
+        if not deep:
+            return _REGULAR_COMPRESS_TAIL_USER_TURNS
+        return _DEEP_COMPRESS_TAIL_USER_TURNS
+
+    def _find_tail_cut_for_mode(
+        self,
+        messages: List[Dict[str, Any]],
+        compress_start: int,
+        *,
+        deep: bool = False,
+        token_budget: int | None = None,
+        protect_last_n: int | None = None,
+    ) -> int:
+        """Find the mode-specific tail cut while preserving old test seams."""
+        try:
+            return self._find_tail_cut_by_tokens(
+                messages,
+                compress_start,
+                token_budget=(
+                    self._tail_token_budget_for_mode(deep=deep)
+                    if token_budget is None else token_budget
+                ),
+                protect_last_n=(
+                    self._protect_last_n_for_mode(deep=deep)
+                    if protect_last_n is None else protect_last_n
+                ),
+                max_tail_messages=self._max_tail_messages_for_mode(deep=deep),
+                tail_user_turns=self._tail_user_turns_for_mode(deep=deep),
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            return self._find_tail_cut_by_tokens(messages, compress_start)
 
     # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False, deep: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -2169,6 +2289,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             force: If True, clear any active summary-failure cooldown before
                 running so a manual ``/compress`` can retry immediately after
                 an auto-compression abort.  Auto-compress callers pass False.
+            deep: If True, use an archive-style boundary with a small absolute
+                live-tail cap.  This is for explicit user actions such as
+                ``/archive`` or ``/compress --deep``; automatic compression
+                remains conservative.
         """
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
@@ -2198,9 +2322,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
+        protect_last_n = self._protect_last_n_for_mode(deep=deep)
+        tail_token_budget = self._tail_token_budget_for_mode(deep=deep)
         messages, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n,
-            protect_tail_tokens=self.tail_token_budget,
+            messages, protect_tail_count=protect_last_n,
+            protect_tail_tokens=tail_token_budget,
+            max_tail_count=self._max_tail_messages_for_mode(deep=deep),
         )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
@@ -2210,7 +2337,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_end = self._find_tail_cut_for_mode(
+            messages,
+            compress_start,
+            deep=deep,
+            token_budget=tail_token_budget,
+            protect_last_n=protect_last_n,
+        )
 
         if compress_start >= compress_end:
             # No compressable window — the entire transcript fits within
@@ -2270,12 +2403,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
             tail_msgs = n_messages - compress_end
             logger.info(
-                "Summarizing turns %d-%d (%d turns), protecting %d head + %d tail messages",
+                "Summarizing turns %d-%d (%d turns), protecting %d head + %d tail messages%s",
                 compress_start + 1,
                 compress_end,
                 len(turns_to_summarize),
                 compress_start,
                 tail_msgs,
+                " (deep mode)" if deep else "",
             )
 
         # Phase 3: Generate structured summary
@@ -2406,8 +2540,10 @@ This compaction should PRIORITISE preserving all information related to the focu
         saved_estimate = display_tokens - new_estimate
 
         # Anti-thrashing: track compression effectiveness
+        import time
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
+        self._last_compression_finished_at = time.monotonic()
         if savings_pct < 10:
             self._ineffective_compression_count += 1
         else:

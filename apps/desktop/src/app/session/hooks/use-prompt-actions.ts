@@ -1,11 +1,14 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router'
 
-import { getProfiles, transcribeAudio } from '@/hermes'
+import { sessionRoute } from '../../routes'
+
+import { getProfiles, getSessionMessages, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
-import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { branchGroupForUser, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import {
   optimisticAttachmentRef,
   parseCommandDispatch,
@@ -49,6 +52,7 @@ import {
   setBusy,
   setMessages,
   setModelPickerOpen,
+  setSelectedStoredSessionId,
   setSessionPickerOpen,
   setSessions,
   setYoloActive
@@ -64,6 +68,7 @@ import type {
   HandoffRequestResponse,
   HandoffStateResponse,
   ImageAttachResponse,
+  SessionCompressResponse,
   SessionSteerResponse,
   SessionTitleResponse,
   SlashExecResponse
@@ -396,6 +401,7 @@ export function usePromptActions({
 }: PromptActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+  const navigate = useNavigate()
 
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
@@ -923,8 +929,27 @@ export function usePromptActions({
           const body = result?.output || `/${name}: no output`
           renderSlashOutput(result?.warning ? `warning: ${result.warning}\n${body}` : body)
 
+          // After /compress, if the session was rotated, refresh the
+          // sidebar session list BEFORE navigating so the new session
+          // appears immediately when the route changes.
+          const newSessionId = (result as Record<string, unknown>)?.new_session_id
+          if (typeof newSessionId === 'string' && newSessionId) {
+            await refreshSessions().catch(() => undefined)
+            navigate(sessionRoute(newSessionId))
+          }
+
           return
-        } catch {
+        } catch (slashErr) {
+          // Don't fall through to command.dispatch for commands that
+          // are exclusively handled by slash.exec — compress can take
+          // 30+ seconds and the RPC timeout triggers this catch, but
+          // the server is still processing. Falling through sends a
+          // second request that races with the first.
+          if (name === 'compress') {
+            const msg = slashErr instanceof Error ? slashErr.message : String(slashErr)
+            renderSlashOutput(`error: ${msg}`)
+            return
+          }
           // Fall back to command.dispatch for skill/send/alias directives.
         }
 
@@ -986,6 +1011,109 @@ export function usePromptActions({
         },
         branch: async () => {
           await branchCurrentSession()
+        },
+        // /compress calls session.compress RPC directly — same path the TUI
+        // uses. Bypasses slash.exec (which times out at 45s) and command.dispatch
+        // (which doesn't know about compress). After compression, re-fetches
+        // messages from the REST API to update the transcript.
+        compress: async ({ arg, command, recordInput, sessionHint }) => {
+          const sid = sessionHint || activeSessionIdRef.current
+          const commandName = command.split(/\s+/, 1)[0]?.toLowerCase() ?? command.toLowerCase()
+          let focusArg = arg?.trim() ?? ''
+          let deep = commandName === '/archive'
+
+          if (focusArg) {
+            const parts = focusArg.split(/\s+/, 2)
+            const first = parts[0]?.toLowerCase()
+
+            if (first === '--deep' || first === 'deep' || first === '--archive' || first === 'archive') {
+              deep = true
+              focusArg = focusArg.slice(parts[0].length).trim()
+            }
+          }
+
+          if (!sid) {
+            notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+
+            return
+          }
+
+          const render = (sessionId: string, text: string) =>
+            appendSessionTextMessage(sessionId, 'system', recordInput ? slashStatusText(command, text) : text)
+
+          try {
+            render(sid, deep ? `archiving…` : `compressing…`)
+
+            const result = await requestGateway<SessionCompressResponse>('session.compress', {
+              session_id: sid,
+              ...(focusArg ? { focus_topic: focusArg } : {}),
+              ...(deep ? { deep: true } : {})
+            })
+            let compressedSessionId =
+              typeof result.new_session_id === 'string' && result.new_session_id ? result.new_session_id : sid
+            let statsSessionId = compressedSessionId
+
+            // Re-fetch messages from the REST API to get the compressed transcript.
+            // The gateway updates state.db after compression, so the REST API has
+            // the updated messages.
+            try {
+              const { messages: freshMessages, session_id: resolvedSessionId } = await getSessionMessages(compressedSessionId)
+              const storedSessionId = resolvedSessionId || compressedSessionId
+              const chatMessages = toChatMessages(freshMessages)
+
+              if (storedSessionId && storedSessionId !== selectedStoredSessionIdRef.current) {
+                setSelectedStoredSessionId(storedSessionId)
+                selectedStoredSessionIdRef.current = storedSessionId
+                navigate(sessionRoute(storedSessionId))
+              }
+              compressedSessionId = storedSessionId
+              statsSessionId = storedSessionId
+
+              updateSessionState(sid, state => ({
+                ...state,
+                messages: chatMessages,
+                storedSessionId
+              }), storedSessionId)
+            } catch {
+              // Non-fatal: summary still renders below
+            }
+
+            if (result.summary?.headline) {
+              const prefix = result.summary.noop ? '' : '✓ '
+
+              render(statsSessionId, `${prefix}${deep ? 'Archived: ' : ''}${result.summary.headline}`)
+
+              if (result.summary.token_line) {
+                render(statsSessionId, `  ${result.summary.token_line}`)
+              }
+
+              if (deep) {
+                render(statsSessionId, `  Live model context: ${result.after_messages ?? 'unknown'} messages`)
+              }
+
+              if (result.summary.note) {
+                render(statsSessionId, `  ${result.summary.note}`)
+              }
+
+              return
+            }
+
+            if ((result.removed ?? 0) <= 0) {
+              render(statsSessionId, 'nothing to compress')
+
+              return
+            }
+
+            render(
+              statsSessionId,
+              `${deep ? 'archived' : 'compressed'} ${result.removed} messages${result.usage?.total ? ` · ${result.usage.total} tok` : ''}`
+            )
+            if (deep) {
+              render(statsSessionId, `live model context: ${result.after_messages ?? 'unknown'} messages`)
+            }
+          } catch (err) {
+            render(sid, `error: ${err instanceof Error ? err.message : String(err)}`)
+          }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
