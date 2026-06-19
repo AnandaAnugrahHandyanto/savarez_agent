@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory"
+description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory，以及第三方 XMemo"
 ---
 
 # Memory Providers
@@ -534,6 +534,67 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **RetainDB** | 云端 | $20/月 | 5 | `requests` | 增量压缩 |
 | **ByteRover** | 本地/云端 | 免费/付费 | 3 | `brv` CLI | 预压缩提取 |
 | **Supermemory** | 云端 | 付费 | 4 | `supermemory` | 上下文隔离 + 会话图谱导入 + 多容器 |
+
+## 第三方提供者
+
+以下记忆提供者由 Hermes 仓库外部维护。安装到 `$HERMES_HOME/plugins/<name>/` 即可使用。
+
+### XMemo
+
+具备身份感知、用户拥有的云端记忆，支持编排召回、语义搜索、持久化事实存储、工作状态、内置记忆镜像以及跨会话重启快照。
+
+| | |
+|---|---|
+| **适合场景** | 希望使用用户拥有的云端记忆后端，并具备显式记忆工具的用户 |
+| **依赖** | [xmemo.dev](https://xmemo.dev) 的 XMemo token |
+| **数据存储** | XMemo Cloud |
+| **费用** | XMemo 定价 |
+
+**工具：** `xmemo_recall_context`、`xmemo_search`、`xmemo_remember`、`xmemo_update_state`（可选：`xmemo_record_event`、`xmemo_create_reminder`、`xmemo_list_reminders`、`xmemo_complete_reminder`、`xmemo_forget`）
+
+**安装：**
+
+```bash
+pip install hermes-xmemo
+hermes-xmemo install
+```
+
+如果 `$HERMES_HOME` 不是 `~/.hermes`：
+
+```bash
+HERMES_HOME=/path/to/your/hermes-home hermes-xmemo install
+```
+
+或不使用 pip，直接一行命令安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yonro/hermes-xmemo-plugin/main/install-remote.sh | bash
+```
+
+或手动克隆并运行安装脚本：
+
+```bash
+git clone https://github.com/yonro/hermes-xmemo-plugin.git
+cd hermes-xmemo-plugin
+bash install.sh
+```
+
+如果 `$HERMES_HOME` 不是 `~/.hermes`：
+
+```bash
+HERMES_HOME=/path/to/your/hermes-home bash install.sh
+```
+
+**配置：**
+
+```bash
+hermes memory setup xmemo
+# 或手动：
+hermes config set memory.provider xmemo
+echo "XMEMO_KEY=your-token" >> "${HERMES_HOME:-$HOME/.hermes}/.env"
+```
+
+**配置文件：** `$HERMES_HOME/xmemo.json`
 
 ## Profile 隔离
 

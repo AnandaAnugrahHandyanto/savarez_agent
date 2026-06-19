@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memori, and third-party XMemo"
 ---
 
 # Memory Providers
@@ -576,6 +576,61 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+
+## Third-party providers
+
+The following memory providers are maintained outside the Hermes repository. Install them into `$HERMES_HOME/plugins/<name>/`.
+
+### XMemo
+
+Identity-aware, user-owned cloud memory with orchestrated recall, semantic search, durable fact storage, working state, built-in memory mirroring, and cross-session restart snapshots.
+
+| | |
+|---|---|
+| **Best for** | Users who want a user-owned cloud memory backend with explicit memory tools |
+| **Requires** | XMemo token from [xmemo.dev](https://xmemo.dev) |
+| **Data storage** | XMemo Cloud |
+| **Cost** | XMemo pricing |
+
+**Tools:** `xmemo_recall_context`, `xmemo_search`, `xmemo_remember`, `xmemo_update_state` (optional: `xmemo_record_event`, `xmemo_create_reminder`, `xmemo_list_reminders`, `xmemo_complete_reminder`, `xmemo_forget`)
+
+**Install:**
+
+```bash
+pip install hermes-xmemo
+hermes-xmemo install
+```
+
+If `$HERMES_HOME` is not `~/.hermes`:
+
+```bash
+HERMES_HOME=/path/to/your/hermes-home hermes-xmemo install
+```
+
+Or install without pip:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yonro/hermes-xmemo-plugin/main/install-remote.sh | bash
+```
+
+Or clone and run the install script manually:
+
+```bash
+git clone https://github.com/yonro/hermes-xmemo-plugin.git
+cd hermes-xmemo-plugin
+bash install.sh
+```
+
+**Setup:**
+
+```bash
+hermes memory setup xmemo
+# Or manually:
+hermes config set memory.provider xmemo
+echo "XMEMO_KEY=your-token" >> "${HERMES_HOME:-$HOME/.hermes}/.env"
+```
+
+**Config:** `$HERMES_HOME/xmemo.json`
 
 ## Profile Isolation
 
