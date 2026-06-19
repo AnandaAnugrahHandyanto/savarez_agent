@@ -1144,6 +1144,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+    ".sql": "application/sql",
 }
 
 
@@ -1208,6 +1209,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".pptx", ".ppt", ".odp", ".key",
     # Archives
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".apk", ".ipa",
+    ".sql",
     # Web / rendered output
     ".html", ".htm",
 )
