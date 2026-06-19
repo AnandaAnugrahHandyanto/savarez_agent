@@ -375,7 +375,9 @@ export interface SessionResumeResponse {
   message_count: number
   messages: SessionMessage[]
   resumed: string
+  running?: boolean
   session_id: string
+  status?: 'idle' | 'starting' | 'streaming' | 'waiting' | 'working' | string
 }
 
 export interface SessionRuntimeInfo {
