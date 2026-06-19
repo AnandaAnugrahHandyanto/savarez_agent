@@ -174,3 +174,89 @@ def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
     assert "url" not in captured_token, (
         "token exchange must NOT happen when state mismatches"
     )
+
+
+def test_token_exchange_falls_back_to_legacy_endpoint(monkeypatch, tmp_path):
+    """The initial code->token exchange must try the current
+    ``platform.claude.com`` endpoint first and fall back to the legacy
+    ``console.anthropic.com`` endpoint when the first returns 404.
+
+    The legacy ``console.anthropic.com/v1/oauth/token`` URL began returning
+    HTTP 404, breaking ``hermes auth add anthropic --type oauth`` with
+    "Token exchange failed: HTTP Error 404: Not Found". The refresh path
+    already tried ``platform.claude.com`` first; the login path did not.
+    """
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    attempted: list[str] = []
+
+    class _FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self):
+            return self._body
+
+    def fake_urlopen(req, *_a, **_kw):
+        attempted.append(req.full_url)
+        # Simulate the current breakage inverted for fallback coverage: the
+        # FIRST endpoint tried (platform.claude.com) fails, so the flow must
+        # advance to the legacy console endpoint, which succeeds.
+        if "platform.claude.com" in req.full_url:
+            raise urllib.error.HTTPError(
+                req.full_url, 404, "Not Found", hdrs=None, fp=None
+            )
+        body = json.dumps(
+            {
+                "access_token": "sk-ant...cess",
+                "refresh_token": "sk-ant...resh",
+                "expires_in": 3600,
+            }
+        ).encode()
+        return _FakeResponse(body)
+
+    monkeypatch.setattr("webbrowser.open", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        "hermes_cli.auth._can_open_graphical_browser", lambda: True
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    captured_url: Dict[str, str] = {}
+
+    def fake_open(url):
+        captured_url["url"] = url
+        return True
+
+    monkeypatch.setattr("webbrowser.open", fake_open)
+
+    def fake_input(*_a, **_kw):
+        qs = parse_qs(urlparse(captured_url.get("url", "")).query)
+        state = qs.get("state", [""])[0]
+        return f"auth-code-from-anthropic#{state}"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    result = run_hermes_oauth_login_pure()
+
+    assert result is not None, (
+        "login must succeed by falling back to the legacy endpoint"
+    )
+    assert result["access_token"] == "sk-ant...cess"
+    # platform.claude.com must be tried first, console.anthropic.com second.
+    assert attempted[0].startswith("https://platform.claude.com/"), (
+        f"current endpoint must be tried first, got {attempted!r}"
+    )
+    assert any("console.anthropic.com" in u for u in attempted), (
+        "legacy endpoint must be attempted as a fallback"
+    )
