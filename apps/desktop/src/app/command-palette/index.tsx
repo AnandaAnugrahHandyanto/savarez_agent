@@ -51,6 +51,7 @@ import {
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  MISSION_CONTROL_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
@@ -324,6 +325,13 @@ export function CommandPalette() {
             id: 'nav-artifacts',
             label: cc.nav.artifacts.title,
             run: go(ARTIFACTS_ROUTE)
+          },
+          {
+            icon: Activity,
+            id: 'nav-mission-control',
+            keywords: ['mission', 'control', 'kanban', 'swarm', 'operations', 'agents'],
+            label: 'Mission Control',
+            run: go(MISSION_CONTROL_ROUTE)
           },
           {
             action: 'nav.cron',

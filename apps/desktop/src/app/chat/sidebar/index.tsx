@@ -95,7 +95,7 @@ import {
   sessionPinId
 } from '@/store/session'
 
-import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, MISSION_CONTROL_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -123,6 +123,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     label: '',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session'
+  },
+  {
+    id: 'mission-control',
+    label: 'Mission Control',
+    icon: props => <Codicon name="type-hierarchy-sub" {...props} />,
+    route: MISSION_CONTROL_ROUTE
   },
   {
     id: 'skills',
@@ -816,7 +822,8 @@ export function ChatSidebar({
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
-                  (item.id === 'artifacts' && currentView === 'artifacts')
+                  (item.id === 'artifacts' && currentView === 'artifacts') ||
+                  (item.id === 'mission-control' && currentView === 'mission-control')
 
                 const isNewSession = item.id === 'new-session'
 
