@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.conversation_loop import _restore_or_build_system_prompt
+from agent.project_local import ProjectLocalState, ProjectSkillManifestEntry
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -31,6 +32,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.model = "test-model"
     agent.provider = "openrouter"
     agent.platform = "cli"
+    agent.project_local_state = None
     agent._session_db = session_db
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
@@ -103,6 +105,51 @@ class TestStoredPromptReuse:
         assert agent._cached_system_prompt.endswith(
             "Model: openai/gpt-5.5\nProvider: openrouter"
         )
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id, agent._cached_system_prompt
+        )
+        assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
+
+    def test_present_row_with_stale_project_skill_manifest_rebuilds(self, caplog):
+        """A changed project-local skill manifest must not reuse old prompt bytes."""
+        stored = (
+            "Project ID: git:abc123\n"
+            "Project skills manifest: old-hash\n\n"
+            "Conversation started: Tuesday, June 16, 2026\n"
+            "Session ID: test-session-id\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(
+            session_db=db,
+            prebuilt_prompt=(
+                "Project ID: git:abc123\n"
+                "Project skills manifest: new-hash\n\n"
+                "Conversation started: Tuesday, June 16, 2026\n"
+                "Session ID: test-session-id\n"
+                "Model: test-model\n"
+                "Provider: openrouter"
+            ),
+        )
+        agent.project_local_state = ProjectLocalState(
+            canonical_id="git:abc123",
+            skills_manifest=(
+                ProjectSkillManifestEntry(
+                    name="local",
+                    path="/repo/.hermes/skills/local/SKILL.md",
+                    sha256="sha256",
+                ),
+            ),
+            skills_manifest_hash="new-hash",
+        )
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert "Project skills manifest: new-hash" in agent._cached_system_prompt
         agent._build_system_prompt.assert_called_once_with(None)
         db.update_system_prompt.assert_called_once_with(
             agent.session_id, agent._cached_system_prompt

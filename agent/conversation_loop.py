@@ -396,6 +396,25 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     if stored_provider and current_provider and stored_provider != current_provider:
         return False
 
+    project_local = getattr(agent, "project_local_state", None)
+    try:
+        project_signature = project_local.cache_signature() if project_local else {}
+    except Exception:
+        project_signature = {}
+    current_project = str(project_signature.get("project.canonical_id") or "").strip()
+    stored_project = line_value("Project ID")
+    if current_project or stored_project:
+        if stored_project != current_project:
+            return False
+
+    current_skills_hash = str(
+        project_signature.get("project.skills_manifest_hash") or ""
+    ).strip()
+    stored_skills_hash = line_value("Project skills manifest")
+    if current_skills_hash or stored_skills_hash:
+        if stored_skills_hash != current_skills_hash:
+            return False
+
     return True
 
 

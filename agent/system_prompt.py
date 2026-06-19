@@ -399,6 +399,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _effective_hint:
         stable_parts.append(_effective_hint)
 
+    project_local = getattr(agent, "project_local_state", None)
+    try:
+        project_signature = project_local.cache_signature() if project_local else {}
+    except Exception:
+        project_signature = {}
+    project_id = str(project_signature.get("project.canonical_id") or "").strip()
+    if project_id:
+        project_lines = [f"Project ID: {project_id}"]
+        skills_hash = str(
+            project_signature.get("project.skills_manifest_hash") or ""
+        ).strip()
+        if skills_hash:
+            project_lines.append(f"Project skills manifest: {skills_hash}")
+        stable_parts.append("\n".join(project_lines))
+
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
 
