@@ -2759,3 +2759,89 @@ class TestHomeTargetEnvVarRegistry:
         from cron.scheduler import _HOME_TARGET_ENV_VARS
 
         assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"
+
+
+class TestMultiTargetDeliveryContinuesOnFailure:
+    """When delivery to the first target fails, the loop must continue
+    to subsequent targets (fixes #47163).
+    """
+
+    def test_first_target_failure_does_not_crash_loop(self):
+        """If the standalone path raises for the first email target,
+        the second target must still be attempted and delivered.
+        """
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+
+        job = {
+            "id": "multi-email-job",
+            "deliver": "email:a@example.com,email:b@example.com",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")):
+            with patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+                mock_pool = MagicMock()
+                mock_pool_cls.return_value = mock_pool
+
+                # First target: future raises, second target: future succeeds
+                fail_future = MagicMock()
+                fail_future.result.side_effect = ConnectionError("SMTP connection refused")
+
+                ok_future = MagicMock()
+                ok_future.result.return_value = {"success": True}
+
+                mock_pool.submit.side_effect = [fail_future, ok_future]
+
+                result = _deliver_result(job, "Report content")
+
+        # Both targets were attempted (pool.submit called twice)
+        assert mock_pool.submit.call_count == 2, (
+            f"expected 2 delivery attempts, got {mock_pool.submit.call_count}"
+        )
+        # First target's error is in the result
+        assert result is not None
+        assert "a@example.com" in result
+        assert "SMTP connection refused" in result
+
+    def test_all_targets_fail_returns_combined_errors(self):
+        """When all targets fail, the result contains errors from all of them."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+
+        job = {
+            "id": "all-fail-job",
+            "deliver": "email:a@example.com,email:b@example.com",
+        }
+
+        async def fake_send(platform, pconfig, chat_id, content, **kwargs):
+            raise ConnectionError("connection refused")
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=fake_send), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")):
+            with patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+                mock_pool = MagicMock()
+                mock_pool_cls.return_value = mock_pool
+
+                fail_future = MagicMock()
+                fail_future.result.side_effect = ConnectionError("connection refused")
+                mock_pool.submit.return_value = fail_future
+
+                result = _deliver_result(job, "Report content")
+
+        # Both targets failed — both errors reported
+        assert result is not None
+        assert "a@example.com" in result
+        assert "b@example.com" in result
+        assert mock_pool.submit.call_count == 2
