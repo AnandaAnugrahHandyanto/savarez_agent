@@ -36,4 +36,20 @@ describe('hermesDirectiveFormatter.parse', () => {
       { kind: 'text', text: ' the entry point' }
     ])
   })
+
+  it('does not parse malformed @file: refs with a space after the colon (H3)', () => {
+    // Reporter/E2E case: `@file: Desktop/sage/xhs_covers` — space after colon
+    // breaks HERMES_DIRECTIVE_RE (\S+ value). Bubble renders raw text; agent
+    // blind. After fix: compile path must quote paths; parse must tolerate ws.
+    const segments = hermesDirectiveFormatter.parse(
+      '你调用codex @file: Desktop/sage/xhs_covers 封面图上面我的照片'
+    )
+
+    expect(segments.every(segment => segment.kind !== 'mention' || segment.id !== 'Desktop/sage/xhs_covers')).toBe(
+      true
+    )
+    expect(segments.some(segment => segment.kind === 'text' && segment.text.includes('@file: Desktop/sage'))).toBe(
+      true
+    )
+  })
 })

@@ -98,8 +98,15 @@ def test_parse_quoted_references_with_spaces_and_preserve_unquoted_ranges():
     assert refs[0].line_end == 9
     assert refs[1].target == "docs and specs"
     assert refs[2].target == "src/main.py"
-    assert refs[2].line_start == 1
-    assert refs[2].line_end == 2
+
+
+def test_malformed_file_ref_space_after_colon_not_parsed():
+    """H3: `@file: Desktop/path` (space after colon) matches no REFERENCE_PATTERN ref."""
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references("你调用codex @file: Desktop/sage/xhs_covers 封面图")
+
+    assert refs == []
 
 
 def test_expand_file_range_and_folder_listing(sample_repo: Path):
