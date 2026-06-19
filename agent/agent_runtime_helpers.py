@@ -2191,12 +2191,25 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # those with HTTP 400. When the active provider enforces the
     # thinking-mode echo, upgrade "" → " " on replay so stale history
     # doesn't 400 the user on the next turn.
+    #
+    # For providers that do NOT enforce thinking-mode echo-back (e.g.
+    # Cerebras, Groq, SambaNova), strip reasoning_content entirely —
+    # some APIs reject the field in input messages even though they
+    # return reasoning_tokens in responses (refs #45655).
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
         if existing == "" and agent._needs_thinking_reasoning_pad():
             api_msg["reasoning_content"] = " "
-        else:
+        elif existing == "":
+            # Empty string — harmless for most providers, preserve it.
             api_msg["reasoning_content"] = existing
+        elif agent._needs_thinking_reasoning_pad():
+            api_msg["reasoning_content"] = existing
+        else:
+            # Non-empty reasoning_content for a provider that doesn't
+            # enforce thinking-mode echo-back — strip it to avoid
+            # HTTP 400 on replay (e.g. Cerebras, refs #45655).
+            api_msg.pop("reasoning_content", None)
         return
 
     needs_thinking_pad = agent._needs_thinking_reasoning_pad()
@@ -2227,8 +2240,13 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # This must happen before the unconditional empty-string fallback so
     # genuine reasoning content is not overwritten (#15812 regression in
     # PR #15478).
+    # Only promote for providers that actually support reasoning_content
+    # echo-back — otherwise strip it to avoid HTTP 400 (refs #45655).
     if isinstance(normalized_reasoning, str) and normalized_reasoning:
-        api_msg["reasoning_content"] = normalized_reasoning
+        if needs_thinking_pad:
+            api_msg["reasoning_content"] = normalized_reasoning
+        else:
+            api_msg.pop("reasoning_content", None)
         return
 
     # 4. DeepSeek / Kimi thinking mode: all assistant messages need
