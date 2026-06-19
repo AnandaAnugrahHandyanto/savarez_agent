@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import json
 import re
@@ -2350,6 +2351,66 @@ def _cprint(text: str):
             _pt_print(_PT_ANSI(text))
         except Exception:
             pass
+
+
+def _run_guarded_quick_command(exec_cmd: Any, timeout: int = 30) -> Dict[str, Any]:
+    """Run a user-configured quick command after dangerous-command checks."""
+    if not isinstance(exec_cmd, str):
+        return {"ok": False, "message": "quick command must be a string"}
+    normalized_cmd = exec_cmd.strip()
+    if not normalized_cmd:
+        return {"ok": False, "message": "empty command"}
+
+    try:
+        from tools.approval import detect_dangerous_command, detect_hardline_command
+
+        is_hardline, hardline_desc = detect_hardline_command(normalized_cmd)
+        if is_hardline:
+            return {
+                "ok": False,
+                "message": f"hardline blocked: {hardline_desc}",
+            }
+
+        is_dangerous, _, desc = detect_dangerous_command(normalized_cmd)
+        if is_dangerous:
+            return {
+                "ok": False,
+                "message": f"blocked: {desc}. Use the agent for dangerous commands.",
+            }
+    except ImportError:
+        return {
+            "ok": False,
+            "message": "dangerous-command guard unavailable; refusing to execute",
+        }
+    except Exception as exc:
+        return {"ok": False, "message": f"dangerous-command guard failed: {exc}"}
+
+    try:
+        cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        result = subprocess.run(
+            normalized_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": f"command timed out ({timeout}s)"}
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
+
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    output = "\n".join(part for part in (stdout, stderr) if part)
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "message": output or f"command failed with exit code {result.returncode}",
+            "returncode": result.returncode,
+        }
+    return {"ok": True, "output": output, "returncode": result.returncode}
 
 
 def _prepend_note_to_message(message, note: str):
@@ -7895,25 +7956,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
-                    import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
-                        try:
-                            # shell=True is intentional: quick_commands are user-defined
-                            # shell snippets from config.yaml — not agent/LLM controlled.
-                            result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
-                            )
-                            output = result.stdout.strip() or result.stderr.strip()
-                            if output:
-                                self._console_print(_rich_text_from_ansi(output))
-                            else:
-                                self._console_print("[dim]Command returned no output[/]")
-                        except subprocess.TimeoutExpired:
-                            self._console_print("[bold red]Quick command timed out (30s)[/]")
-                        except Exception as e:
-                            self._console_print(f"[bold red]Quick command error: {e}[/]")
+                        result = _run_guarded_quick_command(exec_cmd)
+                        if not result["ok"]:
+                            self._console_print(f"[bold red]Quick command error: {_escape(str(result['message']))}[/]")
+                        elif result["output"]:
+                            self._console_print(_rich_text_from_ansi(result["output"]))
+                        else:
+                            self._console_print("[dim]Command returned no output[/]")
                     else:
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":
