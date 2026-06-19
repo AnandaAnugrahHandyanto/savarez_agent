@@ -1913,7 +1913,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\\n{cmd_preview}\\n```\\n**{_reason_label}:** {description}",
+                        "content": f"```\n{cmd_preview}\n```\n**{_reason_label}:** {description}",
                     },
                     {
                         "tag": "action",
