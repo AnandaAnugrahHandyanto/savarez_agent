@@ -1045,6 +1045,27 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_bedrock_provider_forces_bedrock_converse_api_mode(self, mock_resolve):
+        """When delegation.provider is bedrock, api_mode must be bedrock_converse.
+
+        resolve_runtime_provider('bedrock') returns api_mode='anthropic_messages',
+        but agent_init.py needs 'bedrock_converse' to trigger the boto3 path.
+        Without this override, the child silently falls back to openrouter/free.
+        Fixes #49095.
+        """
+        mock_resolve.return_value = {
+            "provider": "bedrock",
+            "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "api_key": "bedrock-session-token",
+            "api_mode": "anthropic_messages",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "global.anthropic.claude-sonnet-4-6", "provider": "bedrock"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "bedrock_converse")
+        self.assertEqual(creds["provider"], "bedrock")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
         """When provider resolution fails, ValueError is raised with helpful message."""
         mock_resolve.side_effect = RuntimeError("OPENROUTER_API_KEY not set")
