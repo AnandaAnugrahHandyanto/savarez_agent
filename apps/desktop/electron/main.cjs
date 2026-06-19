@@ -45,6 +45,7 @@ const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { addWorktree, listWorktrees, removeWorktree } = require('./git-worktree-ops.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
+const { scanGitRepos } = require('./git-repo-scan.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
@@ -6072,6 +6073,16 @@ ipcMain.handle('hermes:git:worktreeAdd', async (_event, repoPath, options) =>
 ipcMain.handle('hermes:git:worktreeRemove', async (_event, repoPath, worktreePath, options) =>
   removeWorktree(repoPath, worktreePath, options || {}, resolveGitBinary())
 )
+
+// Repo-first project discovery: scan bounded roots for git repos (pure fs walk,
+// no native addon). Never throws to the renderer — failures yield an empty list.
+ipcMain.handle('hermes:git:scanRepos', async (_event, roots, options) => {
+  try {
+    return await scanGitRepos(roots || [], options || {})
+  } catch {
+    return []
+  }
+})
 
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {

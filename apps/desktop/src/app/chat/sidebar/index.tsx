@@ -44,8 +44,7 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGitWorktree } from '@/global'
-import { listSessions, searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
-import { useWorktreeInfo } from '@/hooks/use-worktree-info'
+import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
@@ -99,27 +98,33 @@ import {
 } from '@/store/profile'
 import {
   $activeProjectId,
-  $discoveredRepos,
   $projects,
   $projectScope,
+  $projectTree,
+  $projectTreeLoading,
+  $reposScanning,
+  $scopedSessionIds,
   ALL_PROJECTS,
   copyPath,
   deleteProject,
   enterProject,
   exitProjectScope,
+  fetchProjectSessions,
   openProjectAddFolder,
   openProjectCreate,
   openProjectRename,
-  refreshDiscoveredRepos,
   refreshProjects,
+  refreshProjectTree,
   removeWorktreePath,
   revealPath,
+  scanAndRecordRepos,
   setActiveProject,
   startWorkInRepo
 } from '@/store/projects'
 import {
   $cronSessions,
   $currentCwd,
+  $gatewayState,
   $messagingPlatformTotals,
   $messagingSessions,
   $messagingTruncated,
@@ -146,11 +151,11 @@ import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 import {
   mergeRepoWorktreeGroups,
-  projectTreeFor,
+  overlayLiveLanes,
+  overlayLivePreviews,
   type SidebarProjectTree,
   type SidebarSessionGroup,
-  type SidebarWorkspaceTree,
-  workspaceTreeFor
+  type SidebarWorkspaceTree
 } from './workspace-groups'
 
 const VIRTUALIZE_THRESHOLD = 25
@@ -257,8 +262,6 @@ const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
 const pathListKey = (paths: string[]) =>
   paths.map(path => path.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b)).join('\n')
 
-const WORKSPACE_GRID = 'grid grid-cols-[minmax(0,1fr)] gap-px'
-
 // Every session in a project, across its repos/worktrees (order-agnostic).
 const projectSessions = (project: SidebarProjectTree): SessionInfo[] =>
   project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
@@ -266,40 +269,17 @@ const projectSessions = (project: SidebarProjectTree): SessionInfo[] =>
 const projectTreeCwd = (project: SidebarProjectTree): null | string =>
   project.path || project.repos.find(repo => repo.path)?.path || null
 
+// Overview rows carry their activity stamp from the backend (lanes are empty in
+// overview mode), falling back to loaded session times when present.
 const projectActivityTime = (project: SidebarProjectTree): number =>
-  projectSessions(project).reduce((latest, s) => Math.max(latest, sessionTime(s)), 0)
+  Math.max(
+    project.lastActive ?? 0,
+    projectSessions(project).reduce((latest, s) => Math.max(latest, sessionTime(s)), 0)
+  )
 
 // The project's most-recent sessions, for the overview preview under each row.
 const latestProjectSessions = (project: SidebarProjectTree, limit: number): SessionInfo[] =>
   [...projectSessions(project)].sort((a, b) => sessionTime(b) - sessionTime(a)).slice(0, limit)
-
-function projectLanePaths(
-  repos: SidebarWorkspaceTree[],
-  repoWorktrees: Record<string, HermesGitWorktree[]>
-): string[] {
-  const paths = new Set<string>()
-
-  for (const repo of repos) {
-    if (repo.path) {
-      // Fetch repo-root sessions too (main-checkout lanes hydrate from this).
-      paths.add(repo.path)
-    }
-
-    for (const group of repo.groups) {
-      if (!group.isMain && group.path) {
-        paths.add(group.path)
-      }
-    }
-
-    for (const worktree of repo.path ? (repoWorktrees[repo.path] ?? []) : []) {
-      if (!worktree.isMain && worktree.path) {
-        paths.add(worktree.path)
-      }
-    }
-  }
-
-  return [...paths]
-}
 
 function sortProjectsForOverview(projects: SidebarProjectTree[], activeProjectId: null | string): SidebarProjectTree[] {
   return [...projects].sort((a, b) => {
@@ -381,81 +361,6 @@ function useRepoWorktreeMap(repoPaths: string[], enabled: boolean): [Record<stri
       cancelled = true
     }
   }, [enabled, key, repoPaths])
-
-  return [map, loading]
-}
-
-// Per-lane session hydration: linked worktree rows pull their own recents by cwd
-// instead of depending on whatever happened to be in the global recents page.
-function useWorktreeLaneSessions(
-  lanePaths: string[],
-  enabled: boolean,
-  cacheKey: string
-): [Record<string, SessionInfo[]>, boolean] {
-  const [map, setMap] = useState<Record<string, SessionInfo[]>>({})
-  const [loading, setLoading] = useState(false)
-  const cacheRef = useRef<{ data: Record<string, SessionInfo[]>; key: string }>({ data: {}, key: '' })
-
-  const laneKey = useMemo(() => pathListKey(lanePaths), [lanePaths])
-
-  useEffect(() => {
-    if (!enabled || !lanePaths.length) {
-      cacheRef.current = { data: {}, key: `${cacheKey}::disabled` }
-      setMap({})
-      setLoading(false)
-
-      return
-    }
-
-    const key = `${cacheKey}::${laneKey}`
-
-    if (cacheRef.current.key !== key) {
-      cacheRef.current = { data: {}, key }
-      setMap({})
-    }
-
-    const missing = lanePaths.filter(path => !(path in cacheRef.current.data))
-
-    if (!missing.length) {
-      setLoading(false)
-
-      return
-    }
-
-    let cancelled = false
-
-    setLoading(true)
-    void Promise.all(
-      missing.map(async path => {
-        try {
-          const page = await listSessions(80, 0, 'exclude', 'recent', { cwdPrefix: path })
-
-          return [path, page.sessions] as const
-        } catch {
-          return [path, []] as const
-        }
-      })
-    )
-      .then(entries => {
-        if (cancelled) {
-          return
-        }
-
-        const next = { ...cacheRef.current.data, ...Object.fromEntries(entries) }
-
-        cacheRef.current = { data: next, key }
-        setMap(next)
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [enabled, laneKey, lanePaths, cacheKey])
 
   return [map, loading]
 }
@@ -622,10 +527,14 @@ export function ChatSidebar({
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const workspaceParentOrderIds = useStore($sidebarWorkspaceParentOrderIds)
   const projects = useStore($projects)
-  const discoveredRepos = useStore($discoveredRepos)
+  const projectTree = useStore($projectTree)
+  const projectTreeLoading = useStore($projectTreeLoading)
+  const scopedSessionIds = useStore($scopedSessionIds)
+  const reposScanning = useStore($reposScanning)
   const activeProjectId = useStore($activeProjectId)
   const projectScope = useStore($projectScope)
   const currentCwd = useStore($currentCwd)
+  const gatewayState = useStore($gatewayState)
   const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
@@ -828,27 +737,34 @@ export function ChatSidebar({
   // own slice ($messagingSessions) and rendered in self-managed per-platform
   // sections below, so there is no source-grouping magic to untangle here.
   //
-  // Workspace grouping is a `parent (repo) → worktree → sessions` tree. Git
-  // metadata (probed locally) is authoritative; unresolved cwds fall back to a
-  // path-name heuristic inside workspaceTreeFor. Parents reorder via
+  // Workspace grouping is a `project -> repo -> lane -> sessions` tree computed
+  // authoritatively on the backend (projects.tree). Parents reorder via
   // workspaceParentOrderIds; worktrees within a parent via workspaceOrderIds.
   const worktreeGroupingActive = agentsGrouped && !showAllProfiles
-  // Resolve git identity for every single-profile view (cached per cwd), not
-  // just when grouped — project membership must be identical whether the
-  // sidebar is showing the overview or the flat list.
-  const worktreeResolver = useWorktreeInfo(agentSessions, !showAllProfiles)
+  const gatewayReady = gatewayState === 'open'
 
-  // Keep the project catalog fresh while the grouped view is active. Projects
-  // are the new outermost grouping level; the fetch is best-effort and leaves
-  // the cached list intact on failure.
+  // The project tree (membership, repos, lanes, counts) is computed
+  // authoritatively on the backend. Refresh it whenever the grouped view is
+  // active and the gateway is up; the disk scan (once per run) folds any
+  // zero-session repos into the same tree. Best-effort: failures keep the
+  // cached tree so the sidebar doesn't flicker.
   useEffect(() => {
-    if (worktreeGroupingActive) {
+    if (worktreeGroupingActive && gatewayReady) {
       void refreshProjects()
-      // Repos inferred from full session history (backend probe), so the
-      // overview lists every repo worked in — not just the loaded page's.
-      void refreshDiscoveredRepos()
+      void refreshProjectTree()
+      void scanAndRecordRepos()
     }
-  }, [worktreeGroupingActive, profileScope])
+  }, [worktreeGroupingActive, profileScope, gatewayReady])
+
+  // Re-fetch the tree whenever the recents set changes. `$sessions` is replaced
+  // on the same edges that matter here (a turn completing, a session created /
+  // resumed / deleted / archived), so a session started from the overview shows
+  // up under its project once it has activity — without a manual view toggle.
+  useEffect(() => {
+    if (worktreeGroupingActive && gatewayReady) {
+      void refreshProjectTree()
+    }
+  }, [worktreeGroupingActive, gatewayReady, sessions])
 
   // Apply the persisted repo + worktree orders to a project's repo subtrees.
   const orderRepos = useCallback(
@@ -860,24 +776,11 @@ export function ChatSidebar({
     [workspaceParentOrderIds, workspaceOrderIds]
   )
 
-  // Render-only fallback for the degenerate grouped case where the project model
-  // is empty (no projects, only cwd-less sessions). NEVER a membership source —
-  // scoping is decided solely by projectModel below.
-  const agentTree = useMemo<SidebarWorkspaceTree[] | undefined>(() => {
-    if (!worktreeGroupingActive) {
-      return undefined
-    }
-
-    return orderRepos(workspaceTreeFor(agentSessions, s.noWorkspace, worktreeResolver))
-  }, [worktreeGroupingActive, agentSessions, s.noWorkspace, worktreeResolver, orderRepos])
-
-  // ── Projects: the single top-level model ──────────────────────────────────
-  // Repos and user-created projects are the SAME concept — both are projects,
-  // 1:1. projectTreeFor unifies them (explicit first, then auto-detected repos).
-  // This is computed once for every single-profile view and EVERYTHING derives
-  // from it: the overview, the entered-project drill-in, and which sessions are
-  // "scoped" (and so excluded from the flat, project-less recents list). No view
-  // recomputes membership independently, so there are no top-level gaps.
+  // ── Projects: the single top-level model (authoritative, from the backend) ──
+  // `projects.tree` already unifies explicit projects + auto repos and folds
+  // linked worktrees under their main repo. The desktop only layers local view
+  // state on top: dismissed auto-projects, persisted repo/lane order, and the
+  // overview sort. Membership (scopedSessionIds) comes straight from the store.
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     if (showAllProfiles) {
       return []
@@ -886,36 +789,12 @@ export function ChatSidebar({
     const dismissed = new Set(dismissedAutoProjects)
 
     return sortProjectsForOverview(
-      projectTreeFor(agentSessions, projects, s.noWorkspace, worktreeResolver, { discoveredRepos })
+      projectTree
         .filter(node => !(node.isAuto && dismissed.has(node.id)))
         .map(project => ({ ...project, repos: orderRepos(project.repos) })),
       activeProjectId
     )
-  }, [
-    showAllProfiles,
-    agentSessions,
-    projects,
-    discoveredRepos,
-    dismissedAutoProjects,
-    s.noWorkspace,
-    worktreeResolver,
-    orderRepos,
-    activeProjectId
-  ])
-
-  // Sessions claimed by any project (repo or user-created) — the inverse is the
-  // flat, project-less recents list.
-  const scopedSessionIds = useMemo(() => {
-    const ids = new Set<string>()
-
-    for (const project of projectModel) {
-      for (const session of projectSessions(project)) {
-        ids.add(session.id)
-      }
-    }
-
-    return ids
-  }, [projectModel])
+  }, [showAllProfiles, projectTree, dismissedAutoProjects, orderRepos, activeProjectId])
 
   // The overview only renders in grouped mode; the model stays live regardless
   // so scoping is consistent across views.
@@ -927,38 +806,83 @@ export function ChatSidebar({
   // project, so the Sessions list shows ONLY that project's worktrees/sessions.
   const projectsActive = Boolean(agentProjectTree?.length)
 
-  const enteredProject =
+  // The overview node for the entered project (structure + counts, empty lanes).
+  const overviewEnteredProject =
     projectsActive && projectScope !== ALL_PROJECTS
       ? agentProjectTree?.find(node => node.id === projectScope)
       : undefined
 
-  const inProject = Boolean(enteredProject)
+  const inProject = Boolean(overviewEnteredProject)
+  const enteredProjectId = overviewEnteredProject?.id
+
+  // Entering a project lazily hydrates its full lanes (repo -> lane -> sessions)
+  // from the backend — same grouping/ids as the overview, just with rows.
+  const [enteredProjectTree, setEnteredProjectTree] = useState<SidebarProjectTree | null>(null)
+  const [enteredProjectLoading, setEnteredProjectLoading] = useState(false)
+
+  useEffect(() => {
+    if (!enteredProjectId || !gatewayReady) {
+      setEnteredProjectTree(null)
+      setEnteredProjectLoading(false)
+
+      return
+    }
+
+    let cancelled = false
+
+    setEnteredProjectLoading(true)
+    void fetchProjectSessions(enteredProjectId)
+      .then(project => {
+        if (!cancelled) {
+          setEnteredProjectTree(project)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setEnteredProjectLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // `projectTree` in deps: re-hydrate after a tree refresh so the entered view
+    // stays current with new/ended sessions.
+  }, [enteredProjectId, gatewayReady, projectTree])
+
+  // Prefer the hydrated tree; fall back to the overview node (empty lanes) while
+  // the drill-in fetch is in flight, so the header/structure render immediately.
+  const enteredProject = useMemo<SidebarProjectTree | undefined>(() => {
+    if (!overviewEnteredProject) {
+      return undefined
+    }
+
+    const hydrated =
+      enteredProjectTree && enteredProjectTree.id === overviewEnteredProject.id
+        ? enteredProjectTree
+        : overviewEnteredProject
+
+    // Overlay live $sessions so a session started here appears instantly with
+    // its working arc, exactly like the flat Recents list (the backend snapshot
+    // catches up on the next tree refresh).
+    const live = overlayLiveLanes(hydrated, agentSessions, projects)
+
+    return { ...live, repos: orderRepos(live.repos) }
+  }, [overviewEnteredProject, enteredProjectTree, agentSessions, projects, orderRepos])
 
   const scopedRepoPaths = useMemo(
     () =>
-      inProject && enteredProject
-        ? enteredProject.repos.map(repo => repo.path).filter((path): path is string => Boolean(path))
-        : [],
-    [inProject, enteredProject]
+      enteredProject ? enteredProject.repos.map(repo => repo.path).filter((path): path is string => Boolean(path)) : [],
+    [enteredProject]
   )
 
+  // git worktree list is a VISUAL-only enhancer (empty lanes); never membership.
   const [scopedRepoWorktrees, scopedRepoWorktreesLoading] = useRepoWorktreeMap(
     scopedRepoPaths,
-    Boolean(inProject && enteredProject && !showAllProfiles)
+    Boolean(enteredProject && !showAllProfiles)
   )
 
-  const scopedLanePaths = useMemo(
-    () => (inProject && enteredProject ? projectLanePaths(enteredProject.repos, scopedRepoWorktrees) : []),
-    [inProject, enteredProject, scopedRepoWorktrees]
-  )
-
-  const [scopedLaneSessions, scopedLaneSessionsLoading] = useWorktreeLaneSessions(
-    scopedLanePaths,
-    Boolean(inProject && enteredProject && !showAllProfiles),
-    profileScope
-  )
-
-  const scopedLanesLoading = scopedRepoWorktreesLoading || scopedLaneSessionsLoading
+  const scopedLanesLoading = enteredProjectLoading || scopedRepoWorktreesLoading
 
   const lastProjectCwdSyncRef = useRef<null | string>(null)
 
@@ -997,11 +921,17 @@ export function ChatSidebar({
     }
   }, [projectScope, projectsActive, enteredProject])
 
-  // The project overview (drill-in list) vs. the entered project's flattened
-  // content. Only when there are zero projects does the bare repo tree render,
-  // so the empty/cwd-less case still resolves (render fallback, not scoping).
+  // The project overview (drill-in list) vs. the entered project's content.
   const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
-  const fallbackTree = projectsActive ? undefined : agentTree
+
+  // Preview rows come from the backend tree (each project carries its
+  // most-recent sessions), overlaid with live $sessions so a just-created
+  // session shows under its project instantly (and with its working arc),
+  // matching the flat Recents list. Keyed by project path for the rows.
+  const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
+    () => overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT),
+    [projectOverview, agentSessions, projects]
+  )
 
   const onEnterProject = useCallback(
     (id: string) => {
@@ -1230,13 +1160,12 @@ export function ChatSidebar({
   // single source for reconciling repo/worktree order, whether repos hang off
   // the bare tree or are nested under projects.
   const activeRepoTrees = useMemo<SidebarWorkspaceTree[]>(
-    () => (agentProjectTree ? agentProjectTree.flatMap(project => project.repos) : agentTree ?? []),
-    [agentProjectTree, agentTree]
+    () => (agentProjectTree ? agentProjectTree.flatMap(project => project.repos) : []),
+    [agentProjectTree]
   )
 
   const recentsVirtualizes =
     !displayAgentGroups?.length &&
-    !agentTree?.length &&
     !agentProjectTree?.length &&
     displayAgentSessions.length >= VIRTUALIZE_THRESHOLD
 
@@ -1558,7 +1487,13 @@ export function ChatSidebar({
                   )
                 }
                 label={sessionsLabel}
-                labelMeta={worktreeGroupingActive ? undefined : recentsMeta}
+                labelMeta={
+                  worktreeGroupingActive
+                    ? reposScanning
+                      ? <Codicon className="text-(--ui-text-quaternary)" name="loading" size="0.6875rem" spinning />
+                      : undefined
+                    : recentsMeta
+                }
                 onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
                 onEnterProject={onEnterProject}
@@ -1572,17 +1507,17 @@ export function ChatSidebar({
                 open={agentsOpen}
                 pinned={false}
                 projectContent={inProject ? enteredProject : undefined}
-                projectLaneSessions={inProject ? scopedLaneSessions : undefined}
                 projectLanesLoading={inProject ? scopedLanesLoading : undefined}
                 projectOverview={projectOverview}
+                projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
+                projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 rootClassName={cn(
                   'min-h-32 flex-1 overflow-hidden p-0',
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
                 )}
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
-                tree={fallbackTree}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
@@ -1778,15 +1713,18 @@ interface SidebarSessionsSectionProps {
   // which then passes `projectContent` on the next render. Takes precedence
   // over `tree` / `groups`.
   projectOverview?: SidebarProjectTree[]
+  // Per-project preview rows (from the backend tree), keyed by project path.
+  projectOverviewPreviews?: Record<string, SessionInfo[]>
+  // True while the backend project tree is loading (overview skeleton).
+  projectsLoading?: boolean
   onEnterProject?: (id: string) => void
   // The entered project's flattened content: main-checkout sessions render
   // directly (no redundant repo/branch header); only linked worktrees nest.
   projectContent?: SidebarProjectTree
-  // Live git lanes (`git worktree list`) for repos in the entered project.
+  // Live git lanes (`git worktree list`) for repos in the entered project —
+  // a VISUAL enhancer only (empty lanes), never session membership.
   projectRepoWorktrees?: Record<string, HermesGitWorktree[]>
-  // Per-linked-worktree recents keyed by worktree path.
-  projectLaneSessions?: Record<string, SessionInfo[]>
-  // True while the entered project's git worktree list / lane recents are loading.
+  // True while the entered project's hydrated lanes are loading.
   projectLanesLoading?: boolean
   activeProjectId?: null | string
   labelMeta?: React.ReactNode
@@ -1825,10 +1763,11 @@ function SidebarSessionsSection({
   groups,
   tree,
   projectOverview,
+  projectOverviewPreviews,
+  projectsLoading = false,
   onEnterProject,
   projectContent,
   projectRepoWorktrees,
-  projectLaneSessions,
   projectLanesLoading = false,
   activeProjectId,
   labelMeta,
@@ -1893,11 +1832,12 @@ function SidebarSessionsSection({
   let inner: React.ReactNode
 
   if (showEmptyState) {
-    inner = emptyState
+    // While the backend project tree is still loading, show skeletons instead of
+    // the "no sessions" empty state so the overview doesn't flash empty.
+    inner = projectsLoading ? <SidebarSessionSkeletons /> : emptyState
   } else if (projectContent) {
     inner = (
       <EnteredProjectContent
-        laneSessions={projectLaneSessions}
         lanesLoading={projectLanesLoading}
         onNewSession={onNewSessionInWorkspace}
         project={projectContent}
@@ -1917,6 +1857,7 @@ function SidebarSessionsSection({
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
+        previewSessions={project.path ? projectOverviewPreviews?.[project.path] : undefined}
         project={project}
         renderRows={renderRows}
       />
@@ -2305,6 +2246,9 @@ interface ProjectOverviewRowProps {
   onNewSession?: (path: null | string) => void
   renderRows?: (sessions: SessionInfo[]) => React.ReactNode
   activeProjectId?: null | string
+  // Recents fetched by cwd-prefix for this project (self-managed), used when the
+  // loaded recents page doesn't already contain the project's sessions.
+  previewSessions?: SessionInfo[]
 }
 
 // Number of recent sessions previewed under each project in the overview.
@@ -2313,11 +2257,21 @@ const PROJECT_PREVIEW_COUNT = 3
 // One row in the project overview: icon + name (click to enter), a new-session +
 // (reveal on hover), and the manage menu (⋮). Below it, a preview of the
 // project's most recent sessions — clickable to resume without entering.
-function ProjectOverviewRow({ project, onEnter, onNewSession, renderRows, activeProjectId }: ProjectOverviewRowProps) {
+function ProjectOverviewRow({
+  project,
+  onEnter,
+  onNewSession,
+  renderRows,
+  activeProjectId,
+  previewSessions
+}: ProjectOverviewRowProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isActive = project.id === activeProjectId
-  const preview = renderRows ? latestProjectSessions(project, PROJECT_PREVIEW_COUNT) : []
+  // Prefer the project's own cwd-prefix fetch (authoritative recents, including
+  // sessions off the loaded page); fall back to whatever's already loaded.
+  const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_COUNT)
+  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_COUNT)) : []
 
   return (
     <div>
@@ -2358,14 +2312,12 @@ function EnteredProjectContent({
   project,
   renderRows,
   onNewSession,
-  laneSessions,
   lanesLoading = false,
   repoWorktrees
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
-  laneSessions?: Record<string, SessionInfo[]>
   lanesLoading?: boolean
   repoWorktrees?: Record<string, HermesGitWorktree[]>
 }) {
@@ -2381,7 +2333,6 @@ function EnteredProjectContent({
         <RepoFlatSection
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
           key={repo.id}
-          laneSessions={laneSessions}
           onNewSession={onNewSession}
           renderRows={renderRows}
           repo={repo}
@@ -2398,25 +2349,24 @@ function RepoFlatSection({
   showHeader,
   renderRows,
   onNewSession,
-  discoveredWorktrees,
-  laneSessions
+  discoveredWorktrees
 }: {
   repo: SidebarWorkspaceTree
   showHeader: boolean
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   discoveredWorktrees?: HermesGitWorktree[]
-  laneSessions?: Record<string, SessionInfo[]>
 }) {
   const { t } = useI18n()
   const s = t.sidebar
   const [open, toggleOpen] = useWorkspaceNodeOpen(repo.id)
   const dismissedWorktrees = useStore($dismissedWorktreeIds)
 
-  // Merge session-derived groups with live git lanes from `git worktree list`.
+  // The repo's session lanes already come fully built from the backend; this
+  // only injects empty VISUAL lanes from a live `git worktree list`.
   const mergedGroups = useMemo(
-    () => mergeRepoWorktreeGroups(repo, discoveredWorktrees, laneSessions),
-    [repo, discoveredWorktrees, laneSessions]
+    () => mergeRepoWorktreeGroups(repo, discoveredWorktrees),
+    [repo, discoveredWorktrees]
   )
 
   // Main lanes are always visible; linked worktrees can be user-dismissed.

@@ -1,19 +1,25 @@
 import { describe, expect, it } from 'vitest'
 
-import type { HermesWorktreeInfo } from '@/global'
-import type { ProjectInfo, SessionInfo } from '@/types/hermes'
+import type { HermesGitWorktree } from '@/global'
+import type { SessionInfo } from '@/types/hermes'
+
+import type { ProjectInfo } from '@/types/hermes'
 
 import {
   baseName,
+  kanbanWorktreeDir,
   mergeRepoWorktreeGroups,
-  NO_PROJECT_ID,
-  projectForPath,
-  projectTreeFor,
-  uniqueCwds,
-  workspaceGroupsFor,
-  workspaceTreeFor,
-  type WorktreeResolver
+  overlayLiveLanes,
+  overlayLivePreviews,
+  placeLiveSession,
+  type SidebarProjectTree,
+  type SidebarSessionGroup,
+  sortWorktreeGroups
 } from './workspace-groups'
+
+// The grouping itself now lives on the backend (tui_gateway/project_tree.py,
+// covered by tests/tui_gateway/test_project_tree.py). This file only covers the
+// thin render helpers the desktop still owns + the VISUAL worktree enhancer.
 
 let nextId = 0
 
@@ -38,534 +44,186 @@ function makeSession(cwd: null | string, overrides: Partial<SessionInfo> = {}): 
   }
 }
 
-const labels = (sessions: SessionInfo[]) => workspaceGroupsFor(sessions, 'No workspace').map(g => g.label)
-
-describe('workspaceGroupsFor', () => {
-  it('groups by full cwd, not by basename — same-named folders are separate groups', () => {
-    const groups = workspaceGroupsFor(
-      [makeSession('/a/hermes-agent/apps/desktop'), makeSession('/a/hermes-agent-wt-rtl/apps/desktop')],
-      'No workspace'
-    )
-
-    expect(groups).toHaveLength(2)
-  })
-
-  it('disambiguates colliding basenames by walking up the path', () => {
-    expect(
-      labels([makeSession('/a/hermes-agent/apps/desktop'), makeSession('/a/hermes-agent-wt-rtl/apps/desktop')])
-    ).toEqual(['hermes-agent/apps/desktop', 'hermes-agent-wt-rtl/apps/desktop'])
-  })
-
-  it('leaves a unique basename as its short label', () => {
-    expect(labels([makeSession('/a/hermes-agent/apps/desktop'), makeSession('/b/heval-py')])).toEqual([
-      'desktop',
-      'heval-py'
-    ])
-  })
-
-  it('grows the prefix past one segment when the parent also collides', () => {
-    expect(labels([makeSession('/x/proj/apps/desktop'), makeSession('/y/proj/apps/desktop')])).toEqual([
-      'x/proj/apps/desktop',
-      'y/proj/apps/desktop'
-    ])
-  })
-
-  it('keeps the synthetic no-workspace group untouched even if a real group shares its label', () => {
-    const groups = workspaceGroupsFor([makeSession(null), makeSession('/a/No workspace')], 'No workspace')
-    const noWorkspace = groups.find(g => g.path === null)
-
-    expect(noWorkspace?.label).toBe('No workspace')
-  })
-})
-
-const info = (over: Partial<HermesWorktreeInfo> & Pick<HermesWorktreeInfo, 'repoRoot' | 'worktreeRoot'>): HermesWorktreeInfo => ({
-  branch: null,
-  isMainWorktree: false,
+const lane = (over: Partial<SidebarSessionGroup> & Pick<SidebarSessionGroup, 'id' | 'label'>): SidebarSessionGroup => ({
+  path: null,
+  sessions: [],
   ...over
 })
 
-describe('workspaceTreeFor', () => {
-  it('heuristic nests `<repo>-wt-<branch>` under its sibling repo', () => {
-    const tree = workspaceTreeFor(
-      [makeSession('/www/hermes-agent'), makeSession('/www/hermes-agent-wt-rtl')],
-      'No workspace'
-    )
-
-    expect(tree).toHaveLength(1)
-    expect(tree[0].label).toBe('hermes-agent')
-    expect(tree[0].groups.map(g => g.label).sort()).toEqual(['hermes-agent', 'rtl'])
-  })
-
-  it('git metadata is authoritative — worktrees group by repoRoot regardless of directory naming', () => {
-    const resolver: WorktreeResolver = cwd => {
-      if (cwd === '/www/hermes-agent') {
-        return info({ repoRoot: '/www/hermes-agent', worktreeRoot: '/www/hermes-agent', isMainWorktree: true, branch: 'main' })
-      }
-
-      if (cwd === '/elsewhere/ha-rtl') {
-        return info({ repoRoot: '/www/hermes-agent', worktreeRoot: '/elsewhere/ha-rtl', branch: 'rtl' })
-      }
-
-      return null
-    }
-
-    const tree = workspaceTreeFor(
-      [makeSession('/www/hermes-agent'), makeSession('/elsewhere/ha-rtl')],
-      'No workspace',
-      resolver
-    )
-
-    expect(tree).toHaveLength(1)
-    expect(tree[0].label).toBe('hermes-agent')
-    // The main checkout splits by each session's recorded branch; with no
-    // recorded branch these collapse into the fallback "main" group. Linked
-    // worktrees label by branch. Main-checkout group sorts ahead of linked.
-    expect(tree[0].groups.map(g => g.label)).toEqual(['main', 'rtl'])
-  })
-
-  it('a standalone directory is its own parent (always parent → worktree → sessions)', () => {
-    const tree = workspaceTreeFor([makeSession('/www/heval-node')], 'No workspace')
-
-    expect(tree).toHaveLength(1)
-    expect(tree[0].label).toBe('heval-node')
-    expect(tree[0].groups).toHaveLength(1)
-    expect(tree[0].groups[0].label).toBe('heval-node')
-  })
-
-  it('aggregates session counts across a repo’s worktrees', () => {
-    const tree = workspaceTreeFor(
-      [makeSession('/www/ha'), makeSession('/www/ha-wt-x'), makeSession('/www/ha-wt-x')],
-      'No workspace'
-    )
-
-    const parent = tree.find(p => p.label === 'ha')
-
-    expect(parent?.sessionCount).toBe(3)
-  })
-
-  it('no-workspace sessions form their own parent', () => {
-    const tree = workspaceTreeFor([makeSession(null)], 'No workspace')
-
-    expect(tree).toHaveLength(1)
-    expect(tree[0].label).toBe('No workspace')
-    expect(tree[0].path).toBeNull()
-  })
-
-  it('marks the main checkout isMain and linked worktrees not', () => {
-    const tree = workspaceTreeFor([makeSession('/www/ha'), makeSession('/www/ha-wt-rtl')], 'No workspace')
-    const parent = tree.find(p => p.label === 'ha')
-
-    const main = parent?.groups.find(g => g.isMain)
-    const linked = parent?.groups.find(g => !g.isMain)
-
-    expect(main?.label).toBe('ha')
-    expect(linked?.label).toBe('rtl')
-  })
-
-  it('splits main-checkout sessions into per-branch groups', () => {
-    const resolver: WorktreeResolver = () =>
-      info({ branch: 'whatever-is-checked-out-now', isMainWorktree: true, repoRoot: '/repo', worktreeRoot: '/repo' })
-
-    const tree = workspaceTreeFor(
-      [makeSession('/repo', { git_branch: 'main' }), makeSession('/repo', { git_branch: 'pets-feature' })],
-      'No workspace',
-      resolver
-    )
-
-    expect(tree).toHaveLength(1)
-    // Grouped by the session's *recorded* branch, not the resolver's transient
-    // current branch. Both live in the main checkout, so both are isMain.
-    expect(tree[0].groups.map(g => g.label)).toEqual(['main', 'pets-feature'])
-    expect(tree[0].groups.every(g => g.isMain)).toBe(true)
-    expect(tree[0].sessionCount).toBe(2)
-  })
-
-  it('pins a trunk branch ahead of feature branches in the main checkout', () => {
-    const resolver: WorktreeResolver = () =>
-      info({ isMainWorktree: true, repoRoot: '/repo', worktreeRoot: '/repo' })
-
-    const tree = workspaceTreeFor(
-      [makeSession('/repo', { git_branch: 'aaa-feature' }), makeSession('/repo', { git_branch: 'main' })],
-      'No workspace',
-      resolver
-    )
-
-    expect(tree[0].groups.map(g => g.label)).toEqual(['main', 'aaa-feature'])
-  })
-
-  it('collapses every kanban task worktree into one "kanban" lane per repo', () => {
-    const resolver: WorktreeResolver = cwd => {
-      if (cwd === '/repo') {
-        return info({ isMainWorktree: true, repoRoot: '/repo', worktreeRoot: '/repo', branch: 'main' })
-      }
-
-      // Two distinct kanban task worktrees under <repo>/.worktrees/.
-      return info({ repoRoot: '/repo', worktreeRoot: cwd, branch: `wt/${baseName(cwd)}` })
-    }
-
-    const tree = workspaceTreeFor(
-      [
-        makeSession('/repo', { git_branch: 'main' }),
-        makeSession('/repo/.worktrees/t_aaaaaaaa'),
-        makeSession('/repo/.worktrees/t_bbbbbbbb')
-      ],
-      'No workspace',
-      resolver
-    )
-
-    expect(tree).toHaveLength(1)
-    const kanban = tree[0].groups.filter(g => g.isKanban)
-    expect(kanban).toHaveLength(1)
-    expect(kanban[0].label).toBe('kanban')
-    expect(kanban[0].path).toBe('/repo/.worktrees')
-    expect(kanban[0].sessions).toHaveLength(2)
-    // The bucket sorts below the real main branch.
-    expect(tree[0].groups.map(g => g.label)).toEqual(['main', 'kanban'])
-  })
-
-  it('does NOT misattribute unrecorded sessions to the live current branch', () => {
-    // The repo is currently on "currently-checked-out", but a legacy session
-    // with no recorded branch must NOT be claimed by it — git can't prove an old
-    // session ran on whatever happens to be checked out now.
-    const resolver: WorktreeResolver = () =>
-      info({ branch: 'currently-checked-out', isMainWorktree: true, repoRoot: '/repo', worktreeRoot: '/repo' })
-
-    const tree = workspaceTreeFor([makeSession('/repo')], 'No workspace', resolver)
-
-    expect(tree[0].groups.map(g => g.label)).toEqual(['main'])
-  })
-
-  it('prefers the recorded branch over the live git branch', () => {
-    const resolver: WorktreeResolver = () =>
-      info({ branch: 'currently-checked-out', isMainWorktree: true, repoRoot: '/repo', worktreeRoot: '/repo' })
-
-    const tree = workspaceTreeFor([makeSession('/repo', { git_branch: 'when-it-ran' })], 'No workspace', resolver)
-
-    expect(tree[0].groups.map(g => g.label)).toEqual(['when-it-ran'])
-  })
-
-  it('buckets branch-less main-checkout sessions under a single "main" group', () => {
-    const resolver: WorktreeResolver = () =>
-      info({ isMainWorktree: true, repoRoot: '/repo', worktreeRoot: '/repo' })
-
-    const tree = workspaceTreeFor([makeSession('/repo'), makeSession('/repo')], 'No workspace', resolver)
-
-    expect(tree[0].groups).toHaveLength(1)
-    expect(tree[0].groups[0].label).toBe('main')
-    expect(tree[0].groups[0].sessions).toHaveLength(2)
-  })
-
-  it('orders linked worktrees after main-checkout branches', () => {
-    const resolver: WorktreeResolver = cwd =>
-      cwd === '/repo'
-        ? info({ isMainWorktree: true, repoRoot: '/repo', worktreeRoot: '/repo' })
-        : info({ branch: 'feat', repoRoot: '/repo', worktreeRoot: '/wt/feat' })
-
-    const tree = workspaceTreeFor(
-      [makeSession('/wt/feat'), makeSession('/repo', { git_branch: 'main' })],
-      'No workspace',
-      resolver
-    )
-
-    expect(tree[0].groups.map(g => g.label)).toEqual(['main', 'feat'])
-    expect(tree[0].groups.find(g => g.label === 'feat')?.isMain).toBe(false)
-  })
-
-  it('git metadata marks the main worktree isMain', () => {
-    const resolver: WorktreeResolver = cwd => {
-      if (cwd === '/repo') {
-        return info({ repoRoot: '/repo', worktreeRoot: '/repo', isMainWorktree: true })
-      }
-
-      return info({ branch: 'feat', repoRoot: '/repo', worktreeRoot: '/wt/feat' })
-    }
-
-    const tree = workspaceTreeFor([makeSession('/repo'), makeSession('/wt/feat')], 'No workspace', resolver)
-    const parent = tree[0]
-
-    expect(parent.groups.find(g => g.isMain)?.path).toBe('/repo')
-    expect(parent.groups.find(g => !g.isMain)?.label).toBe('feat')
+describe('baseName', () => {
+  it('returns the final path segment, ignoring trailing slashes and separators', () => {
+    expect(baseName('/www/hermes-agent/')).toBe('hermes-agent')
+    expect(baseName('C:\\repos\\app')).toBe('app')
+    expect(baseName('')).toBeUndefined()
   })
 })
 
-describe('uniqueCwds', () => {
-  it('dedupes and drops empty/whitespace cwds', () => {
-    expect(uniqueCwds([makeSession('/a'), makeSession('/a'), makeSession(null), makeSession('   ')])).toEqual(['/a'])
+describe('kanbanWorktreeDir', () => {
+  it('matches a kanban task worktree and returns its .worktrees dir', () => {
+    expect(kanbanWorktreeDir('/repo/.worktrees/t_aaaaaaaa')).toBe('/repo/.worktrees')
+  })
+
+  it('returns null for non-kanban paths', () => {
+    expect(kanbanWorktreeDir('/repo/src')).toBeNull()
+    expect(kanbanWorktreeDir('/repo')).toBeNull()
   })
 })
 
-let nextProjectId = 0
+describe('sortWorktreeGroups', () => {
+  it('orders main branches first (trunk ahead of features), kanban last, then alpha', () => {
+    const groups = [
+      lane({ id: 'k', label: 'kanban', isKanban: true }),
+      lane({ id: 'feat', label: 'feature', isMain: true }),
+      lane({ id: 'wt', label: 'a-worktree', isMain: false }),
+      lane({ id: 'main', label: 'main', isMain: true })
+    ]
 
-function makeProject(name: string, folders: string[], over: Partial<ProjectInfo> = {}): ProjectInfo {
-  return {
-    id: `p${nextProjectId++}`,
-    slug: name.toLowerCase().replace(/\s+/g, '-'),
-    name,
-    description: null,
-    icon: null,
-    color: null,
-    board_slug: null,
-    primary_path: folders[0] ?? null,
-    archived: false,
-    created_at: 1_000,
-    folders: folders.map((path, index) => ({ path, label: null, is_primary: index === 0, added_at: 1_000 })),
-    ...over
-  }
-}
-
-describe('projectForPath', () => {
-  it('matches a session cwd nested under a project folder', () => {
-    const project = makeProject('App', ['/www/app'])
-
-    expect(projectForPath([project], '/www/app/src/index.ts')?.slug).toBe('app')
-  })
-
-  it('returns null when no folder is a prefix', () => {
-    expect(projectForPath([makeProject('App', ['/www/app'])], '/other/place')).toBeNull()
-  })
-
-  it('uses the longest-prefix (innermost) project for nested projects', () => {
-    const outer = makeProject('Outer', ['/www'])
-    const inner = makeProject('Inner', ['/www/app'])
-
-    expect(projectForPath([outer, inner], '/www/app/src')?.slug).toBe('inner')
-  })
-
-  it('does not match a sibling whose name is a string-prefix but not a path-prefix', () => {
-    const project = makeProject('App', ['/www/app'])
-
-    // /www/app-extra must NOT match /www/app (segment-wise prefix only).
-    expect(projectForPath([project], '/www/app-extra/src')).toBeNull()
-  })
-
-  it('skips archived projects', () => {
-    const project = makeProject('App', ['/www/app'], { archived: true })
-
-    expect(projectForPath([project], '/www/app/src')).toBeNull()
+    expect(sortWorktreeGroups(groups).map(g => g.label)).toEqual(['main', 'feature', 'a-worktree', 'kanban'])
   })
 })
 
-describe('projectTreeFor', () => {
-  it('buckets sessions under their owning project and keeps the repo subtree', () => {
-    const project = makeProject('App', ['/www/app'])
-    const tree = projectTreeFor([makeSession('/www/app')], [project], 'No workspace')
+describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
+  it('injects a linked worktree lane discovered by git that has no sessions yet', () => {
+    const repo = { id: '/repo', path: '/repo', groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })] }
+    const discovered: HermesGitWorktree[] = [
+      { branch: 'feature', detached: false, isMain: false, locked: false, path: '/repo-wt-feature' }
+    ]
 
-    expect(tree).toHaveLength(1)
-    expect(tree[0].label).toBe('App')
-    expect(tree[0].sessionCount).toBe(1)
-    expect(tree[0].repos).toHaveLength(1)
+    const merged = mergeRepoWorktreeGroups(repo, discovered)
+
+    expect(merged.map(g => g.label)).toEqual(['main', 'feature'])
+    // The injected lane is empty (visual only — never carries sessions).
+    expect(merged.find(g => g.label === 'feature')?.sessions).toEqual([])
   })
 
-  it('renders an empty project with zero sessions (no repos)', () => {
-    const project = makeProject('Empty', ['/www/empty'])
-    const tree = projectTreeFor([], [project], 'No workspace')
+  it('never spawns a lane per kanban task worktree', () => {
+    const repo = { id: '/repo', path: '/repo', groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })] }
+    const discovered: HermesGitWorktree[] = [
+      { branch: 'wt/t_aaaaaaaa', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/t_aaaaaaaa' },
+      { branch: 'wt/t_bbbbbbbb', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/t_bbbbbbbb' }
+    ]
 
-    expect(tree).toHaveLength(1)
-    expect(tree[0].sessionCount).toBe(0)
-    expect(tree[0].repos).toHaveLength(0)
+    expect(mergeRepoWorktreeGroups(repo, discovered).map(g => g.label)).toEqual(['main'])
   })
 
-  it('promotes unowned git repos to auto-projects and omits cwd-less sessions', () => {
-    const project = makeProject('App', ['/www/app'])
-    const resolver: WorktreeResolver = cwd => {
-      if (cwd === '/www/app') {
-        return info({ isMainWorktree: true, repoRoot: '/www/app', worktreeRoot: '/www/app' })
-      }
-
-      if (cwd === '/elsewhere/thing') {
-        return info({ isMainWorktree: true, repoRoot: '/elsewhere/thing', worktreeRoot: '/elsewhere/thing' })
-      }
-
-      return null
+  it('does not duplicate a lane already present from the backend (by id/path)', () => {
+    const repo = {
+      id: '/repo',
+      path: '/repo',
+      groups: [
+        lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] })
+      ]
     }
+    const discovered: HermesGitWorktree[] = [
+      { branch: 'main', detached: false, isMain: true, locked: false, path: '/repo' }
+    ]
 
-    const tree = projectTreeFor(
-      [makeSession('/www/app'), makeSession('/elsewhere/thing'), makeSession(null)],
-      [project],
-      'No workspace',
-      resolver
-    )
+    const merged = mergeRepoWorktreeGroups(repo, discovered)
 
-    // Explicit project keeps its owned session.
-    expect(tree.find(node => node.label === 'App')?.sessionCount).toBe(1)
-    // The unowned dir became its own auto-project.
-    const auto = tree.find(node => node.isAuto)
-    expect(auto?.label).toBe('thing')
-    expect(auto?.sessionCount).toBe(1)
-    // The cwd-less session is dropped entirely — there is no "No project" bucket.
-    expect(tree.some(node => node.id === NO_PROJECT_ID)).toBe(false)
-    expect(tree.some(node => node.isNoProject)).toBe(false)
+    expect(merged).toHaveLength(1)
+    // The backend lane keeps its session rows; the enhancer left it untouched.
+    expect(merged[0].sessions).toHaveLength(1)
   })
 
-  it('assigns linked-worktree sessions to explicit projects by repoRoot', () => {
-    const project = makeProject('Hermes', ['/www/hermes-agent'])
-    const resolver: WorktreeResolver = cwd => {
-      if (cwd === '/www/hermes-agent-wt-feature') {
-        return info({
-          branch: 'feature',
-          isMainWorktree: false,
-          repoRoot: '/www/hermes-agent',
-          worktreeRoot: '/www/hermes-agent-wt-feature'
-        })
-      }
+  it('is a no-op when git worktree list is unavailable (remote backend)', () => {
+    const groups = [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
 
-      return null
-    }
+    expect(mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups }, undefined).map(g => g.label)).toEqual(['main'])
+  })
+})
 
-    const tree = projectTreeFor([makeSession('/www/hermes-agent-wt-feature')], [project], 'No workspace', resolver)
+const makeProject = (id: string, folders: string[]): ProjectInfo => ({
+  archived: false,
+  board_slug: null,
+  color: null,
+  created_at: 0,
+  description: null,
+  folders: folders.map((path, i) => ({ added_at: 0, is_primary: i === 0, label: null, path })),
+  icon: null,
+  id,
+  name: id,
+  primary_path: folders[0] ?? null,
+  slug: id
+})
 
-    // Worktree session folds into the explicit project (via repoRoot), so no
-    // standalone auto-project appears for the sibling worktree path.
-    expect(tree).toHaveLength(1)
-    expect(tree[0].label).toBe('Hermes')
-    expect(tree[0].isAuto).toBeFalsy()
-    expect(tree[0].sessionCount).toBe(1)
-    expect(tree[0].repos[0]?.label).toBe('hermes-agent')
+const projectNode = (over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id'>): SidebarProjectTree => ({
+  label: over.id,
+  path: over.id,
+  repos: [],
+  sessionCount: 0,
+  ...over
+})
+
+describe('placeLiveSession', () => {
+  it('places a brand-new (unpersisted) session into its auto project + main lane', () => {
+    // New session: cwd set to the repo, no git_repo_root/git_branch yet.
+    const placement = placeLiveSession(makeSession('/www/app'), [])
+
+    expect(placement).toMatchObject({ projectId: '/www/app', repoRoot: '/www/app', laneId: '/www/app::branch::', laneLabel: 'main' })
   })
 
-  it('never emits a No-project bucket even when only cwd-less sessions exist', () => {
-    const tree = projectTreeFor([makeSession(null), makeSession(null)], [], 'No workspace')
+  it('routes a session under an explicit project folder to that project', () => {
+    const placement = placeLiveSession(makeSession('/www/app/src', { git_repo_root: '/www/app', git_branch: 'feat' }), [
+      makeProject('p_app', ['/www/app'])
+    ])
 
-    expect(tree).toHaveLength(0)
+    expect(placement).toMatchObject({ projectId: 'p_app', laneId: '/www/app::branch::feat', laneLabel: 'feat' })
   })
 
-  it('auto-projects appear with no explicit projects when resolver exposes git roots', () => {
-    const resolver: WorktreeResolver = cwd => {
-      if (cwd === '/www/repo-a') {
-        return info({ isMainWorktree: true, repoRoot: '/www/repo-a', worktreeRoot: '/www/repo-a' })
-      }
+  it('skips cwd-less, kanban, and linked-worktree sessions (backend folds those)', () => {
+    expect(placeLiveSession(makeSession(null), [])).toBeNull()
+    expect(placeLiveSession(makeSession('/repo/.worktrees/t_aaaaaaaa'), [])).toBeNull()
+    expect(placeLiveSession(makeSession('/elsewhere/wt', { git_repo_root: '/repo' }), [])).toBeNull()
+  })
+})
 
-      if (cwd === '/www/repo-b') {
-        return info({ isMainWorktree: true, repoRoot: '/www/repo-b', worktreeRoot: '/www/repo-b' })
-      }
+describe('overlayLiveLanes', () => {
+  it('injects a live session into the matching main lane instantly', () => {
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups: [] }]
+    })
+    const live = [makeSession('/www/app', { id: 'fresh', git_branch: 'main' })]
 
-      return null
-    }
+    const overlaid = overlayLiveLanes(project, live, [])
+    const lane = overlaid.repos[0].groups.find(g => g.label === 'main')
 
-    const tree = projectTreeFor([makeSession('/www/repo-a'), makeSession('/www/repo-b')], [], 'No workspace', resolver)
-
-    expect(tree).toHaveLength(2)
-    expect(tree.every(node => node.isAuto)).toBe(true)
-    expect(tree.map(node => node.label).sort()).toEqual(['repo-a', 'repo-b'])
+    expect(lane?.sessions.map(session => session.id)).toContain('fresh')
+    expect(overlaid.sessionCount).toBe(1)
   })
 
-  it('does not promote non-git folders to auto-projects', () => {
-    const tree = projectTreeFor([makeSession('/www/random-dir')], [], 'No workspace')
-
-    expect(tree).toHaveLength(0)
-  })
-
-  it('attributes sessions by persisted git_repo_root (no git probe needed)', () => {
-    // No resolver at all — the backend already stamped the repo root on the row.
-    const tree = projectTreeFor(
-      [
-        makeSession('/www/app/src', { git_repo_root: '/www/app' }),
-        makeSession('/www/app/docs', { git_repo_root: '/www/app' })
-      ],
-      [],
-      'No workspace'
-    )
-
-    expect(tree).toHaveLength(1)
-    expect(tree[0].isAuto).toBe(true)
-    expect(tree[0].label).toBe('app')
-    expect(tree[0].sessionCount).toBe(2)
-  })
-
-  it('seeds discovered repos with no loaded sessions (full-history backfill)', () => {
-    const tree = projectTreeFor([], [], 'No workspace', undefined, {
-      discoveredRepos: [
-        { root: '/www/alpha', label: 'alpha', sessions: 9, last_active: 5, branch: 'main' },
-        { root: '/www/beta', label: 'beta', sessions: 3, last_active: 4, branch: null }
+  it('does not duplicate a session already present in a backend lane', () => {
+    const existing = makeSession('/www/app', { id: 'dup', git_branch: 'main' })
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [existing] })]
+        }
       ]
     })
 
-    expect(tree.map(n => n.label).sort()).toEqual(['alpha', 'beta'])
-    expect(tree.every(n => n.isAuto)).toBe(true)
-    const alpha = tree.find(n => n.label === 'alpha')
-    expect(alpha?.sessionCount).toBe(9)
-    // Seeded with a repo node so drill-in can hydrate lanes on demand.
-    expect(alpha?.repos[0]?.path).toBe('/www/alpha')
-  })
+    const overlaid = overlayLiveLanes(project, [existing], [])
 
-  it('does not double-list a discovered repo already owned by an explicit project', () => {
-    const project = makeProject('App', ['/www/app'])
-    const tree = projectTreeFor([], [project], 'No workspace', undefined, {
-      discoveredRepos: [{ root: '/www/app', label: 'app', sessions: 2, last_active: 1, branch: null }]
-    })
-
-    expect(tree).toHaveLength(1)
-    expect(tree[0].label).toBe('App')
-    expect(tree[0].isAuto).toBeFalsy()
-  })
-
-  it('does not re-seed a discovered repo that already has loaded sessions', () => {
-    const tree = projectTreeFor([makeSession('/www/app', { git_repo_root: '/www/app' })], [], 'No workspace', undefined, {
-      discoveredRepos: [{ root: '/www/app', label: 'app', sessions: 5, last_active: 1, branch: null }]
-    })
-
-    expect(tree.filter(n => n.id === '/www/app')).toHaveLength(1)
-  })
-
-  it('explicit projects sort ahead of auto-projects', () => {
-    const project = makeProject('App', ['/www/app'])
-    const resolver: WorktreeResolver = cwd => {
-      if (cwd === '/www/app') {
-        return info({ isMainWorktree: true, repoRoot: '/www/app', worktreeRoot: '/www/app' })
-      }
-
-      if (cwd === '/www/other') {
-        return info({ isMainWorktree: true, repoRoot: '/www/other', worktreeRoot: '/www/other' })
-      }
-
-      return null
-    }
-
-    const tree = projectTreeFor([makeSession('/www/app'), makeSession('/www/other')], [project], 'No workspace', resolver)
-
-    expect(tree[0].label).toBe('App')
-    expect(tree[0].isAuto).toBeFalsy()
-    expect(tree[1].isAuto).toBe(true)
+    expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['dup'])
   })
 })
 
-describe('mergeRepoWorktreeGroups', () => {
-  it('does not spawn a lane per discovered kanban task worktree', () => {
-    const merged = mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups: [] }, [
-      { branch: 'main', detached: false, isMain: true, locked: false, path: '/repo' },
-      { branch: 'wt/t_aaaaaaaa', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/t_aaaaaaaa' },
-      { branch: 'wt/t_bbbbbbbb', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/t_bbbbbbbb' }
-    ])
+describe('overlayLivePreviews', () => {
+  it('merges live sessions into a project preview, live first, capped to the limit', () => {
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [makeSession('/www/app', { id: 'old', started_at: 1, last_active: 1 })]
+    })
+    const live = [makeSession('/www/app', { id: 'fresh', started_at: 99, last_active: 99 })]
 
-    // Only the main lane materializes; the kanban tasks are intentionally dropped
-    // (their sessions live in the session-derived `::kanban` bucket instead).
-    expect(merged.map(g => g.label)).toEqual(['main'])
-  })
+    const previews = overlayLivePreviews([project], live, [], 3)
 
-  it('still surfaces a real user worktree discovered by git', () => {
-    const merged = mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups: [] }, [
-      { branch: 'feature', detached: false, isMain: false, locked: false, path: '/repo-wt-feature' }
-    ])
-
-    expect(merged.map(g => g.label)).toEqual(['feature'])
-  })
-
-  it('hydrates main lanes from repo-root fetch and splits by recorded branch', () => {
-    const merged = mergeRepoWorktreeGroups(
-      { id: '/repo', path: '/repo', groups: [] },
-      [{ branch: 'main', detached: false, isMain: true, locked: false, path: '/repo' }],
-      {
-        '/repo': [
-          makeSession('/repo/src', { git_branch: 'main' }),
-          makeSession('/repo/docs', { git_branch: 'feature-x' }),
-          // Linked worktrees under `.worktrees/` stay out of main lanes.
-          makeSession('/repo/.worktrees/t_aaaaaaaa', { git_branch: 'wt/t_aaaaaaaa' })
-        ]
-      }
-    )
-
-    expect(merged.map(g => g.label)).toEqual(['main', 'feature-x'])
-    expect(merged.find(g => g.label === 'main')?.sessions).toHaveLength(1)
-    expect(merged.find(g => g.label === 'feature-x')?.sessions).toHaveLength(1)
+    expect(previews['/www/app'].map(s => s.id)).toEqual(['fresh', 'old'])
   })
 })

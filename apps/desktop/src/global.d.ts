@@ -89,6 +89,11 @@ declare global {
           worktreePath: string,
           options?: { force?: boolean }
         ) => Promise<{ removed: string }>
+        // Repo-first discovery: scan bounded roots for git repos (depth-capped).
+        scanRepos: (
+          roots: string[],
+          options?: { maxDepth?: number }
+        ) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
         dispose: (id: string) => Promise<boolean>

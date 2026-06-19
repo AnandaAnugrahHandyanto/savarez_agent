@@ -559,13 +559,13 @@ export interface ProjectsPayload {
   active_id: null | string
 }
 
-// A git repo inferred from session history (server-side `projects.discover_repos`).
+// A git repo for the overview — filesystem-scanned (cached) or session-derived,
+// served by `projects.discover_repos` / persisted via `projects.record_repos`.
 export interface DiscoveredRepo {
   root: string
   label: string
   sessions: number
   last_active: number
-  branch: null | string
 }
 
 export interface ProfileSoul {

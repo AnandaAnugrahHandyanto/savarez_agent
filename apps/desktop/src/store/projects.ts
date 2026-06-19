@@ -1,8 +1,9 @@
 import { atom } from 'nanostores'
 
+import type { SidebarProjectTree } from '@/app/chat/sidebar/workspace-groups'
 import { persistString, storedString } from '@/lib/storage'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import type { DiscoveredRepo, ProjectInfo, ProjectsPayload } from '@/types/hermes'
+import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
 // served by the live gateway's `projects.*` JSON-RPC methods, which wrap the
@@ -15,10 +16,17 @@ export const $activeProjectId = atom<null | string>(null)
 // "no projects yet" from "haven't loaded".
 export const $projectsLoaded = atom(false)
 
-// Git repos inferred from FULL session history (server-side probe), so the
-// sidebar auto-surfaces every repo the user has worked in — not just the ones
-// whose sessions happen to be in the loaded recents page.
-export const $discoveredRepos = atom<DiscoveredRepo[]>([])
+// The authoritative project -> repo -> lane tree (overview), served by
+// `projects.tree`. Lanes carry counts + structure; per-project session rows are
+// fetched lazily on drill-in via `fetchProjectSessions`. This is the single
+// source of project membership — the desktop no longer derives it.
+export const $projectTree = atom<SidebarProjectTree[]>([])
+export const $projectTreeLoading = atom(false)
+// Session ids claimed by any project, so the flat Recents list can exclude them
+// (one membership set, straight from the backend tree).
+export const $scopedSessionIds = atom<Set<string>>(new Set())
+// True while the disk scan is in flight (drives the "finding repos" hint).
+export const $reposScanning = atom(false)
 
 // ── Project scope (the "you're inside a project" view, mirroring profile scope)─
 // The sidebar's grouped view is a project switcher: ALL_PROJECTS shows the
@@ -86,14 +94,68 @@ export async function refreshProjects(): Promise<void> {
   }
 }
 
-// Pull git repos inferred from full session history. Best-effort: a failure
-// leaves the cached set intact.
-export async function refreshDiscoveredRepos(): Promise<void> {
+interface ProjectTreePayload {
+  projects: SidebarProjectTree[]
+  active_id: null | string
+  scoped_session_ids: string[]
+}
+
+// Pull the authoritative project tree (overview structure + counts + preview
+// sessions + the scoped-session-id set). Best-effort: a failure leaves the
+// cached tree intact so the sidebar doesn't flicker.
+export async function refreshProjectTree(): Promise<void> {
+  $projectTreeLoading.set(true)
   try {
-    const res = await gatewayRequest<{ repos: DiscoveredRepo[] }>('projects.discover_repos')
-    $discoveredRepos.set(res.repos ?? [])
+    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
+    $projectTree.set(res.projects ?? [])
+    $scopedSessionIds.set(new Set(res.scoped_session_ids ?? []))
+    $activeProjectId.set(res.active_id ?? null)
   } catch {
-    // Backend may not be ready; keep the last known set.
+    // Backend may not be ready; keep the last known tree.
+  } finally {
+    $projectTreeLoading.set(false)
+  }
+}
+
+// Fully hydrated lanes (repo -> lane -> session rows) for one project, fetched
+// when the user enters it. Same backend grouping as `projects.tree`, so ids and
+// membership match exactly.
+export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
+  try {
+    const res = await gatewayRequest<{ project: SidebarProjectTree | null }>('projects.project_sessions', {
+      project_id: projectId
+    })
+
+    return res.project ?? null
+  } catch {
+    return null
+  }
+}
+
+// One filesystem scan per app run: the heavy disk walk happens once, the result
+// is cached in the backend, and later opens read the cache. Desktop-only (needs
+// the native crawler); elsewhere discovery falls back to session-derived repos.
+let didScanRepos = false
+
+export async function scanAndRecordRepos(force = false): Promise<void> {
+  const scan = window.hermesDesktop?.git?.scanRepos
+
+  if (!scan || (didScanRepos && !force)) {
+    return
+  }
+
+  didScanRepos = true
+  $reposScanning.set(true)
+
+  try {
+    const repos = await scan([])
+    await gatewayRequest('projects.record_repos', { repos })
+    // The disk scan may surface new zero-session repos; refold them into the tree.
+    await refreshProjectTree()
+  } catch {
+    didScanRepos = false // let a later open retry a failed scan
+  } finally {
+    $reposScanning.set(false)
   }
 }
 

@@ -61,7 +61,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),
     worktreeAdd: (repoPath, options) => ipcRenderer.invoke('hermes:git:worktreeAdd', repoPath, options),
     worktreeRemove: (repoPath, worktreePath, options) =>
-      ipcRenderer.invoke('hermes:git:worktreeRemove', repoPath, worktreePath, options)
+      ipcRenderer.invoke('hermes:git:worktreeRemove', repoPath, worktreePath, options),
+    scanRepos: (roots, options) => ipcRenderer.invoke('hermes:git:scanRepos', roots, options)
   },
   terminal: {
     dispose: id => ipcRenderer.invoke('hermes:terminal:dispose', id),
