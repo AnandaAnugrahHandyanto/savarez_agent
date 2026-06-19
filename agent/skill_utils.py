@@ -79,7 +79,7 @@ _SKILL_QUARANTINE_PATTERNS = (
         "sys_prompt_override",
         re.compile(
             r"\b(?:system\s+prompt|developer\s+message|hidden\s+instructions?)"
-            r"\s*(?:override|:)",
+            r"\s*(?:override|replacement|takes\s+precedence)\b",
             re.IGNORECASE,
         ),
     ),
