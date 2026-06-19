@@ -2194,7 +2194,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    # HERMES_TELEGRAM_PRESERVE_BACKLOG: keep messages received
+                    # while the gateway was down (an on-demand wake answers the
+                    # message that woke it; a suspended agent catches up on
+                    # resume) instead of dropping them on a cold start.
+                    drop_pending_updates=(
+                        os.getenv("HERMES_TELEGRAM_PRESERVE_BACKLOG", "").strip().lower()
+                        not in ("1", "true", "yes", "on")
+                    ),
                     error_callback=_polling_error_callback,
                 )
             
