@@ -1014,6 +1014,15 @@ class _AnthropicCompletionsAdapter:
             max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 2000
         temperature = kwargs.get("temperature")
 
+        # The Anthropic Messages adapter does not support streaming for
+        # auxiliary calls yet.  Fail fast instead of passing stream=True
+        # into build_anthropic_kwargs where it would be silently ignored.
+        if kwargs.get("stream"):
+            raise NotImplementedError(
+                "Anthropic Messages streaming is not yet implemented "
+                "for auxiliary calls"
+            )
+
         normalized_tool_choice = None
         if isinstance(tool_choice, str):
             normalized_tool_choice = tool_choice
@@ -2790,6 +2799,7 @@ def _retry_same_provider_sync(
     tools: Optional[list],
     effective_timeout: float,
     effective_extra_body: dict,
+    stream: bool = False,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -2824,6 +2834,7 @@ def _retry_same_provider_sync(
         timeout=effective_timeout,
         extra_body=effective_extra_body,
         base_url=retry_base or resolved_base_url,
+        stream=stream,
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
@@ -5056,6 +5067,7 @@ def _build_call_kwargs(
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
+    stream: bool = False,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -5063,6 +5075,8 @@ def _build_call_kwargs(
         "messages": messages,
         "timeout": timeout,
     }
+    if stream:
+        kwargs["stream"] = True
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
     if fixed_temperature is OMIT_TEMPERATURE:
@@ -5131,10 +5145,20 @@ def _build_call_kwargs(
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
+    # Anthropic Messages adapter and MiniMax (which routes through it)
+    # don't support streaming yet — strip the stream kwarg so wire
+    # requests don't 400.  This is expected behaviour for these providers;
+    # context_compressor.py explicitly passes stream=True with a comment
+    # noting that _build_call_kwargs will strip it here.
+    if kwargs.get("stream") and provider:
+        p = provider.lower()
+        if p in {"anthropic", "minimax"}:
+            kwargs.pop("stream", None)
+
     return kwargs
 
 
-def _validate_llm_response(response: Any, task: str = None) -> Any:
+def _validate_llm_response(response: Any, task: Optional[str] = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
     Fails fast with a clear error instead of letting malformed payloads
@@ -5147,6 +5171,15 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    # Streaming chat-completions calls return an iterable of chunks instead
+    # of a final .choices response. Collect them here so existing retry and
+    # fallback call sites can keep the same validation shape as upstream.
+    if (
+        not hasattr(response, "choices")
+        and not isinstance(response, (str, bytes, bytearray, dict))
+        and hasattr(response, "__iter__")
+    ):
+        response = _collect_chat_stream_response(response)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -5165,6 +5198,40 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     return response
 
 
+def _collect_chat_stream_response(stream_obj: Any) -> Any:
+    """Collect text-only streaming chunks into a response-like namespace.
+
+    Deliberately constrained to content + usage. Not suitable for
+    tool-call or structured-output streaming — use a full chunk merger
+    that handles tool/function-call deltas if those are expected.
+    """
+    collected_content: list[str] = []
+    collected_usage = None
+    for chunk in stream_obj:
+        delta = chunk.choices[0].delta if chunk.choices else None
+        if delta:
+            if getattr(delta, "tool_calls", None):
+                raise ValueError(
+                    "tool_calls detected in streaming chunk. "
+                    "_collect_chat_stream_response is a text-only collector. "
+                    "Use a full chunk merger that handles tool/function-call deltas."
+                )
+            if getattr(delta, "content", None):
+                collected_content.append(delta.content)
+        usage = getattr(chunk, "usage", None)
+        if usage:
+            collected_usage = usage
+    content = "".join(collected_content)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content)
+        )]
+    )
+    if collected_usage:
+        response.usage = collected_usage
+    return response
+
+
 def call_llm(
     task: str = None,
     *,
@@ -5179,6 +5246,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    stream: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -5283,7 +5351,7 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        base_url=_base_info or resolved_base_url)
+        base_url=_base_info or resolved_base_url, stream=stream)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -5480,6 +5548,7 @@ def call_llm(
                     tools=tools,
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    stream=stream,
                 )
 
         # ── Same-provider credential-pool recovery ─────────────────────
@@ -5522,6 +5591,7 @@ def call_llm(
                         tools=tools,
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        stream=stream,
                     )
                 except Exception as retry2_err:
                     # The rotated key also hit a quota/auth wall.  Mark it
@@ -5613,7 +5683,9 @@ def call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
-                    base_url=str(getattr(fb_client, "base_url", "") or ""))
+                    base_url=str(getattr(fb_client, "base_url", "") or ""),
+                    stream=stream,
+                )
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
             # All fallback layers exhausted — emit a single user-visible
