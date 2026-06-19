@@ -18,6 +18,7 @@ import type {
   HermesConfigRecord,
   LogsResponse,
   MemoryProviderConfig,
+  MemoryProviderOAuthStatus,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -73,6 +74,7 @@ export type {
   HermesConfigRecord,
   LogsResponse,
   MemoryProviderConfig,
+  MemoryProviderOAuthStatus,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -450,6 +452,23 @@ export function cancelOAuthSession(sessionId: string): Promise<{ ok: boolean }> 
     ...profileScoped(),
     path: `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
     method: 'DELETE'
+  })
+}
+
+// Memory-provider OAuth connect (provider-keyed; 404s for providers without an
+// OAuth flow). Profile-scoped: the grant lands in the active profile's config.
+export function startMemoryProviderOAuth(provider: string): Promise<MemoryProviderOAuthStatus> {
+  return window.hermesDesktop.api<MemoryProviderOAuthStatus>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
+    method: 'POST'
+  })
+}
+
+export function getMemoryProviderOAuthStatus(provider: string): Promise<MemoryProviderOAuthStatus> {
+  return window.hermesDesktop.api<MemoryProviderOAuthStatus>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
   })
 }
 
