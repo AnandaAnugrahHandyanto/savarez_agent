@@ -46,3 +46,11 @@ optional_env:
     description: "Display name for the Teams home channel"
     prompt: "Home channel display name"
     password: false
+  - name: TEAMS_DLP_ENABLED
+    description: "Redact secrets/PII (emails, API keys, tokens) from every outbound reply"
+    prompt: "Enable DLP redaction? (true/false)"
+    password: false
+  - name: TEAMS_AUDIT_CHANNEL
+    description: "Conversation ID to mirror (DLP-redacted) agent replies to for compliance"
+    prompt: "Audit-log channel conversation ID (or empty)"
+    password: false

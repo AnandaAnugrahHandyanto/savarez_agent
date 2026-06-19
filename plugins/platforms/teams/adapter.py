@@ -707,6 +707,19 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        # Governance: DLP outbound redaction + audit-log channel mirror (opt-in).
+        from .dlp import DlpConfig
+
+        dlp_raw = extra.get("dlp")
+        if dlp_raw is None and os.getenv("TEAMS_DLP_ENABLED", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            dlp_raw = {"enabled": True}
+        self._dlp_cfg = DlpConfig.from_dict(dlp_raw if isinstance(dlp_raw, dict) else None)
+        self._audit_channel = (
+            str(extra.get("audit_channel") or "").strip()
+            or os.getenv("TEAMS_AUDIT_CHANNEL", "").strip()
+        )
 
     async def connect(self) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -1156,6 +1169,12 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Teams app not initialized")
 
         formatted = self.format_message(content)
+        # DLP: redact secrets/PII on every outbound reply before it hits Teams.
+        # (Redact before truncation so a secret can't be sliced into a fragment.)
+        if self._dlp_cfg.enabled:
+            from .dlp import redact
+
+            formatted, _n = redact(formatted, self._dlp_cfg)
         chunks = self.truncate_message(formatted)
         last_message_id = None
 
@@ -1179,7 +1198,27 @@ class TeamsAdapter(BasePlatformAdapter):
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
 
+        # Audit: mirror the (already redacted) reply to the audit channel. Fires
+        # at the delivery choke point, so streamed/threaded replies are covered.
+        await self._mirror_to_audit(chat_id, formatted)
         return SendResult(success=True, message_id=last_message_id)
+
+    async def _mirror_to_audit(self, chat_id: str, redacted_text: str) -> None:
+        """Mirror an outbound reply to the audit-log channel (best-effort).
+
+        The text is already DLP-redacted by ``send()``. A loop guard skips the
+        audit channel's own traffic so it doesn't mirror itself.
+        """
+        if not self._audit_channel or not self._app:
+            return
+        if chat_id == self._audit_channel:  # loop guard
+            return
+        excerpt = redacted_text if len(redacted_text) <= 1500 else redacted_text[:1500] + "…"
+        line = f"🧾 Reply in {chat_id}:\n{excerpt}"
+        try:
+            await self._app.send(self._audit_channel, line)
+        except Exception as e:  # noqa: BLE001 — auditing must never break delivery
+            logger.debug("[teams] audit mirror failed: %s", e)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._app:
