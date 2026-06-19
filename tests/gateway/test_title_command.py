@@ -7,6 +7,7 @@ across all gateway messenger platforms.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncio
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -43,6 +44,80 @@ def _make_runner(session_db=None):
     runner.session_store = mock_store
 
     return runner
+
+
+# ---------------------------------------------------------------------------
+# _is_telegram_renamable_thread
+# ---------------------------------------------------------------------------
+
+
+class TestIsTelegramRenamableThread:
+    """Tests for GatewayRunner._is_telegram_renamable_thread."""
+
+    def test_dm_topic_lane_is_renamable(self):
+        """A DM topic lane with a real thread_id is renamable."""
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            chat_id="12345",
+            user_id="user1",
+            thread_id="42",
+        )
+        assert runner._is_telegram_renamable_thread(source) is True
+
+    def test_group_forum_topic_is_renamable(self):
+        """A group forum topic with a real thread_id is renamable."""
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_type="group",
+            chat_id="-1001234567890",
+            user_id="user1",
+            thread_id="99",
+        )
+        assert runner._is_telegram_renamable_thread(source) is True
+
+    def test_general_topic_is_not_renamable(self):
+        """The General (pinned) topic is not renamable."""
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            chat_id="12345",
+            user_id="user1",
+            thread_id="1",
+        )
+        assert runner._is_telegram_renamable_thread(source) is False
+
+    def test_no_thread_id_is_not_renamable(self):
+        """A DM or group without a thread_id is not renamable."""
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            chat_id="12345",
+            user_id="user1",
+            # no thread_id
+        )
+        assert runner._is_telegram_renamable_thread(source) is False
+
+    def test_non_telegram_platform_is_not_renamable(self):
+        """Discord threads are not renamable via this method."""
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_type="group",
+            chat_id="12345",
+            user_id="user1",
+            thread_id="42",
+        )
+        assert runner._is_telegram_renamable_thread(source) is False
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +254,33 @@ class TestHandleTitleCommand:
             assert "Cross-Platform Test" in result
             assert db.get_session_title("test_session_123") == "Cross-Platform Test"
             db.close()
+
+    @pytest.mark.asyncio
+    async def test_title_renames_forum_topic(self, tmp_path):
+        """Setting a title in a Telegram forum topic fires the rename pipeline."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        rename_mock = AsyncMock()
+        runner._rename_telegram_topic_for_session_title = rename_mock
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="group",
+            thread_id="42",
+        )
+        event = MessageEvent(text="/title My Topic", source=source)
+        result = await runner._handle_title_command(event)
+        assert "My Topic" in result
+        # Flush pending asyncio tasks so the ensure_future completes
+        await asyncio.sleep(0)
+        rename_mock.assert_awaited_once_with(
+            source, "test_session_123", "My Topic",
+        )
+        db.close()
 
 
 # ---------------------------------------------------------------------------
