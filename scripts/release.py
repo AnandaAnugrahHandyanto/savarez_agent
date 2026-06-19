@@ -54,6 +54,7 @@ AUTHOR_MAP = {
     "joe.rinaldijohnson@shopify.com": "joerj123",
     "adalsteinnhelgason@Aalsteinns-MacBook-Pro-3.local": "AIalliAI",
     "adalsteinnhelgason@users.noreply.github.com": "AIalliAI",
+    "iamlukethedev@users.noreply.github.com": "iamlukethedev",
     "zhang.hz6666@gmail.com": "HaozheZhang6",
     "barronlroth@gmail.com": "barronlroth",
     "ondrej.drapalik@gmail.com": "OndrejDrapalik",
@@ -79,6 +80,7 @@ AUTHOR_MAP = {
     "al@randomsnowflake.me": "randomsnowflake",
     "zakame@zakame.net": "zakame",
     "152110621+jiangkoumo@users.noreply.github.com": "jiangkoumo",
+    "qinhaojie.exe@bytedance.com": "qin-ctx",
     "834740219@qq.com": "ViewWay",
     "matt@vestigial.dev": "m4dni5",
     "harjoth.khara@gmail.com": "harjothkhara",
@@ -1557,6 +1559,7 @@ AUTHOR_MAP = {
     "bsmith@bramarstrategicservices.com": "bcsmith528",  # PR #20589 salvage (register_slack_action_handler plugin API)
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #45494 salvage (claim session slot before auto-resume task; #45456)
     "andrewdmwalker@gmail.com": "capt-marbles",  # PR #38440 salvage (resolve xAI OAuth credentials across profiles; #43589)
+    "infinitycrew39@gmail.com": "infinitycrew39",  # PR #47945 salvage (scope langfuse trace state by turn/request ids; #48292)
 }
 
 
