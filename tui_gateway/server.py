@@ -9688,9 +9688,46 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:
+            from agent.manual_compression_feedback import summarize_manual_compression
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            with session["history_lock"]:
+                before_messages = list(session.get("history", []))
+            _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+            _tools = getattr(agent, "tools", None) or None
+            before_tokens = (
+                estimate_request_tokens_rough(
+                    before_messages, system_prompt=_sys_prompt, tools=_tools
+                )
+                if before_messages
+                else 0
+            )
             _compress_session_history(session, arg)
             _sync_session_key_after_compress(sid, session)
+            with session["history_lock"]:
+                after_messages = list(session.get("history", []))
+            _sys_prompt_after = (
+                getattr(agent, "_cached_system_prompt", "") or _sys_prompt
+            )
+            _tools_after = getattr(agent, "tools", None) or _tools
+            after_tokens = (
+                estimate_request_tokens_rough(
+                    after_messages,
+                    system_prompt=_sys_prompt_after,
+                    tools=_tools_after,
+                )
+                if after_messages
+                else 0
+            )
+            summary = summarize_manual_compression(
+                before_messages, after_messages, before_tokens, after_tokens
+            )
             _emit("session.info", sid, _session_info(agent, session))
+            icon = "🗜️" if summary["noop"] else "✅"
+            lines = [f"{icon} {summary['headline']}", f"   {summary['token_line']}"]
+            if summary["note"]:
+                lines.append(f"   {summary['note']}")
+            return "\n".join(lines)
         elif name == "fast" and agent:
             mode = arg.lower()
             if mode in {"fast", "on"}:

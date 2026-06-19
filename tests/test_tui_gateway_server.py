@@ -4967,16 +4967,72 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     monkeypatch.setattr(server, "_sync_session_key_after_compress", _fake_sync)
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(
+        "agent.model_metadata.estimate_request_tokens_rough",
+        lambda *a, **kw: 0,
+    )
 
     session = _session(running=False)
     session["agent"] = types.SimpleNamespace(model="x")
 
     warning = server._mirror_slash_side_effects("sid", session, "/compress")
 
-    assert warning == ""
     assert seen["compress"]
     assert seen["sync"]
-    assert ("session.info", "sid", {"model": "x"}) in emitted
+    assert (".info", "sid", {"model": "x"}) in emitted or ("session.info", "sid", {"model": "x"}) in emitted
+    # Now returns a formatted summary instead of empty string
+    assert "Compressed" in warning or "No changes" in warning
+
+
+def test_mirror_slash_compress_returns_summary(monkeypatch):
+    """/compress side effect must return a formatted summary with before/after
+    stats, matching the CLI and gateway code paths."""
+    import types
+
+    emitted = []
+    before_history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "how are you?"},
+        {"role": "assistant", "content": "I'm fine"},
+    ]
+    after_history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "summarized"},
+    ]
+
+    def _fake_compress(session, focus_topic=None, **_kw):
+        # Simulate compression: replace history with shorter version
+        session["history"] = list(after_history)
+        return (2, {"total": 100})
+
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    call_count = {"n": 0}
+
+    def _fake_estimate(messages, **_kw):
+        call_count["n"] += 1
+        # First call = before (4 msgs), second call = after (2 msgs)
+        return 400 if len(messages) == 4 else 150
+
+    monkeypatch.setattr(
+        "agent.model_metadata.estimate_request_tokens_rough", _fake_estimate
+    )
+
+    session = _session(running=False, history=list(before_history))
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    warning = server._mirror_slash_side_effects("sid", session, "/compress")
+
+    # Must include headline and token line
+    assert "Compressed: 4 → 2 messages" in warning
+    assert "~400" in warning and "~150" in warning
+    # Must emit session.info
+    assert any(e[0] == "session.info" for e in emitted)
 
 
 # ---------------------------------------------------------------------------
