@@ -180,6 +180,15 @@ def _cmd_subscribe(args):
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
+    # Model override: supports "provider:model" or bare "model"
+    model_arg = getattr(args, "model", "") or ""
+    if model_arg:
+        if "/" in model_arg:
+            parts = model_arg.split("/", 1)
+            route["model"] = {"provider": parts[0], "model": parts[1]}
+        else:
+            route["model"] = model_arg
+
     if getattr(args, "deliver_only", False):
         if route["deliver"] == "log":
             print(
@@ -206,6 +215,13 @@ def _cmd_subscribe(args):
     else:
         print("  Events: (all)")
     print(f"  Deliver: {route['deliver']}")
+    if route.get("model"):
+        model_cfg = route["model"]
+        if isinstance(model_cfg, dict):
+            model_str = f"{model_cfg.get('provider', '')}/{model_cfg.get('model', '')}"
+        else:
+            model_str = str(model_cfg)
+        print(f"  Model:  {model_str}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
     if route.get("prompt"):
@@ -238,6 +254,13 @@ def _cmd_list(args):
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        model_cfg = route.get("model")
+        if model_cfg:
+            if isinstance(model_cfg, dict):
+                model_str = f"{model_cfg.get('provider', '')}/{model_cfg.get('model', '')}"
+            else:
+                model_str = str(model_cfg)
+            print(f"    Model:   {model_str}")
         print()
 
 

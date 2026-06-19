@@ -55,6 +55,12 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').",
     )
+    wh_sub.add_argument(
+        "--model",
+        default="",
+        help="Model override for agent runs (e.g. 'anthropic/claude-sonnet-4' "
+        "or 'openai/gpt-4o'). Supports 'provider/model' format.",
+    )
 
     webhook_subparsers.add_parser(
         "list", aliases=["ls"], help="List all dynamic subscriptions"

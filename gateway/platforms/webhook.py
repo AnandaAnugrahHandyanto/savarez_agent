@@ -641,6 +641,32 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
+
+        # Apply model override if configured on this subscription.
+        # The gateway runner reads _session_model_overrides when creating
+        # the agent for a session, so we register the override here before
+        # spawning the agent task.  The override is scoped to this exact
+        # session_chat_id (unique per delivery) so it cannot leak.
+        route_model = route_config.get("model")
+        if route_model and self.gateway_runner:
+            try:
+                from gateway.run import GatewayRunner
+                if isinstance(self.gateway_runner, GatewayRunner):
+                    if isinstance(route_model, dict):
+                        override = {
+                            "model": route_model.get("model", ""),
+                            "provider": route_model.get("provider", ""),
+                        }
+                    else:
+                        override = {"model": str(route_model)}
+                    self.gateway_runner._session_model_overrides[session_chat_id] = override
+                    logger.info(
+                        "[webhook] Model override applied: session=%s -> %s",
+                        session_chat_id, override,
+                    )
+            except Exception as e:
+                logger.warning("[webhook] Failed to apply model override: %s", e)
+
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
