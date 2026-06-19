@@ -16,6 +16,7 @@ import os
 import tempfile
 import html as _html
 import re
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -459,7 +460,10 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
-        self._polling_error_task: Optional[asyncio.Task] = None
+        self._pending_text_batch_started_at: Dict[str, float] = {}
+        self._pending_photo_batches: Dict[str, MessageEvent] = {}
+        self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._pending_photo_batch_started_at: Dict[str, float] = {}
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
@@ -5960,6 +5964,39 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _drain_stale_ingress_batches(self) -> None:
+        """Flush pending Telegram batches that have exceeded their grace window."""
+        now = time.time()
+        stale_text = [key for key, started in self._pending_text_batch_started_at.items() if now - started > max(self._text_batch_delay_seconds, self._text_batch_split_delay_seconds) * 3]
+        for key in stale_text:
+            event = self._pending_text_batches.pop(key, None)
+            self._pending_text_batch_started_at.pop(key, None)
+            task = self._pending_text_batch_tasks.pop(key, None)
+            if task and not task.done():
+                task.cancel()
+            if event:
+                self._persist_telegram_ingress_event(event)
+                await self.handle_message(event)
+
+        stale_photo = [key for key, started in self._pending_photo_batch_started_at.items() if now - started > self._media_batch_delay_seconds * 3]
+        for key in stale_photo:
+            event = self._pending_photo_batches.pop(key, None)
+            self._pending_photo_batch_started_at.pop(key, None)
+            task = self._pending_photo_batch_tasks.pop(key, None)
+            if task and not task.done():
+                task.cancel()
+            if event:
+                self._persist_telegram_ingress_event(event)
+                await self.handle_message(event)
+
+    def _mark_text_batch_started(self, key: str, event: MessageEvent) -> None:
+        self._pending_text_batches[key] = event
+        self._pending_text_batch_started_at[key] = time.time()
+
+    def _mark_photo_batch_started(self, key: str, event: MessageEvent) -> None:
+        self._pending_photo_batches[key] = event
+        self._pending_photo_batch_started_at[key] = time.time()
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -5967,6 +6004,7 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        await self._drain_stale_ingress_batches()
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -5980,10 +6018,12 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
+        self._persist_telegram_ingress_event(event)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        await self._drain_stale_ingress_batches()
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -5995,10 +6035,12 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
+        self._persist_telegram_ingress_event(event)
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
+        await self._drain_stale_ingress_batches()
         msg = self._effective_update_message(update)
         if not msg:
             return
@@ -6035,6 +6077,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
+        self._persist_telegram_ingress_event(event)
         await self.handle_message(event)
 
     # ------------------------------------------------------------------
@@ -6069,7 +6112,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chunk_len = len(event.text or "")
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending_text_batches[key] = event
+            self._mark_text_batch_started(key, event)
         else:
             # Append text from the follow-up chunk
             if event.text:
@@ -6127,6 +6170,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
+            self._persist_telegram_ingress_event(event)
             await self.handle_message(event)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
@@ -6158,6 +6202,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if not event:
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
+            self._persist_telegram_ingress_event(event)
             await self.handle_message(event)
         finally:
             if self._pending_photo_batch_tasks.get(batch_key) is current_task:
@@ -6167,7 +6212,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Merge photo events into a pending batch and schedule flush."""
         existing = self._pending_photo_batches.get(batch_key)
         if existing is None:
-            self._pending_photo_batches[batch_key] = event
+            self._mark_photo_batch_started(batch_key, event)
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
@@ -6211,6 +6256,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if msg.sticker:
             await self._handle_sticker(msg, event)
             event = self._apply_telegram_group_observe_attribution(event)
+            self._persist_telegram_ingress_event(event)
             await self.handle_message(event)
             return
 
@@ -6257,6 +6303,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not allowed:
                     event.text = self._append_observed_note(event.text, note or "")
                     logger.info("[Telegram] Skipped oversized user voice (size=%s)", getattr(msg.voice, "file_size", None))
+                    self._persist_telegram_ingress_event(event)
                     await self.handle_message(event)
                     return
                 file_obj = await msg.voice.get_file()
@@ -6273,6 +6320,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not allowed:
                     event.text = self._append_observed_note(event.text, note or "")
                     logger.info("[Telegram] Skipped oversized user audio (size=%s)", getattr(msg.audio, "file_size", None))
+                    self._persist_telegram_ingress_event(event)
                     await self.handle_message(event)
                     return
                 file_obj = await msg.audio.get_file()
@@ -6332,6 +6380,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Maximum: {limit_mb} MB."
                     )
                     logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
+                    self._persist_telegram_ingress_event(event)
                     await self.handle_message(event)
                     return
 
@@ -6350,6 +6399,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
                             "could not be read as an image."
                         )
+                        self._persist_telegram_ingress_event(event)
                         await self.handle_message(event)
                         return
 
@@ -6386,6 +6436,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
+                    self._persist_telegram_ingress_event(event)
                     await self.handle_message(event)
                     return
 
@@ -6403,6 +6454,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Supported types: {supported_list}"
                     )
                     logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
+                    self._persist_telegram_ingress_event(event)
                     await self.handle_message(event)
                     return
 
@@ -6474,6 +6526,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
             event = self._media_group_events.pop(media_group_id, None)
             if event is not None:
+                self._persist_telegram_ingress_event(event)
                 await self.handle_message(event)
         except asyncio.CancelledError:
             return
