@@ -7473,13 +7473,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
 
+        if command:
+            if isinstance(self.config, dict):
+                quick_commands = self.config.get("quick_commands", {}) or {}
+            else:
+                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+            if not isinstance(quick_commands, dict):
+                quick_commands = {}
+        else:
+            quick_commands = {}
+
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
         # vs group). When unset → backward-compat: every allowed user can
         # run every command. When set → non-admins can run only commands in
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). Plain chat is unaffected — only slash commands gate.
-        if command and canonical and is_gateway_known_command(canonical):
+        #
+        # Config-backed quick commands are slash capabilities too. They may
+        # execute shell commands later in this handler, so gate the raw quick
+        # command name through the same policy even though it is not present
+        # in the built-in/plugin slash registry.
+        if command and canonical and (is_gateway_known_command(canonical) or command in quick_commands):
             _denied = self._check_slash_access(source, canonical)
             if _denied is not None:
                 return _denied
@@ -7765,12 +7780,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":

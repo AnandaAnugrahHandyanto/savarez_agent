@@ -186,6 +186,28 @@ async def test_non_admin_with_empty_user_commands_gets_floor_only():
     assert "Tier: user" in whoami_result
 
 
+@pytest.mark.asyncio
+async def test_non_admin_denied_for_unlisted_quick_command_exec():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+        }
+    )
+    runner.config.quick_commands = {
+        "limits": {"type": "exec", "command": "printf quick-command-bypass-confirmed"}
+    }
+
+    result = await runner._handle_message(
+        _make_event("/limits", _make_source(user_id="999"))
+    )
+
+    assert result is not None
+    assert "⛔" in result
+    assert "/limits is admin-only here" in result
+    assert "quick-command-bypass-confirmed" not in result
+
+
 # ---------------------------------------------------------------------------
 # Gate ALLOW — admin and listed user
 # ---------------------------------------------------------------------------
