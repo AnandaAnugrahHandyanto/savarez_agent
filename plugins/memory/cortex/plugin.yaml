@@ -1,0 +1,5 @@
+name: cortex
+description: >-
+  Cortext — cognitive memory (5-element detector compliant): W5H-structured,
+  internationalized (PT/EN/ES), contradiction-validated at write time, with
+  decay/forget gate and JSON disk persistence. Local, zero external deps.
