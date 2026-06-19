@@ -587,3 +587,56 @@ class TestGcIntegration:
         # No update — still 'running'
         n = db.gc_shadow_clone_tasks(retain_hours=0)
         assert n == 0
+
+
+# ---------------------------------------------------------------------------
+# persist_routing path — update_shadow_clone_task with routing_meta only
+# ---------------------------------------------------------------------------
+
+class TestPersistRouting:
+    """Verifies that a routing-only update (persist_routing) does not clobber
+    an existing result_json.  The COALESCE in update_shadow_clone_task ensures
+    that passing result_json=None leaves the stored value intact."""
+
+    def test_routing_update_does_not_clear_result_json(self, tmp_db):
+        """persist_routing: routing_meta written, result_json and status preserved."""
+        import sqlite3
+
+        # Step 1 — insert a completed row that already has a result
+        result_payload = {"summary": "clone done", "api_calls": 7}
+        tmp_db.insert_shadow_clone_task(
+            delegation_id="d_routing",
+            session_key="sk_routing",
+            goal="some goal",
+            dispatched_at=time.time(),
+        )
+        tmp_db.update_shadow_clone_task(
+            "d_routing",
+            status="completed",
+            result_json=json.dumps(result_payload),
+            completed_at=time.time(),
+        )
+
+        # Step 2 — simulate persist_routing: only pass routing_meta, omit result_json
+        routing = json.dumps({"platform": "telegram", "chat_id": "12345", "thread_id": "99"})
+        tmp_db.update_shadow_clone_task(
+            "d_routing",
+            status="completed",
+            routing_meta=routing,
+            # result_json intentionally NOT passed
+        )
+
+        # Step 3-5 — read back and assert COALESCE protection held
+        conn = sqlite3.connect(str(tmp_db.db_path))
+        row = conn.execute(
+            "SELECT status, result_json, routing_meta FROM shadow_clone_tasks"
+            " WHERE delegation_id='d_routing'"
+        ).fetchone()
+        conn.close()
+
+        # status unchanged
+        assert row[0] == "completed"
+        # result_json NOT cleared — COALESCE(None, result_json) kept old value
+        assert json.loads(row[1]) == result_payload
+        # routing_meta written
+        assert json.loads(row[2]) == json.loads(routing)
