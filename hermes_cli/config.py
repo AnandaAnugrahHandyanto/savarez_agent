@@ -2733,7 +2733,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================
@@ -5004,37 +5004,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
 
-    # ── Version 27 → 28: seed Telegram's quiet interim-message default ──
-    # Version 15 wrote the global display.interim_assistant_messages=true
-    # default into existing user configs. Since raw gateway config can include
-    # that persisted global value without DEFAULT_CONFIG deep-merge, Telegram
-    # needs an explicit per-platform override to get the new final-answer-first
-    # mobile default. Preserve users who already opted Telegram back in.
-    if current_ver < 28:
-        config = read_raw_config()
-        display = config.get("display")
-        if not isinstance(display, dict):
-            display = {}
-        platforms = display.get("platforms")
-        if not isinstance(platforms, dict):
-            platforms = {}
-        telegram = platforms.get("telegram")
-        if not isinstance(telegram, dict):
-            telegram = {}
-        if "interim_assistant_messages" not in telegram:
-            telegram["interim_assistant_messages"] = False
-            platforms["telegram"] = telegram
-            display["platforms"] = platforms
-            config["display"] = display
-            save_config(config)
-            results["config_added"].append(
-                "display.platforms.telegram.interim_assistant_messages=false"
-            )
-            if not quiet:
-                print(
-                    "  ✓ Seeded Telegram interim assistant messages default: false"
-                )
-
     # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
     # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
     # write_approval (default false = gate off, writes flow freely; true =
@@ -5084,6 +5053,37 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print(
                     "  ✓ Seeded curator.consolidate: false "
                     "(LLM consolidation is now opt-in; pruning stays on)"
+                )
+
+    # ── Version 30 → 31: seed Telegram's quiet interim-message default ──
+    # Version 15 wrote the global display.interim_assistant_messages=true
+    # default into existing user configs. Since raw gateway config can include
+    # that persisted global value without DEFAULT_CONFIG deep-merge, Telegram
+    # needs an explicit per-platform override to get the new final-answer-first
+    # mobile default. Preserve users who already opted Telegram back in.
+    if current_ver < 31:
+        config = read_raw_config()
+        display = config.get("display")
+        if not isinstance(display, dict):
+            display = {}
+        platforms = display.get("platforms")
+        if not isinstance(platforms, dict):
+            platforms = {}
+        telegram = platforms.get("telegram")
+        if not isinstance(telegram, dict):
+            telegram = {}
+        if "interim_assistant_messages" not in telegram:
+            telegram["interim_assistant_messages"] = False
+            platforms["telegram"] = telegram
+            display["platforms"] = platforms
+            config["display"] = display
+            save_config(config)
+            results["config_added"].append(
+                "display.platforms.telegram.interim_assistant_messages=false"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Seeded Telegram interim assistant messages default: false"
                 )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──

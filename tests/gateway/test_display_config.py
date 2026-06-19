@@ -369,7 +369,7 @@ class TestConfigMigration:
 
         config_path = tmp_path / "config.yaml"
         config = {
-            "_config_version": 27,
+            "_config_version": 30,
             "display": {
                 "interim_assistant_messages": True,
                 "platforms": {"telegram": {"streaming": True}},
@@ -398,7 +398,7 @@ class TestConfigMigration:
 
         config_path = tmp_path / "config.yaml"
         config = {
-            "_config_version": 27,
+            "_config_version": 30,
             "display": {
                 "platforms": {"telegram": {"interim_assistant_messages": True}},
             },
