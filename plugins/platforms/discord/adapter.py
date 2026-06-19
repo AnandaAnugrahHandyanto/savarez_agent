@@ -4599,9 +4599,24 @@ class DiscordAdapter(BasePlatformAdapter):
             clean_choices = clean_choices[:24]
 
             if clean_choices:
+                # List the full choice text in the embed body. Discord caps
+                # button labels at 80 chars, so a long option renders as an
+                # unreadable "1. Read 3 — keep deferring nic..." stub on the
+                # button itself; without the full list here users are left
+                # guessing what each numbered option actually says. The embed
+                # field value caps at 1024 chars, so budget each line.
+                per_line_cap = max(40, (1024 - 80) // max(1, len(clean_choices)))
+                listed = []
+                for idx, choice in enumerate(clean_choices):
+                    text = choice if len(choice) <= per_line_cap else choice[: per_line_cap - 1] + "…"
+                    listed.append(f"**{idx + 1}.** {text}")
+                listed.append("✏️ **Other** — click the button below to type a custom answer.")
+                value = "\n".join(listed)
+                if len(value) > 1024:
+                    value = value[:1023] + "…"
                 embed.add_field(
                     name="Choices",
-                    value="Pick one below, or click ✏️ Other to type a custom answer.",
+                    value=value,
                     inline=False,
                 )
                 view = ClarifyChoiceView(

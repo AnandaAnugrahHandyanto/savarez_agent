@@ -384,6 +384,44 @@ class TestDiscordSendClarify:
         assert "Not connected" in (result.error or "")
 
     @pytest.mark.asyncio
+    async def test_embed_body_lists_full_choice_text(self):
+        """Buttons cap at 80 chars; the embed body must carry the full option
+        text so a long choice is readable instead of a truncated stub."""
+        adapter = _make_adapter()
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 555
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        long_choice = (
+            "Read 3 — keep deferring the niche lock and ship the current "
+            "milestone before committing to a single operator hat"
+        )
+        await adapter.send_clarify(
+            chat_id="9001",
+            question="Which path?",
+            choices=[long_choice, "Lock the niche now"],
+            clarify_id="cidL",
+            session_key="sk-L",
+        )
+
+        kwargs = channel.send.call_args.kwargs
+        embed = kwargs["embed"]
+        # The "Choices" field value should contain the full (untruncated)
+        # text of the long option — far longer than the 80-char button cap.
+        field_values = [
+            f.get("value", "")
+            for f in embed.fields
+            if f.get("name") == "Choices"
+        ]
+        assert field_values, "expected a Choices field"
+        value = field_values[0]
+        assert "ship the current milestone before committing" in value
+        assert "**1.**" in value and "**2.**" in value
+        assert "Other" in value
+
+    @pytest.mark.asyncio
     async def test_filters_empty_and_whitespace_choices(self):
         adapter = _make_adapter()
         channel = MagicMock()
