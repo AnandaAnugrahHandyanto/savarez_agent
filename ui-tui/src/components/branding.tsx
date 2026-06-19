@@ -4,6 +4,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
+import { toolsetLabel, useI18n } from '../i18n/index.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
@@ -83,13 +84,13 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
 }
 
 export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
+  const { t: ti } = useI18n()
   const term = useStdout().stdout?.columns ?? 80
   const cols = Math.max(1, Math.min(term, maxWidth ?? term))
 
   if (cols < HIDE_BELOW) {
     return null
   }
-
   const logoLines = logo(t.color, t.bannerLogo || undefined)
   const logoW = t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH
 
@@ -114,7 +115,7 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text bold color={t.color.primary} wrap="truncate-end">{t.brand.icon} {name}</Text>
-      <Text color={t.color.muted} wrap="truncate-end">{t.brand.icon} {tag}</Text>
+      <Text color={t.color.muted} wrap="truncate-end">{t.brand.icon} {ti('branding.tagline')}</Text>
     </Box>
   )
 }
@@ -158,6 +159,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+  const { t: ti, locale } = useI18n()
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -198,7 +200,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const skillsBody = () => {
     if (info.lazy && skillEntries.length === 0) {
-      return <InlineLoader label="scanning skills" t={t} />
+      return <InlineLoader label={ti('branding.scanningSkills')} t={t} />
     }
 
     const shown = skillEntries.slice(0, SKILLS_MAX)
@@ -213,7 +215,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           </Text>
         ))}
         {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
+          <Text color={t.color.muted}>{ti('branding.moreCategories', { count: String(overflow) })}</Text>
         )}
       </>
     )
@@ -237,12 +239,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            <Text color={t.color.muted}>{toolsetLabel(k, locale)}: </Text>
+            <Text color={t.color.text}>{truncLine(toolsetLabel(k, locale) + ': ', vs)}</Text>
           </Text>
         ))}
         {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
+          <Text color={t.color.muted}>{ti('branding.moreToolsets', { count: String(overflow) })}</Text>
         )}
       </>
     )
@@ -258,7 +260,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Text color={t.color.muted}>: </Text>
           {s.connected ? (
             <Text color={t.color.text}>
-              {s.tools} tool{s.tools === 1 ? '' : 's'}
+              {ti('branding.tools', { count: String(s.tools) })}
             </Text>
           ) : s.disabled || s.status === 'disabled' ? (
             <Text color={t.color.muted}>disabled</Text>
@@ -267,7 +269,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           ) : s.status === 'configured' ? (
             <Text color={t.color.muted}>configured</Text>
           ) : (
-            <Text color={t.color.error}>failed</Text>
+            <Text color={t.color.error}>{ti('branding.mcpFailed')}</Text>
           )}
         </Text>
       ))}
@@ -279,7 +281,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const systemBody = () => {
     if (sysPromptLen === 0) {
-      return <Text color={t.color.muted}>No system prompt loaded.</Text>
+      return <Text color={t.color.muted}>{ti('branding.noSystemPrompt')}</Text>
     }
 
     return (
@@ -298,7 +300,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
           <Text color={t.color.accent}>
             {info.model.split('/').pop()}
-            <Text color={t.color.muted}> · Nous Research</Text>
+            <Text color={t.color.muted}>{ti('branding.nousResearch')}</Text>
           </Text>
 
           <Text color={t.color.muted} wrap="truncate-end">
@@ -307,7 +309,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
           {sid && (
             <Text>
-              <Text color={t.color.sessionLabel}>Session: </Text>
+              <Text color={t.color.sessionLabel}>{ti('branding.session')}</Text>
               <Text color={t.color.sessionBorder}>{sid}</Text>
             </Text>
           )}
@@ -349,7 +351,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             onToggle={() => setToolsOpen(v => !v)}
             open={toolsOpen}
             t={t}
-            title="Available Tools"
+            title={ti('branding.availableTools')}
           />
           {toolsOpen && toolsBody()}
         </Box>
@@ -360,9 +362,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
             open={skillsOpen}
-            suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
+            suffix={skillsCatCount > 0 ? ti('branding.skillsInCategories', { count: String(skillsCatCount) }) : undefined}
             t={t}
-            title="Available Skills"
+            title={ti('branding.availableSkills')}
           />
           {skillsOpen && skillsBody()}
         </Box>
@@ -373,9 +375,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <CollapseToggle
               onToggle={() => setSystemOpen(v => !v)}
               open={systemOpen}
-              suffix={`— ${sysPromptLen.toLocaleString()} chars`}
+              suffix={ti('branding.chars', { count: sysPromptLen.toLocaleString() })}
               t={t}
-              title="System Prompt"
+              title={ti('branding.systemPrompt')}
             />
             {systemOpen && systemBody()}
           </Box>
@@ -388,9 +390,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               count={mcpConnected}
               onToggle={() => setMcpOpen(v => !v)}
               open={mcpOpen}
-              suffix="connected"
+              suffix={ti('branding.mcpConnected')}
               t={t}
-              title="MCP Servers"
+              title={ti('branding.mcpServers')}
             />
             {mcpOpen && mcpBody()}
           </Box>
@@ -399,26 +401,29 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text />
 
         <Text color={t.color.text}>
-          {toolsTotal} tools{' · '}
-          {skillsTotal} skills
-          {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
-          {' · '}
-          <Text color={t.color.muted}>/help for commands</Text>
+          {ti('branding.summary', {
+            tools: String(toolsTotal),
+            skills: String(skillsTotal),
+            mcp: mcpConnected ? ti('branding.mcpSummary', { count: String(mcpConnected) }) : ''
+          })}
         </Text>
 
         {typeof info.update_behind === 'number' && info.update_behind > 0 && (
           <Text bold color={t.color.warn}>
-            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+            {ti('branding.updateBehind', {
+              count: String(info.update_behind),
+              commits: info.update_behind === 1 ? ti('branding.commitsSingular') : ti('branding.commitsPlural')
+            })}
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}
-              - run{' '}
+              {ti('branding.updateRun')}
             </Text>
             <Text bold color={t.color.warn}>
               {info.update_command || 'hermes update'}
             </Text>
             <Text bold={false} color={t.color.warn} dimColor>
               {' '}
-              to update
+              {ti('branding.updateTo')}
             </Text>
           </Text>
         )}
