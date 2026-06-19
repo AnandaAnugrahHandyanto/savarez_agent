@@ -1326,6 +1326,14 @@ if _config_path.exists():
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
                 )
+            if "gateway_poll_liveness_timeout" in _agent_cfg:
+                os.environ["HERMES_POLL_LIVENESS_TIMEOUT"] = str(
+                    _agent_cfg["gateway_poll_liveness_timeout"]
+                )
+            if "gateway_loop_liveness_timeout" in _agent_cfg:
+                os.environ["HERMES_LOOP_LIVENESS_TIMEOUT"] = str(
+                    _agent_cfg["gateway_loop_liveness_timeout"]
+                )
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
             if "busy_input_mode" in _display_cfg:
@@ -16486,6 +16494,22 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
+    # Event-loop liveness probe — every N ticks (default 5 ticks = 5 min)
+    LOOP_PROBE_EVERY = 5
+
+    # Read the loop-liveness timeout from env (bridged from config.yaml
+    # agent.gateway_loop_liveness_timeout at gateway startup; 0 = disabled).
+    def _float_env_ticker(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    loop_liveness_timeout = _float_env_ticker("HERMES_LOOP_LIVENESS_TIMEOUT", 600.0)
+    _last_loop_probe_ok: float = time.monotonic()
+
+    async def _loop_noop() -> None:
+        """Trivial coroutine used to probe asyncio event-loop responsiveness."""
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -16554,6 +16578,37 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                 )
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
+
+        # ── Event-loop liveness probe ──────────────────────────────────────
+        # Submit a trivial no-op coroutine to the asyncio event loop and wait
+        # for it to complete.  If it doesn't finish within
+        # HERMES_LOOP_LIVENESS_TIMEOUT (from config.yaml
+        # agent.gateway_loop_liveness_timeout), the loop is stalled.
+        # First breach → WARNING.  Second breach (2x timeout elapsed since
+        # last good probe) → hard ERROR + os._exit(1) so the service manager
+        # (launchd / systemd) can restart the gateway.
+        if loop_liveness_timeout > 0 and tick_count % LOOP_PROBE_EVERY == 0 and loop is not None:
+            try:
+                probe_fut = asyncio.run_coroutine_threadsafe(_loop_noop(), loop)
+                probe_fut.result(timeout=min(loop_liveness_timeout, 30))
+                _last_loop_probe_ok = time.monotonic()
+            except Exception as _probe_err:
+                stall_duration = time.monotonic() - _last_loop_probe_ok
+                if stall_duration >= loop_liveness_timeout * 2:
+                    logger.error(
+                        "Event-loop liveness: asyncio loop unresponsive for %.0fs "
+                        "(threshold %.0fs) — forcing hard restart. Error: %s",
+                        stall_duration, loop_liveness_timeout, _probe_err,
+                    )
+                    # os._exit bypasses atexit/cleanup handlers intentionally:
+                    # the loop is stalled, so we can't run async shutdown anyway.
+                    os._exit(1)  # noqa: SLF001
+                else:
+                    logger.warning(
+                        "Event-loop liveness: asyncio loop unresponsive for %.0fs "
+                        "(will force restart at %.0fs). Error: %s",
+                        stall_duration, loop_liveness_timeout * 2, _probe_err,
+                    )
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
