@@ -5499,13 +5499,17 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Resolve the replied-to message into an object exposing ``.id``.
             # discord.py may give us a full Message (resolved), a
-            # DeletedReferencedMessage, or nothing — fall back to a bare
-            # snowflake built from the reference's message_id, which is all
-            # _fetch_channel_context needs to anchor its scan.
+            # DeletedReferencedMessage, or nothing.  Duck-type on ``.id``
+            # rather than isinstance(discord.Message) — under test doubles the
+            # discord module (and thus discord.Message) can be a mock, which is
+            # not a valid isinstance() second argument.  Any object with an int
+            # id works as a scan anchor; otherwise fall back to a bare snowflake
+            # built from the reference's message_id.
             _reply_target = None
             if _is_reply:
                 _resolved = getattr(message.reference, "resolved", None)
-                if isinstance(_resolved, discord.Message):
+                _resolved_id = getattr(_resolved, "id", None) if _resolved is not None else None
+                if _resolved_id is not None:
                     _reply_target = _resolved
                 else:
                     _ref_mid = getattr(message.reference, "message_id", None)
