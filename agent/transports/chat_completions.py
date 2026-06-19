@@ -160,6 +160,10 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - ``timestamp`` — added to message dicts by the session persistence
+          layer (loaded back from SQLite on session resume). Most providers
+          silently ignore it, but strict gateways (e.g. Umans AI) reject it
+          with ``Extra inputs are not permitted, field: 'messages[N].timestamp'``.
         """
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
@@ -172,6 +176,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or "timestamp" in msg
             ):
                 needs_sanitize = True
                 break
@@ -201,6 +206,7 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            msg.pop("timestamp", None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.
