@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { filePathFromMarkdownHref, linkifyFilePaths, splitFilePathSuffix } from './file-path-links'
+import { filePathFromMarkdownHref, isLoneFilePath, linkifyFilePaths, splitFilePathSuffix } from './file-path-links'
 import { preprocessMarkdown } from './markdown-preprocess'
 
 function hrefIn(markdown: string): null | string {
@@ -132,9 +132,52 @@ describe('preprocessMarkdown file-path linkification', () => {
     expect(out).not.toContain('[/Users/me/b.txt](#file/')
   })
 
-  it('does not linkify a path inside inline code', () => {
+  it('linkifies a lone path inside inline code (follow-up #1)', () => {
     const out = preprocessMarkdown('run `/Users/me/c.txt` please')
 
+    expect(out).toContain('[/Users/me/c.txt](#file/')
+  })
+
+  it('does not linkify inline code that is a command, not a lone path', () => {
+    const out = preprocessMarkdown('run `cat /Users/me/c.txt` please')
+
     expect(out).not.toContain('#file/')
+  })
+})
+
+describe('code-span path linkification (follow-up #1)', () => {
+  it('isLoneFilePath recognizes exactly-one-path strings', () => {
+    expect(isLoneFilePath('/Users/me/out.ts')).toBe(true)
+    expect(isLoneFilePath('/Users/me/out.ts:42:7')).toBe(true)
+    expect(isLoneFilePath('~/notes/todo.md')).toBe(true)
+    expect(isLoneFilePath('C:\\Users\\me\\out.txt')).toBe(true)
+    expect(isLoneFilePath('  /a/b.json  ')).toBe(true)
+  })
+
+  it('isLoneFilePath rejects commands, prose, and extensionless/relative paths', () => {
+    expect(isLoneFilePath('cat /a/b.ts')).toBe(false)
+    expect(isLoneFilePath('/a/b.ts and more')).toBe(false)
+    expect(isLoneFilePath('/usr/local/bin')).toBe(false)
+    expect(isLoneFilePath('src/app/x.tsx')).toBe(false)
+  })
+
+  it('linkifies a path emitted as a one-line code block', () => {
+    const out = preprocessMarkdown('Here it is:\n\n```\n/Users/me/out.ts\n```\n')
+
+    expect(out).toContain('[/Users/me/out.ts](#file/')
+    expect(out).not.toContain('```')
+  })
+
+  it('linkifies a one-line code block that carries a language tag', () => {
+    const out = preprocessMarkdown('```text\n/Users/me/report.pdf\n```')
+
+    expect(out).toContain('[/Users/me/report.pdf](#file/')
+  })
+
+  it('does NOT linkify paths inside a multi-line code block', () => {
+    const out = preprocessMarkdown('```bash\ncd /Users/me\ncat /Users/me/b.txt\n```')
+
+    expect(out).not.toContain('#file/')
+    expect(out).toContain('/Users/me/b.txt')
   })
 })

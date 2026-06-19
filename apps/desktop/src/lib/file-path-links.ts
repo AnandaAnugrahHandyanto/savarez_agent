@@ -49,6 +49,12 @@ const WINDOWS_PATH = `[A-Za-z]:[\\\\/](?:${SEGMENT}+[\\\\/])*${SEGMENT}+${EXTENS
 
 const FILE_PATH_RE = new RegExp(`${PATH_BOUNDARY}(?:${WINDOWS_PATH}|${POSIX_PATH})${LINE_SUFFIX}${END_BOUNDARY}`, 'g')
 
+// Anchored variant: matches a string that is EXACTLY one absolute file path
+// (plus optional :line[:col]) and nothing else. Used to linkify a path the
+// agent wrapped in inline code / a one-line code block, without touching code
+// that merely contains a path (commands, snippets, flags).
+const WHOLE_FILE_PATH_RE = new RegExp(`^(?:${WINDOWS_PATH}|${POSIX_PATH})${LINE_SUFFIX}$`)
+
 // Existing markdown links `[text](target)` and autolinks `<…>`. Captured so
 // linkification leaves them untouched and only rewrites the plain-text gaps.
 // The destination class allows one level of balanced parens so a link target
@@ -99,6 +105,18 @@ function escapeMarkdownLinkLabel(value: string): string {
   return value.replace(/[[\]]/g, '\\$&')
 }
 
+// Build the `[label](#file/…)` markdown a detected path becomes.
+export function fileLinkMarkdown(value: string): string {
+  return `[${escapeMarkdownLinkLabel(value)}](${filePathMarkdownHref(value)})`
+}
+
+// True when `value` is exactly one absolute file path. Lets callers linkify a
+// path the agent wrapped in inline code / a one-line code block while leaving
+// code that only contains a path (e.g. `cat /a/b.ts`) untouched.
+export function isLoneFilePath(value: string): boolean {
+  return WHOLE_FILE_PATH_RE.test(value.trim())
+}
+
 export function linkifyFilePaths(text: string): string {
   if (!text.includes('/') && !/[A-Za-z]:[\\/]/.test(text)) {
     return text
@@ -112,7 +130,7 @@ export function linkifyFilePaths(text: string): string {
         return part
       }
 
-      return part.replace(FILE_PATH_RE, match => `[${escapeMarkdownLinkLabel(match)}](${filePathMarkdownHref(match)})`)
+      return part.replace(FILE_PATH_RE, match => fileLinkMarkdown(match))
     })
     .join('')
 }
