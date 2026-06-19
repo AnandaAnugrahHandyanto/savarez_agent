@@ -1405,18 +1405,22 @@ def check_all_command_guards(command: str, env_type: str,
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
 
-    # --yolo or approvals.mode=off: bypass all approval prompts.
-    # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
-
-    if _command_matches_permanent_allowlist(command):
-        return {"approved": True, "message": None}
-
     is_cli = env_var_enabled("HERMES_INTERACTIVE")
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_permanently_allowed = _command_matches_permanent_allowlist(command)
+    approval_bypass_enabled = (
+        _YOLO_MODE_FROZEN
+        or is_current_session_yolo_enabled()
+        or approval_mode == "off"
+    )
+
+    # --yolo or approvals.mode=off bypass approval prompts, not the
+    # gateway/API pre-exec scanner. CLI and other legacy non-gateway paths
+    # keep their historical all-approval bypass behavior.
+    if (approval_bypass_enabled or is_permanently_allowed) and not (is_gateway or is_ask):
+        return {"approved": True, "message": None}
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
@@ -1450,8 +1454,13 @@ def check_all_command_guards(command: str, env_type: str,
     except ImportError:
         pass  # tirith module not installed — allow
 
-    # Dangerous command check (detection only, no approval)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    # Dangerous command check (detection only, no approval).  Approval-bypass
+    # modes intentionally skip regex-driven dangerous-command prompts; Tirith
+    # scanner findings above remain active for gateway/API sessions.
+    if approval_bypass_enabled:
+        is_dangerous, pattern_key, description = False, None, None
+    else:
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
 
     # --- Phase 2: Decide ---
 
@@ -1472,7 +1481,7 @@ def check_all_command_guards(command: str, env_type: str,
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
 
-    if is_dangerous:
+    if is_dangerous and not is_permanently_allowed:
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
