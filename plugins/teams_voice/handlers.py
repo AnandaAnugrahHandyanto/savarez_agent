@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,6 +31,8 @@ from .outbound import OutboundError, place_call
 from .realtime.openai_client import REALTIME_SAMPLE_RATE_HZ, RealtimeConfig, RealtimeSession
 from .vision_budget import VisionBudget
 from .vision_store import StoredFrame, VisionStore
+
+PCM_SAMPLE_RATE_HZ_MS = PCM_SAMPLE_RATE_HZ // 1000  # samples per ms (16) — duration math
 
 logger = logging.getLogger(__name__)
 
@@ -532,4 +535,153 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         try:
             await self._session.send_expression(emotion)
         except Exception:  # noqa: BLE001 — cosmetic
+            pass
+
+
+class StreamingCallSessionHandler(CallSessionHandler):
+    """Streaming voice path: STT → agent → TTS (half-duplex, turn-based).
+
+    Segments caller audio into utterances (VAD), transcribes them, applies the
+    verbal-interrupt + group gate on the transcript, runs the Hermes agent, then
+    speaks the reply via TTS with expression + estimated visemes. Simpler than the
+    realtime path but works with any STT/TTS provider and no realtime model.
+    """
+
+    def __init__(self, bridge_config: TeamsVoiceConfig | None = None) -> None:
+        from .streaming_audio import UtteranceBuffer
+
+        self._bridge = bridge_config
+        self._session: CallSession | None = None
+        self._caller: protocol.CallerInfo | None = None
+        self._buf = UtteranceBuffer()
+        self._consult = AgentConsult()
+        wake = tuple(bridge_config.wake_phrases) if (bridge_config and bridge_config.wake_phrases) else ("assistant", "hermes")
+        self._gate_cfg = group_call_gate.GroupCallGateConfig(wake_phrases=wake)
+        self._last_addressed_ms: float | None = None
+        self._out_seq = 0
+        self._out_ts = 0
+        self._processing = False  # half-duplex: one utterance at a time
+
+    async def on_session_start(self, session: CallSession, msg: protocol.SessionStart) -> None:
+        await super().on_session_start(session, msg)
+        self._session = session
+        self._caller = msg.caller
+        scope = self._bridge.session_scope if self._bridge else "per-call"
+        key = msg.thread_id if scope == "per-thread" else (msg.caller.aad_id if scope == "per-aad" else msg.call_id)
+        self._consult = AgentConsult(session_id=f"teams:{key or msg.call_id}")
+        await self._safe_expression(expression.NEUTRAL)
+
+    async def on_audio_frame(self, session: CallSession, msg: protocol.AudioFrame) -> None:
+        if not session.recording_active or self._processing:
+            return
+        pcm = base64.b64decode(msg.payload_base64)
+        utterance = self._buf.push(pcm, audio.pcm16_rms(pcm))
+        if utterance is not None:
+            self._processing = True
+            asyncio.create_task(self._handle_utterance(utterance))
+
+    async def _handle_utterance(self, pcm: bytes) -> None:
+        try:
+            transcript = await self._transcribe(pcm)
+            if not transcript:
+                return
+            if verbal_interrupts.is_verbal_interrupt(transcript, self._gate_cfg.wake_phrases):
+                return  # nothing playing in half-duplex; just don't reply
+            is_group = (self._session.human_count if self._session else 0) >= 2
+            now = time.monotonic() * 1000.0
+            decision = group_call_gate.should_respond_to_group_turn(
+                transcript=transcript, is_group=is_group, config=self._gate_cfg,
+                last_addressed_at_ms=self._last_addressed_ms, now_ms=now,
+            )
+            if not decision.respond:
+                return
+            if decision.addressed:
+                self._last_addressed_ms = now
+            await self._safe_expression(expression.THINKING)
+            reply = await self._consult.ask(transcript)
+            await self._speak(reply)
+        except Exception:  # noqa: BLE001 — never let a turn crash the call
+            logger.error("[teams_voice] streaming turn failed", exc_info=True)
+        finally:
+            self._buf.reset()
+            self._processing = False
+
+    async def _transcribe(self, pcm: bytes) -> str:
+        from hermes_constants import get_hermes_home
+
+        from .streaming_audio import write_wav_pcm16
+
+        d = Path(get_hermes_home()) / "cache" / "teams_voice"
+        d.mkdir(parents=True, exist_ok=True)
+        wav = d / f"utt_{uuid.uuid4().hex}.wav"
+        try:
+            await asyncio.to_thread(write_wav_pcm16, pcm, str(wav), PCM_SAMPLE_RATE_HZ)
+            from tools.transcription_tools import transcribe_audio
+
+            res = await asyncio.to_thread(transcribe_audio, str(wav))
+            return (res.get("transcript") or "").strip() if res.get("success") else ""
+        finally:
+            try:
+                wav.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    async def _speak(self, text: str) -> None:
+        text = (text or "").strip()
+        session = self._session
+        if not text or session is None:
+            return
+        await self._safe_expression(expression.infer_emotion(text))
+        from hermes_constants import get_hermes_home
+
+        from .streaming_audio import decode_to_pcm16k
+
+        d = Path(get_hermes_home()) / "cache" / "teams_voice"
+        d.mkdir(parents=True, exist_ok=True)
+        out = d / f"tts_{uuid.uuid4().hex}.mp3"
+        try:
+            from tools.tts_tool import text_to_speech_tool
+
+            raw = await asyncio.to_thread(lambda: text_to_speech_tool(text, output_path=str(out)))
+            path = str(out)
+            try:
+                fp = json.loads(raw).get("file_path")
+                if fp:
+                    path = fp
+            except (TypeError, ValueError):
+                pass
+            pcm16k = await asyncio.to_thread(decode_to_pcm16k, path)
+            if not pcm16k:
+                return
+            # TODO(viseme): swap the estimator for real ElevenLabs /with-timestamps
+            # alignment when the TTS path exposes per-character timing.
+            dur_ms = (len(pcm16k) // 2) // PCM_SAMPLE_RATE_HZ_MS
+            marks = viseme_estimate.estimate_visemes(text, dur_ms)
+            if marks:
+                try:
+                    await session.send_speech_marks(viseme_estimate.marks_to_payload(marks), ts=self._out_ts)
+                except Exception:  # noqa: BLE001
+                    pass
+            frames, _ = audio.frame_pcm16(pcm16k, BYTES_PER_FRAME)
+            for frame in frames:
+                try:
+                    await session.send_audio_frame(
+                        self._out_seq, self._out_ts, base64.b64encode(frame).decode("ascii")
+                    )
+                except Exception:  # noqa: BLE001
+                    return
+                self._out_seq += 1
+                self._out_ts += FRAME_DURATION_MS
+        finally:
+            try:
+                Path(out).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    async def _safe_expression(self, emotion: str) -> None:
+        if self._session is None:
+            return
+        try:
+            await self._session.send_expression(emotion)
+        except Exception:  # noqa: BLE001
             pass

@@ -18,12 +18,12 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     serve_p.add_argument("--port", type=int, default=None, help="Override bind port")
     serve_p.add_argument(
         "--handler",
-        choices=("logging", "echo", "realtime"),
+        choices=("logging", "echo", "realtime", "streaming"),
         default="logging",
         help=(
             "Call brain: 'logging' (no audio back), 'echo' (smile + echo caller "
-            "audio so the avatar lip-syncs — smoke test), 'realtime' (OpenAI/Azure "
-            "speech-to-speech; needs OPENAI_API_KEY)."
+            "audio — smoke test), 'realtime' (OpenAI/Azure speech-to-speech), "
+            "'streaming' (STT -> agent -> TTS; works with any STT/TTS provider)."
         ),
     )
 
@@ -77,6 +77,10 @@ def teams_voice_command(args) -> int:
                 )
                 return 1
             factory = lambda: RealtimeCallSessionHandler(rt_cfg, bridge_config=cfg)  # noqa: E731
+        elif handler_kind == "streaming":
+            from .handlers import StreamingCallSessionHandler
+
+            factory = lambda: StreamingCallSessionHandler(bridge_config=cfg)  # noqa: E731
 
         async def _run() -> None:
             server = BridgeServer(config=cfg, handler_factory=factory)
