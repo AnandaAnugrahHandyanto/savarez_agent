@@ -534,6 +534,14 @@ class DockerEnvironment(BaseEnvironment):
     ):
         if cwd == "~":
             cwd = "/root"
+        # Windows drive-letter paths (e.g. "C:\Users\...") cannot reach the
+        # Linux container's `-w` (workdir) flag. Fall back to /workspace.
+        if len(cwd) >= 2 and cwd[1] == ":":
+            logger.debug(
+                "Normalizing Windows host path %r to /workspace for Docker -w flag (#48137)",
+                cwd,
+            )
+            cwd = "/workspace"
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
