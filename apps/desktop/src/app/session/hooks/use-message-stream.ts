@@ -161,6 +161,32 @@ function completionErrorText(finalText: string): string | null {
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
 }
 
+export function settleAssistantPartsOnCompletion(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
+  if (!finalText) {
+    return parts
+  }
+
+  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
+  const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+  const dedupeReference = normalize(visibleFinalText)
+
+  const kept = parts.filter(part => {
+    if (part.type === 'text') {
+      return false
+    }
+
+    if (part.type !== 'reasoning' || !dedupeReference) {
+      return true
+    }
+
+    const r = normalize(part.text)
+
+    return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
+  })
+
+  return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
+}
+
 const SUBAGENT_EVENT_TYPES = new Set([
   'subagent.spawn_requested',
   'subagent.start',
@@ -558,28 +584,6 @@ export function useMessageStream({
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
-        const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
-
-        const replaceTextPart = (parts: ChatMessagePart[]) => {
-          const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
-          const dedupeReference = normalize(visibleFinalText)
-
-          const kept = parts.filter(part => {
-            if (part.type === 'text') {
-              return false
-            }
-
-            if (part.type !== 'reasoning' || !dedupeReference) {
-              return true
-            }
-
-            const r = normalize(part.text)
-
-            return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
-          })
-
-          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
-        }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
           completionError
@@ -591,7 +595,7 @@ export function useMessageStream({
               }
             : {
                 ...message,
-                parts: replaceTextPart(message.parts),
+                parts: settleAssistantPartsOnCompletion(message.parts, finalText),
                 pending: false
               }
 
