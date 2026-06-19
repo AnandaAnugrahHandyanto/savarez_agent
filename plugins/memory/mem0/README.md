@@ -126,7 +126,7 @@ echo "MEM0_TELEMETRY=false" >> ~/.hermes/.env
 You can also adjust the sample rate:
 
 ```bash
-export MEM0_TELEMETRY_SAMPLE_RATE=0.0  # disable sampling entirely
+export MEM0_TELEMETRY_SAMPLE_RATE=0.0  # capture no events
 ```
 
 ## Troubleshooting

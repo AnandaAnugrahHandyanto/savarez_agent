@@ -35,16 +35,11 @@ _event_queue: list[Dict[str, Any]] = []
 _queue_lock = threading.Lock()
 _flush_timer: Optional[threading.Timer] = None
 _exit_handler_installed = False
-_telemetry_enabled: Optional[bool] = None
 
 
 def _is_telemetry_enabled() -> bool:
-    global _telemetry_enabled
-    if _telemetry_enabled is not None:
-        return _telemetry_enabled
     val = os.environ.get("MEM0_TELEMETRY", "true").lower()
-    _telemetry_enabled = val not in ("false", "0", "no")
-    return _telemetry_enabled
+    return val not in ("false", "0", "no")
 
 
 def _is_oss_mode(mode: str) -> bool:
@@ -105,11 +100,12 @@ def _flush() -> None:
 
 def _schedule_flush() -> None:
     global _flush_timer
-    if _flush_timer and _flush_timer.is_alive():
-        return
-    _flush_timer = threading.Timer(FLUSH_INTERVAL_SECS, _flush)
-    _flush_timer.daemon = True
-    _flush_timer.start()
+    with _queue_lock:
+        if _flush_timer and _flush_timer.is_alive():
+            return
+        _flush_timer = threading.Timer(FLUSH_INTERVAL_SECS, _flush)
+        _flush_timer.daemon = True
+        _flush_timer.start()
 
 
 def _flush_async() -> None:

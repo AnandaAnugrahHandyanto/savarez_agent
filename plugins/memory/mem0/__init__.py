@@ -199,6 +199,9 @@ class Mem0MemoryProvider(MemoryProvider):
         # Circuit breaker state
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
+        self._breaker_lock = threading.Lock()
+        self._sync_lock = threading.Lock()
+        self._atexit_registered = False
 
     @property
     def name(self) -> str:
@@ -255,13 +258,13 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def _is_breaker_open(self) -> bool:
         """Return True if the circuit breaker is tripped (too many failures)."""
-        if self._consecutive_failures < _BREAKER_THRESHOLD:
-            return False
-        if time.monotonic() >= self._breaker_open_until:
-            # Cooldown expired — reset and allow a retry
-            self._consecutive_failures = 0
-            return False
-        return True
+        with self._breaker_lock:
+            if self._consecutive_failures < _BREAKER_THRESHOLD:
+                return False
+            if time.monotonic() >= self._breaker_open_until:
+                self._consecutive_failures = 0
+                return False
+            return True
 
     def _format_error(self, prefix: str, exc: Exception) -> str:
         msg = f"{prefix}: {exc}"
@@ -273,12 +276,18 @@ class Mem0MemoryProvider(MemoryProvider):
         return msg
 
     def _record_success(self):
-        self._consecutive_failures = 0
+        with self._breaker_lock:
+            self._consecutive_failures = 0
 
     def _record_failure(self):
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= _BREAKER_THRESHOLD:
-            self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+        with self._breaker_lock:
+            self._consecutive_failures += 1
+            count = self._consecutive_failures
+            if count >= _BREAKER_THRESHOLD:
+                self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+            else:
+                count = 0
+        if count >= _BREAKER_THRESHOLD:
             hint = ""
             if self._mode == "oss":
                 vs = self._config.get("oss", {}).get("vector_store", {})
@@ -287,7 +296,7 @@ class Mem0MemoryProvider(MemoryProvider):
             logger.warning(
                 "Mem0 circuit breaker tripped after %d consecutive failures. "
                 "Pausing API calls for %ds.%s",
-                self._consecutive_failures, _BREAKER_COOLDOWN_SECS, hint,
+                count, _BREAKER_COOLDOWN_SECS, hint,
             )
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -312,8 +321,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._agent_id = self._config.get("agent_id", "hermes")
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
-        if self._backend:
+        if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
+            self._atexit_registered = True
         capture_event("hermes.plugin.registered", {"mode": self._mode}, api_key=self._api_key, mode=self._mode)
 
     def _read_filters(self) -> Dict[str, Any]:
@@ -342,6 +352,9 @@ class Mem0MemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
+        # If the thread still hasn't finished, leave the result for the next call.
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            return ""
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
@@ -354,9 +367,12 @@ class Mem0MemoryProvider(MemoryProvider):
             return
 
         def _run():
+            backend = self._backend
+            if backend is None:
+                return
             start = time.monotonic()
             try:
-                results = self._backend.search(query=query, filters=self._read_filters(), top_k=5, rerank=True)
+                results = backend.search(query=query, filters=self._read_filters(), top_k=5, rerank=True)
                 if results:
                     lines = [r.get("memory", "") for r in results if r.get("memory")]
                     with self._prefetch_lock:
@@ -379,13 +395,16 @@ class Mem0MemoryProvider(MemoryProvider):
             return
 
         def _sync():
+            backend = self._backend
+            if backend is None:
+                return
             start = time.monotonic()
             try:
                 messages = [
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                self._backend.add(
+                backend.add(
                     messages,
                     user_id=self._user_id,
                     agent_id=self._agent_id,
@@ -401,12 +420,14 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._record_failure()
                 logger.warning("Mem0 sync failed: %s", e)
 
-        # Wait for any previous sync before starting a new one
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-
-        self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
-        self._sync_thread.start()
+        with self._sync_lock:
+            if self._sync_thread and self._sync_thread.is_alive():
+                self._sync_thread.join(timeout=5.0)
+            # If still alive after timeout, skip to avoid duplicate ingestion.
+            if self._sync_thread and self._sync_thread.is_alive():
+                return
+            self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
+            self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [LIST_SCHEMA, SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
@@ -429,10 +450,10 @@ class Mem0MemoryProvider(MemoryProvider):
             return json.dumps({"error": msg})
 
         if tool_name == "mem0_list":
-            page = int(args.get("page", 1))
-            page_size = min(int(args.get("page_size", 100)), 200)
             start = time.monotonic()
             try:
+                page = max(1, int(args.get("page", 1)))
+                page_size = min(max(1, int(args.get("page_size", 100))), 200)
                 response = self._backend.get_all(
                     filters=self._read_filters(), page=page, page_size=page_size,
                 )
@@ -462,10 +483,14 @@ class Mem0MemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
-            top_k = min(int(args.get("top_k", 10)), 50)
-            rerank = bool(args.get("rerank", True))
             start = time.monotonic()
             try:
+                top_k = max(1, min(int(args.get("top_k", 10)), 50))
+                rerank_raw = args.get("rerank", True)
+                if isinstance(rerank_raw, str):
+                    rerank = rerank_raw.lower() not in ("false", "0", "no")
+                else:
+                    rerank = bool(rerank_raw)
                 results = self._backend.search(query, filters=self._read_filters(), top_k=top_k, rerank=rerank)
                 self._record_success()
                 latency = (time.monotonic() - start) * 1000
@@ -499,7 +524,12 @@ class Mem0MemoryProvider(MemoryProvider):
                 )
                 self._record_success()
                 latency = (time.monotonic() - start) * 1000
-                fact_count = len(result.get("results", [])) if isinstance(result, dict) else 0
+                if isinstance(result, dict):
+                    fact_count = len(result.get("results", []))
+                elif isinstance(result, list):
+                    fact_count = len(result)
+                else:
+                    fact_count = 0
                 capture_tool_event("memory_add", success=True, latency_ms=latency,
                                    fact_count=fact_count, api_key=self._api_key, mode=self._mode)
                 event_id = result.get("event_id") if isinstance(result, dict) else None

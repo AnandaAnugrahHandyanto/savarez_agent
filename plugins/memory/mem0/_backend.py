@@ -140,19 +140,27 @@ class OSSBackend(Mem0Backend):
                     client = QdrantClient(url=url, api_key=vs_config.get("api_key"))
                 else:
                     return
-                if not client.collection_exists(collection_name):
+                try:
+                    if not client.collection_exists(collection_name):
+                        return
+                    info = client.get_collection(collection_name)
+                    vectors = info.config.params.vectors
+                    # Named-vector collections expose a dict; unnamed expose an object with .size.
+                    if isinstance(vectors, dict):
+                        first = next(iter(vectors.values()), None)
+                        current_dims = first.size if first else None
+                    else:
+                        current_dims = getattr(vectors, "size", None)
+                    if current_dims is not None and current_dims != expected_dims:
+                        client.delete_collection(collection_name)
+                finally:
                     client.close()
-                    return
-                info = client.get_collection(collection_name)
-                current_dims = info.config.params.vectors.size
-                if current_dims != expected_dims:
-                    client.delete_collection(collection_name)
-                client.close()
             except Exception:
                 pass
         elif provider == "pgvector":
             try:
                 import psycopg2
+                from psycopg2 import sql as pgsql
                 conn_params = {}
                 for k in ("host", "port", "user", "password", "dbname"):
                     if vs_config.get(k):
@@ -161,17 +169,23 @@ class OSSBackend(Mem0Backend):
                     conn_params["sslmode"] = vs_config["sslmode"]
                 conn = psycopg2.connect(**conn_params)
                 conn.autocommit = True
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT atttypmod FROM pg_attribute "
-                    "WHERE attrelid = %s::regclass AND attname = 'vector'",
-                    (collection_name,),
-                )
-                row = cur.fetchone()
-                if row and row[0] > 0 and row[0] != expected_dims:
-                    cur.execute(f"DROP TABLE IF EXISTS {collection_name}")
-                cur.close()
-                conn.close()
+                try:
+                    cur = conn.cursor()
+                    try:
+                        cur.execute(
+                            "SELECT atttypmod FROM pg_attribute "
+                            "WHERE attrelid = %s::regclass AND attname = 'vector'",
+                            (collection_name,),
+                        )
+                        row = cur.fetchone()
+                        if row and row[0] > 0 and row[0] != expected_dims:
+                            cur.execute(pgsql.SQL("DROP TABLE IF EXISTS {}").format(
+                                pgsql.Identifier(collection_name)
+                            ))
+                    finally:
+                        cur.close()
+                finally:
+                    conn.close()
             except Exception:
                 pass
 

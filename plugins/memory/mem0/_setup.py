@@ -484,10 +484,10 @@ def _ensure_ollama(models: list[str]) -> bool:
     Returns True if Ollama is ready, False if user needs to handle it manually.
     """
     url = "http://localhost:11434"
+    ollama_bin = shutil.which("ollama")
     ok, _ = _check_ollama(url)
 
     if not ok:
-        ollama_bin = shutil.which("ollama")
         if ollama_bin:
             print("  Ollama installed but not running. Starting...")
             try:
@@ -518,7 +518,7 @@ def _ensure_ollama(models: list[str]) -> bool:
         else:
             print(f"  Pulling '{model}'... (this may take a few minutes)")
             try:
-                subprocess.run(["ollama", "pull", model], timeout=600)
+                subprocess.run([ollama_bin or "ollama", "pull", model], timeout=600)
                 print(f"  ✓ Model '{model}' pulled")
             except Exception as e:
                 print(f"  Warning: Could not pull '{model}': {e}")
@@ -673,7 +673,7 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
 
     flags = {
         "oss_llm": llm_id,
-        "oss_llm_key": env_writes.get(llm_def.get("env_var", ""), ""),
+        "oss_llm_key": env_writes.get(llm_def["env_var"], "") if llm_def.get("env_var") else "",
         "oss_llm_model": llm_model,
         "oss_llm_url": llm_url or "",
         "oss_embedder": embedder_id,
@@ -810,7 +810,7 @@ def _check_min_dep_version() -> None:
         if not installed_ver:
             return
         installed_parts = tuple(int(x) for x in installed_ver.split(".")[:3])
-        required_parts = (2, 0, 1)
+        required_parts = (2, 0, 7)
         if installed_parts < required_parts:
             req_str = ".".join(str(x) for x in required_parts)
             print(f"\n  ⚠ mem0ai {installed_ver} installed but >={req_str} required.")
