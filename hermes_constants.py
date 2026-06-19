@@ -471,7 +471,8 @@ def is_container() -> bool:
     Kubernetes/k3s) were previously missed. To cover those, also check:
       * ``KUBERNETES_SERVICE_HOST`` env var — set in every Kubernetes pod.
       * ``kubepods`` / ``containerd`` / ``crio`` markers in ``/proc/1/cgroup``.
-      * the same markers in ``/proc/self/mountinfo`` (cgroup-v2 fallback).
+      * the same markers on the root mount in ``/proc/self/mountinfo``
+        (cgroup-v2 fallback).
 
     Result is cached for the process lifetime.  Import-safe — no heavy deps.
 
@@ -500,14 +501,19 @@ def is_container() -> bool:
     except OSError:
         pass
     # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
-    # runtime still shows up in the mount table (overlay rootfs, runtime mount
-    # paths), so scan mountinfo as a last resort.
+    # runtime can still show up on the root filesystem mount, but regular hosts
+    # with Docker/containerd installed also expose runtime paths elsewhere in
+    # mountinfo. Only trust markers on the actual root mount to avoid treating a
+    # systemd host that merely runs containers as containerized.
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            for line in f:
+                fields = line.split()
+                if len(fields) >= 5 and fields[4] == "/" and any(
+                    marker in line for marker in ("kubepods", "containerd", "crio")
+                ):
+                    _container_detected = True
+                    return True
     except OSError:
         pass
     _container_detected = False
