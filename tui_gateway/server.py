@@ -4474,7 +4474,10 @@ def _(rid, params: dict) -> dict:
     profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
         profile_home
     )
-
+    resolve_resume_session_id = getattr(db, "resolve_resume_session_id", None)
+    resume_target = (
+        resolve_resume_session_id(target) if callable(resolve_resume_session_id) else target
+    )
     def _reuse_live_payload(sid: str, session: dict) -> dict:
         payload = _live_session_payload(
             sid,
@@ -4511,12 +4514,12 @@ def _(rid, params: dict) -> dict:
         if limit_message is not None:
             return _err(rid, 4090, limit_message)
         try:
-            db.reopen_session(target)
+            db.reopen_session(resume_target)
             # The child's OWN conversation only. Delegation children are
             # parent-linked rows, so include_ancestors would prepend the
             # parent's entire transcript — a watch window opened on a subagent
             # must show the subagent's branch, not the parent's prompt.
-            history = db.get_messages_as_conversation(target)
+            history = db.get_messages_as_conversation(resume_target)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -4559,7 +4562,7 @@ def _(rid, params: dict) -> dict:
                     "lazy": True,
                     "pending_title": None,
                     "profile_home": str(profile_home) if profile_home is not None else None,
-                    "resume_session_id": target,
+                    "resume_session_id": resume_target,
                     "running": False,
                     "session_key": target,
                     "show_reasoning": _load_show_reasoning(),
@@ -4607,16 +4610,16 @@ def _(rid, params: dict) -> dict:
         set_hermes_home_override(str(profile_home)) if profile_home is not None else None
     )
     try:
-        db.reopen_session(target)
-        history = db.get_messages_as_conversation(target)
+        db.reopen_session(resume_target)
+        history = db.get_messages_as_conversation(resume_target)
         display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
+            resume_target, include_ancestors=True
         )
         display_history_prefix = display_history[
             : max(0, len(display_history) - len(history))
         ]
         messages = _history_to_messages(display_history)
-        tokens = _set_session_context(target)
+        tokens = _set_session_context(resume_target)
         try:
             # Pass the profile's db so the agent persists turns to the right
             # state.db; home override is active here so config/skills/model
@@ -4627,7 +4630,7 @@ def _(rid, params: dict) -> dict:
             agent = _make_agent(
                 sid,
                 target,
-                session_id=target,
+                session_id=resume_target,
                 session_db=db,
                 **stored_runtime_overrides,
             )

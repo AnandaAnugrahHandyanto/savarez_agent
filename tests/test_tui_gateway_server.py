@@ -1221,6 +1221,66 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
+def test_session_resume_resolves_resume_descendant_before_loading_history(monkeypatch):
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target}
+
+        def resolve_resume_session_id(self, target):
+            captured["resolved_from"] = target
+            return "tip-child"
+
+        def reopen_session(self, target):
+            captured["reopened"] = target
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            captured.setdefault("history_calls", []).append((target, include_ancestors))
+            return [{"role": "user", "content": f"history:{target}"}]
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured["make_agent"] = {
+            "sid": sid,
+            "key": key,
+            "session_id": session_id,
+            "cwd": kwargs.get("cwd"),
+        }
+        return types.SimpleNamespace(model="test")
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [target])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: captured.setdefault("cleared", []).append(tokens))
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model})
+
+    def fake_init_session(sid, key, agent, history, cols=80, cwd=None, session_db=None):
+        captured["init_session"] = {
+            "sid": sid,
+            "key": key,
+            "history": history,
+            "cwd": cwd,
+            "session_db": session_db,
+        }
+        server._sessions[sid] = {"agent": agent, "session_key": key}
+
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "root-session"}}
+    )
+
+    assert resp["result"]["resumed"] == "root-session"
+    assert resp["result"]["messages"] == [{"role": "user", "text": "history:tip-child"}]
+    assert captured["resolved_from"] == "root-session"
+    assert captured["reopened"] == "tip-child"
+    assert captured["history_calls"] == [("tip-child", False), ("tip-child", True)]
+    assert captured["make_agent"]["key"] == "root-session"
+    assert captured["make_agent"]["session_id"] == "tip-child"
+    assert captured["init_session"]["key"] == "root-session"
+    assert captured["init_session"]["cwd"] is None
+    assert captured["cleared"] == [["tip-child"]]
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     updates = {}
 
@@ -5481,7 +5541,10 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
         # If provider_model_ids gets called at all, the handler is still
         # overwriting curated with live — that's the regression we're
         # guarding against.
-        with patch("hermes_cli.models.provider_model_ids") as live_fetch:
+        with (
+            patch("hermes_cli.models.provider_model_ids") as live_fetch,
+            patch("hermes_cli.models.get_pricing_for_provider", return_value={}),
+        ):
             resp = server._methods["model.options"](99, {"session_id": ""})
 
     assert "result" in resp, resp
@@ -6197,6 +6260,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
+            ),
+            patch(
+                "hermes_cli.browser_connect.manual_chrome_debug_command",
+                return_value=None,
             ),
         ):
             resp = server.handle_request(
