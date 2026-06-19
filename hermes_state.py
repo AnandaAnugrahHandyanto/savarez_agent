@@ -585,6 +585,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_archived ON sessions(archived);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 """
@@ -3702,6 +3703,24 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
+
+    def session_count_by_source(self, include_archived: bool = True) -> Dict[str, int]:
+        """Return a {source: count} histogram using a single aggregate query.
+
+        Uses the ``idx_sessions_source`` index so this is O(1) regardless of
+        the number of sessions -- suitable for the dashboard stats endpoint.
+
+        Args:
+            include_archived: when False, exclude archived sessions from counts.
+        """
+        where_sql = "" if include_archived else " WHERE archived = 0"
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT COALESCE(source, 'cli'), COUNT(*)"
+                f" FROM sessions{where_sql}"
+                f" GROUP BY source"
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
