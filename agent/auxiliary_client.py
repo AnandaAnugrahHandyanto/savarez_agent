@@ -527,6 +527,15 @@ class _AnthropicCompletionsAdapter:
                 anthropic_kwargs["temperature"] = temperature
 
         response = self._client.messages.create(**anthropic_kwargs)
+        # Some Anthropic-compatible endpoints are SSE-only — they always
+        # return text/event-stream regardless of the stream flag.  The
+        # Anthropic SDK hands back the raw event text as a bare str
+        # instead of a Message object, causing AttributeError downstream.
+        # Detect this and fall back to streaming mode which handles
+        # SSE-only endpoints correctly.
+        if isinstance(response, str):
+            with self._client.messages.stream(**anthropic_kwargs) as stream:
+                response = stream.get_final_message()
         assistant_message, finish_reason = normalize_anthropic_response(response)
 
         usage = None
