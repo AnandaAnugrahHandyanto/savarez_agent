@@ -34,7 +34,6 @@ turn (assertion #2 fails).
 import base64
 import importlib
 import sys
-import threading
 import types
 from types import SimpleNamespace
 
