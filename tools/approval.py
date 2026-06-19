@@ -257,12 +257,26 @@ _CMDPOS = (
     r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
     r'\s*'
 )
+_COMMAND_START = r'(?:^|[;&|\n`]|\$\()'
+_GROUP_COMMAND_START = r'(?:(?:^|[;&|\n])\s*[\({])'
+_ASSIGNMENT_WORD = r'(?:[a-z_][a-z0-9_]*=(?:"[^"\s;&|()]*"|\'[^\'\s;&|()]*\'|[^\s;&|()]*)?)'
+_COMMAND_DETECTION_POS = (
+    rf'(?:{_COMMAND_START}|{_GROUP_COMMAND_START})'
+    r'\s*'
+    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'
+    r'(?:env\s+(?:(?:-[^\s]+\s+)|(?:\w+=\S*\s+))*)?'
+    rf'(?:{_ASSIGNMENT_WORD}\s+)*'
+    r'(?:(?:exec|nohup|setsid|time|command)\s+)*'
+    rf'(?:{_ASSIGNMENT_WORD}\s+)*'
+    r'\s*'
+)
+_COMMAND_TARGET_END = r'(?:\s|[;&|)]|$)'
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots
-    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
-    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
-    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)' + _COMMAND_TARGET_END, "recursive delete of root filesystem"),
+    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)' + _COMMAND_TARGET_END, "recursive delete of system directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?' + _COMMAND_TARGET_END, "recursive delete of home directory"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -335,10 +349,15 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
-            return (True, description)
+    for command_variant in _command_detection_variants(command):
+        normalized = command_variant.lower()
+        if _DYNAMIC_HARDLINE_COMMAND_RE.search(normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        if _DYNAMIC_HARDLINE_NAME_RE.search(normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(normalized):
+                return (True, description)
     return (False, None)
 
 
@@ -570,10 +589,6 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
-    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
-    command = re.sub(r'\\([^\n])', r'\1', command)
-    # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
-    command = re.sub(r"''|\"\"", '', command)
     # Fold the current user's resolved absolute home path into ~/ at detection
     # time so static user-sensitive patterns catch /home/alice/.bashrc the same
     # way they catch ~/.bashrc. Do not snapshot this at import time: tests and
@@ -588,6 +603,57 @@ def _normalize_command_for_detection(command: str) -> str:
     # after this module is imported — as the hermetic test conftest does.
     command = _rewrite_resolved_hermes_home(command)
     return command
+
+
+_DYNAMIC_COMMAND_EXPANSION = (
+    r'(?:\$\([^)\n]{1,200}\)|`[^`\n]{1,200}`|\$\{[^}\n]{1,200}\})'
+)
+_DYNAMIC_COMMAND_WORD = (
+    rf'(?:"{_DYNAMIC_COMMAND_EXPANSION}[^\s;&|()"]*"|{_DYNAMIC_COMMAND_EXPANSION})'
+    r'[^\s;&|)]*'
+)
+_COMMAND_POSITION_WORD_RE = re.compile(
+    r'(?P<prefix>' + _COMMAND_DETECTION_POS + r')(?P<word>(?:\\[^\n]|\'\'|""|[^\s;&|`$()])+)',
+    _RE_FLAGS,
+)
+_DYNAMIC_COMMAND_NAME_RE = re.compile(_COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD, _RE_FLAGS)
+_DYNAMIC_HARDLINE_TARGET = (
+    r'(?:/|/\*|/ \*|/home|/home/\*|/root|/root/\*|/etc|/etc/\*|'
+    r'/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|'
+    r'/boot|/boot/\*|/lib|/lib/\*|~|\$home)(?:/?|/\*)?'
+)
+_DYNAMIC_HARDLINE_COMMAND_RE = re.compile(
+    _COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD + r'\s+(-[^\s]*\s+)*'
+    + _DYNAMIC_HARDLINE_TARGET + _COMMAND_TARGET_END,
+    _RE_FLAGS,
+)
+_DYNAMIC_HARDLINE_NAME_RE = re.compile(
+    _COMMAND_DETECTION_POS
+    + r'(?:\$\([^)\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^)\n]*\)|'
+    + r'`[^`\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^`\n]*`|'
+    + r'\$\{[^}\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^}\n]*\}|'
+    + r'"(?:\$\([^)\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^)\n]*\)|'
+    + r'`[^`\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^`\n]*`|'
+    + r'\$\{[^}\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^}\n]*\})")',
+    _RE_FLAGS,
+)
+
+
+def _deobfuscate_static_command_word(word: str) -> str:
+    word = re.sub(r'\\([^\n])', r'\1', word)
+    return re.sub(r"''|\"\"", '', word)
+
+
+def _command_detection_variants(command: str) -> tuple[str, str]:
+    normalized = _normalize_command_for_detection(command)
+
+    def replace_word(match: re.Match) -> str:
+        return match.group("prefix") + _deobfuscate_static_command_word(match.group("word"))
+
+    static_variant = _COMMAND_POSITION_WORD_RE.sub(replace_word, normalized)
+    if static_variant == normalized:
+        return (normalized,)
+    return (normalized, static_variant)
 
 
 def _rewrite_resolved_user_home(command: str) -> str:
@@ -659,11 +725,15 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
-            pattern_key = description
-            return (True, pattern_key, description)
+    for command_variant in _command_detection_variants(command):
+        command_lower = command_variant.lower()
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if pattern_re.search(command_lower):
+                pattern_key = description
+                return (True, pattern_key, description)
+        if _DYNAMIC_COMMAND_NAME_RE.search(command_lower):
+            description = "dynamic shell command name"
+            return (True, description, description)
     return (False, None, None)
 
 
