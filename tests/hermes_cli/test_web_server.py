@@ -1573,6 +1573,20 @@ class TestWebServerEndpoints:
         assert "App-Level Tokens" in fields["SLACK_APP_TOKEN"]["help"]
         assert "Copy member ID" in fields["SLACK_ALLOWED_USERS"]["help"]
 
+    def test_google_chat_messaging_metadata_links_setup_guide(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        google_chat = next(
+            platform
+            for platform in resp.json()["platforms"]
+            if platform["id"] == "google_chat"
+        )
+        assert google_chat["name"] == "Google Chat"
+        assert google_chat["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat"
+        )
+
     def test_weixin_messaging_metadata_describes_personal_ilink_setup(self):
         resp = self.client.get("/api/messaging/platforms")
 

@@ -4280,6 +4280,11 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "required_env": ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
     },
+    "google_chat": {
+        "name": "Google Chat",
+        "description": "Connect Hermes to Google Chat via Cloud Pub/Sub.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat",
+    },
     "wecom": {
         "name": "WeCom (group bot)",
         "description": "Send-only WeCom group bot via webhook.",
@@ -4373,6 +4378,7 @@ _PLATFORM_ORDER: tuple[str, ...] = (
     "sms",
     "dingtalk",
     "feishu",
+    "google_chat",
     "wecom",
     "wecom_callback",
     "weixin",
