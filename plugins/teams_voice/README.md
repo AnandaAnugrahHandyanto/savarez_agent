@@ -62,7 +62,7 @@ renders the avatar tile and is paired over the HMAC bridge.
 
 **Sessions** — `session_scope` per-call / per-thread / per-aad.
 
-Recent: real ElevenLabs `/with-timestamps` viseme alignment (streaming path; estimator fallback), Arabic visemes, and a Word-openable `.docx` minutes artifact. Remaining: inline DOCX *attachment* to the Teams chat (cross-process delivery is text-only — the artifact is generated and saved).
+Recent: real ElevenLabs `/with-timestamps` viseme alignment (streaming path; estimator fallback), Arabic visemes, and Word-openable `.docx` minutes — uploaded to SharePoint and attached to the Teams chat as a native file card when `sharePointSiteId` is configured (text-only otherwise).
 
 ## Worker-owned (inherited from the media worker — not in this driver)
 

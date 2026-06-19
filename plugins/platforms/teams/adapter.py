@@ -502,6 +502,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
+    attachments: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Acquire a Bot Framework bearer token and POST a single message activity.
 
@@ -592,6 +593,8 @@ async def _standalone_send(
                 "text": message,
                 "textFormat": "markdown",
             }
+            if attachments:
+                activity["attachments"] = attachments
             async with session.post(
                 activities_url,
                 json=activity,
@@ -614,6 +617,35 @@ async def _standalone_send(
     except Exception as e:
         logger.debug("Teams standalone send raised", exc_info=True)
         return {"error": f"Teams standalone send failed: {e}"}
+
+
+async def _standalone_send_file(
+    pconfig,
+    chat_id: str,
+    content: bytes,
+    filename: str,
+    *,
+    content_type: str = "application/octet-stream",
+    caption: str = "",
+) -> Dict[str, Any]:
+    """Upload ``content`` to SharePoint and post it to a Teams chat as a file card.
+
+    Requires ``sharePointSiteId`` (+ the Bot Framework app creds, which must hold the
+    Graph ``Sites.ReadWrite.All`` application permission). Falls back to a text-only
+    message with a markdown link when the native card can't be built; returns an
+    error dict when SharePoint isn't configured so callers can degrade to text."""
+    from . import graph_files
+
+    extra = getattr(pconfig, "extra", {}) or {}
+    creds = graph_files.resolve_sharepoint(extra)
+    if creds is None:
+        return {"error": "Teams file send: sharePointSiteId / app credentials not configured"}
+    uploaded = await graph_files.upload_and_build_card(creds, filename, content, content_type)
+    if uploaded is None:
+        return {"error": "Teams file send: SharePoint upload failed"}
+    link = f"📎 [{uploaded['name']}]({uploaded['share_url']})" if uploaded.get("share_url") else ""
+    text = f"{caption}\n\n{link}".strip() if caption else (link or uploaded["name"])
+    return await _standalone_send(pconfig, chat_id=chat_id, message=text, attachments=[uploaded["card"]])
 
 
 # Keep the old name as an alias so existing test imports don't break.

@@ -30,6 +30,10 @@ optional_env:
     description: "Webhook listen port (Bot Framework default: 3978)"
     prompt: "Webhook port"
     password: false
+  - name: TEAMS_SHAREPOINT_SITE_ID
+    description: "SharePoint site id (host,siteGuid,webGuid) for sending files into chats; needs the bot app's Graph Sites.ReadWrite.All permission"
+    prompt: "SharePoint site id"
+    password: false
   - name: TEAMS_ALLOWED_USERS
     description: "Comma-separated Teams user IDs / UPNs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

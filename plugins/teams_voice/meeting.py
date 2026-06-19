@@ -2,9 +2,10 @@
 
 The voice handlers append each caller/assistant turn to a :class:`MeetingTranscript`.
 At call end (opt-in ``meeting_recap``) or on the ``post_meeting_minutes`` tool, the
-handler asks the Hermes agent to summarize the transcript into minutes and post
-them to the Teams conversation via the agent's own ``send_message`` tool — so the
-cross-process delivery and DOCX creation are the agent's job, not the bridge's.
+agent summarizes the transcript into minutes which are posted to the Teams chat via
+the adapter's standalone Bot Framework sender. A Word-openable ``.docx`` is also
+generated; when ``sharePointSiteId`` is configured it is uploaded to SharePoint and
+attached to the chat as a native file card, otherwise the minutes post as text.
 """
 
 from __future__ import annotations
@@ -77,10 +78,10 @@ async def _deliver_to_teams(conversation_id: str, text: str) -> bool:
 
 
 def _save_docx_artifact(minutes: str) -> str | None:
-    """Write a Word-openable minutes .docx under the Hermes workspace; log the path.
+    """Write a Word-openable minutes .docx under the Hermes workspace; return the path.
 
-    Best-effort: cross-process attachment to the Teams chat is text-only, so this
-    produces a retrievable artifact rather than an inline chat attachment."""
+    Best-effort: the file is uploaded + attached to the chat when SharePoint is
+    configured (see :func:`_deliver_file_to_teams`), and kept as a local artifact."""
     try:
         from hermes_constants import get_hermes_home
 
@@ -95,6 +96,32 @@ def _save_docx_artifact(minutes: str) -> str | None:
     except Exception:  # noqa: BLE001 — artifact is optional
         logger.warning("[teams_voice] minutes .docx generation failed", exc_info=True)
         return None
+
+
+async def _deliver_file_to_teams(conversation_id: str, file_path: str, display_name: str, *, caption: str = "") -> bool:
+    """Upload a file to SharePoint and post it to the Teams chat as a file card.
+
+    Returns False (caller degrades to text) when SharePoint isn't configured or the
+    upload fails. The Word document content type keeps Teams' Open-in-Word working."""
+    try:
+        from plugins.platforms.teams.adapter import _standalone_send_file
+    except Exception:  # noqa: BLE001 — teams adapter unavailable
+        return False
+    try:
+        content = Path(file_path).read_bytes()
+    except OSError:
+        return False
+    pconfig = type("_PConfig", (), {"extra": {}})()
+    docx_ct = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    try:
+        result = await _standalone_send_file(
+            pconfig, chat_id=conversation_id, content=content,
+            filename=display_name, content_type=docx_ct, caption=caption,
+        )
+        return bool(result.get("success"))
+    except Exception:  # noqa: BLE001
+        logger.error("[teams_voice] minutes file delivery failed", exc_info=True)
+        return False
 
 
 async def post_minutes(
@@ -116,9 +143,15 @@ async def post_minutes(
     minutes = (minutes or "").strip()
     if not minutes:
         return "I couldn't summarize the meeting."
-    _save_docx_artifact(minutes)  # best-effort Word-openable artifact
+    body = f"📝 **Meeting minutes**\n\n{minutes}"
+    docx_path = _save_docx_artifact(minutes)  # Word-openable artifact
+    # When SharePoint file-send is configured, attach the Word document to the chat;
+    # otherwise (or for an injected test deliver) post the minutes as text.
+    if docx_path and deliver is None:
+        if await _deliver_file_to_teams(conversation_id, docx_path, "Meeting minutes.docx", caption=body):
+            return "I've posted the minutes (with the Word document) to your Teams chat."
     deliver = deliver or _deliver_to_teams
-    ok = await deliver(conversation_id, f"📝 **Meeting minutes**\n\n{minutes}")
+    ok = await deliver(conversation_id, body)
     return (
         "I've posted the minutes to your Teams chat."
         if ok
