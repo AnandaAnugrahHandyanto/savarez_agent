@@ -297,6 +297,44 @@ class TestStdioPgroupReaping:
             assert fake_pid not in _orphan_stdio_pids
             assert fake_pid not in _stdio_pgids
 
+    def test_own_process_group_never_killpg(self, monkeypatch):
+        """Never send a signal to Hermes' own process group (#47134)."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pgids,
+            _lock,
+        )
+
+        self._reset_state()
+        fake_pid = 646464
+        own_pgid = 12345
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _stdio_pgids[fake_pid] = own_pgid
+
+        fake_sigkill = 9
+        monkeypatch.setattr(signal, "SIGKILL", fake_sigkill, raising=False)
+
+        if not hasattr(os, "killpg"):
+            pytest.skip("os.killpg not available on this platform")
+
+        with patch("tools.mcp_tool.os.getpgid", return_value=own_pgid), \
+             patch("tools.mcp_tool.os.getpid", return_value=111), \
+             patch("tools.mcp_tool.os.killpg") as mock_killpg, \
+             patch("tools.mcp_tool.os.kill") as mock_kill, \
+             patch("gateway.status._pid_exists", return_value=True), \
+             patch("time.sleep"):
+            _kill_orphaned_mcp_children()
+
+        mock_killpg.assert_not_called()
+        mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
+        mock_kill.assert_any_call(fake_pid, fake_sigkill)
+
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+            assert fake_pid not in _stdio_pgids
+
     def test_no_pgid_uses_per_pid_kill(self, monkeypatch):
         """When no pgid is recorded (e.g. Windows), fall back to os.kill."""
         from tools.mcp_tool import (

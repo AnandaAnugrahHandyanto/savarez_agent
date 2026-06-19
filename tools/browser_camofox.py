@@ -562,9 +562,16 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/type",
             {"userId": session["user_id"], "ref": clean_ref, "text": text},
         )
+        from agent.display import redact_tool_args_for_display
+
+        display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
+
         return json.dumps({
             "success": True,
-            "typed": text,
+            # Match browser_tool.browser_type: do not echo raw credentials in
+            # tool progress or chat history.  The raw text is still typed into
+            # the page; only the returned display value is redacted.
+            "typed": display_text,
             "element": clean_ref,
         })
     except Exception as e:
