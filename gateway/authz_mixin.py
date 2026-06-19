@@ -95,9 +95,9 @@ class GatewayAuthorizationMixin:
 
         Mirror of ``_adapter_dm_policy`` for group / forum / channel traffic:
         returns the lowercased ``group_policy`` (``"open"`` / ``"allowlist"`` /
-        ``"disabled"``) for *platform*, or ``""`` when unknown. Prefers the live
-        adapter's resolved ``_group_policy`` and falls back to ``config.extra``
-        for bare runners built without a live adapter.
+        ``"disabled"`` / ``"pairing"``) for *platform*, or ``""`` when unknown.
+        Prefers the live adapter's resolved ``_group_policy`` and falls back to
+        ``config.extra`` for bare runners built without a live adapter.
 
         Used by ``_is_user_authorized`` to decide whether an own-policy adapter
         restricted group senders to a configured allowlist (trustworthy) or
