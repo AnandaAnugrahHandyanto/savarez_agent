@@ -12,6 +12,7 @@ Provides subcommands for:
 """
 
 import os
+import subprocess
 import sys
 
 __version__ = "0.16.0"
@@ -89,4 +90,43 @@ def _ensure_utf8():
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
+def _ensure_windows_subprocess_text_decoding():
+    """Make Windows text-mode subprocess pipes decode lossily instead of crashing.
+
+    On Windows, localized command output can contain bytes that do not match the
+    process locale selected by Python's ``subprocess`` text-mode pipe reader.
+    If a caller uses ``text=True`` / ``universal_newlines=True`` without an
+    explicit ``errors=`` policy, CPython's internal reader thread can raise
+    ``UnicodeDecodeError`` and silently drop the captured output.
+
+    Preserve explicit caller choices, but default Hermes CLI subprocesses to the
+    same UTF-8 + replacement policy used for stdio whenever text mode is enabled.
+    This is intentionally Windows-only to avoid changing POSIX locale behavior.
+    """
+    if sys.platform != "win32":
+        return
+
+    current_init = subprocess.Popen.__init__
+    if getattr(current_init, "_hermes_text_decode_defaults", False):
+        return
+
+    def _hermes_popen_init(self, *args, **kwargs):
+        positional_universal_newlines = len(args) > 11 and args[11]
+        text_mode = (
+            kwargs.get("text")
+            or kwargs.get("universal_newlines")
+            or positional_universal_newlines
+            or kwargs.get("encoding") is not None
+            or kwargs.get("errors") is not None
+        )
+        if text_mode:
+            kwargs.setdefault("encoding", "utf-8")
+            kwargs.setdefault("errors", "replace")
+        return current_init(self, *args, **kwargs)
+
+    _hermes_popen_init._hermes_text_decode_defaults = True  # type: ignore[attr-defined]
+    subprocess.Popen.__init__ = _hermes_popen_init
+
+
 _ensure_utf8()
+_ensure_windows_subprocess_text_decoding()
