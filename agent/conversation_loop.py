@@ -2774,6 +2774,7 @@ def run_conversation(
                         agent._credential_pool,
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),
+                        error_context=error_context,
                     )
                     if not pool_may_recover:
                         if classified.reason == FailoverReason.billing:
