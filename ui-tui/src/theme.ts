@@ -353,10 +353,12 @@ const TRUE_RE = /^(?:1|true|yes|on)$/
 const FALSE_RE = /^(?:0|false|no|off)$/
 
 // TERM_PROGRAM fallback allow-list for terminals whose default profile is
-// light and which may not expose COLORFGBG. This currently includes Apple
-// Terminal. Explicit HERMES_TUI_THEME / COLORFGBG signals above still win,
-// so dark Apple Terminal profiles that advertise a dark background stay dark.
-const LIGHT_DEFAULT_TERM_PROGRAMS = new Set<string>(['Apple_Terminal'])
+// light and which may not expose COLORFGBG. Kept empty to match the Python
+// TUI's behaviour — Apple Terminal can be configured with a dark profile,
+// so hardcoding it as light-mode is a wrong premise (#49082). Explicit
+// HERMES_TUI_LIGHT / HERMES_TUI_THEME / COLORFGBG signals above still
+// detect light mode correctly for users who need it.
+const LIGHT_DEFAULT_TERM_PROGRAMS = new Set<string>([])
 
 // Best-effort RGB → luminance check.  Currently only accepts a 3- or
 // 6-digit hex value (with or without a leading `#`); the env var name

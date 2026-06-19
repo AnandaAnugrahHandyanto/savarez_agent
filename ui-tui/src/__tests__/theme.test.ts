@@ -89,10 +89,13 @@ describe('detectLightMode', () => {
     expect(detectLightMode({})).toBe(false)
   })
 
-  it('defaults Apple Terminal to light when no stronger signal is present', async () => {
+  it('does not default Apple Terminal to light when no stronger signal is present (#49082)', async () => {
     const { detectLightMode } = await importThemeWithCleanEnv()
 
-    expect(detectLightMode({ TERM_PROGRAM: 'Apple_Terminal' })).toBe(true)
+    // Apple Terminal can have a dark profile — hardcoding it as light was
+    // a wrong premise. Without an explicit signal, we stay dark (matching
+    // the Python TUI's behaviour).
+    expect(detectLightMode({ TERM_PROGRAM: 'Apple_Terminal' })).toBe(false)
   })
 
   it('honors HERMES_TUI_LIGHT on/off', async () => {
@@ -261,7 +264,7 @@ describe('fromSkin', () => {
   })
 
   it('normalizes non-banner foregrounds on light Apple Terminal', async () => {
-    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: 'Apple_Terminal' })
+    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: 'Apple_Terminal', HERMES_TUI_LIGHT: '1' })
 
     const theme = fromSkin({
       banner_accent: '#FFBF00',
@@ -281,14 +284,14 @@ describe('fromSkin', () => {
   })
 
   it('does not normalize light Apple Terminal when truecolor is advertised', async () => {
-    const { fromSkin } = await importThemeWithEnv({ COLORTERM: 'truecolor', TERM_PROGRAM: 'Apple_Terminal' })
+    const { fromSkin } = await importThemeWithEnv({ COLORTERM: 'truecolor', TERM_PROGRAM: 'Apple_Terminal', HERMES_TUI_LIGHT: '1' })
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
     expect(theme.color.text).toBe('#FFF8DC')
   })
 
   it('normalizes Apple Terminal names before matching', async () => {
-    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: ' Apple_Terminal ' })
+    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: ' Apple_Terminal ', HERMES_TUI_LIGHT: '1' })
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
     expect(theme.color.text).toBe('ansi256(136)')
