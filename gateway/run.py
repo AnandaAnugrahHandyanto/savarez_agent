@@ -11038,6 +11038,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
+                try:
+                    from agent.project_local import resolve_project_local_state
+
+                    project_local_state = resolve_project_local_state()
+                except Exception:
+                    project_local_state = None
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -11066,6 +11072,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    project_local_state=project_local_state,
                 )
                 try:
                     return agent.run_conversation(
@@ -12542,6 +12549,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            cwd=os.environ.get("TERMINAL_CWD", ""),
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -15203,12 +15211,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            try:
+                from agent.project_local import resolve_project_local_state
+
+                project_local_state = resolve_project_local_state()
+            except Exception:
+                project_local_state = None
+            try:
+                _cache_keys = dict(self._extract_cache_busting_config(user_config) or {})
+            except Exception:
+                _cache_keys = {}
+            if project_local_state is not None:
+                _cache_keys.update(project_local_state.cache_signature())
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=_cache_keys,
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
@@ -15303,6 +15323,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    project_local_state=project_local_state,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

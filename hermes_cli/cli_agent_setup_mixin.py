@@ -190,6 +190,14 @@ class CLIAgentSetupMixin:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        try:
+            from agent.project_local import resolve_project_local_state
+
+            project_signature = tuple(
+                sorted(resolve_project_local_state().cache_signature().items())
+            )
+        except Exception:
+            project_signature = ()
         route = {
             "model": self.model,
             "runtime": runtime,
@@ -200,6 +208,7 @@ class CLIAgentSetupMixin:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                project_signature,
             ),
         }
 
@@ -340,6 +349,9 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            from agent.project_local import resolve_project_local_state
+
+            project_local_state = resolve_project_local_state()
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -383,6 +395,7 @@ class CLIAgentSetupMixin:
                 pass_session_id=self.pass_session_id,
                 skip_context_files=self.ignore_rules,
                 skip_memory=self.ignore_rules,
+                project_local_state=project_local_state,
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
@@ -414,6 +427,7 @@ class CLIAgentSetupMixin:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                tuple(sorted(project_local_state.cache_signature().items())),
             )
 
             # Force-create DB row on /title intent, then apply title.
