@@ -165,6 +165,7 @@ class Platform(Enum):
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
+    NOSTR = "nostr"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -1541,6 +1542,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=signal_home,
             name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
             thread_id=os.getenv("SIGNAL_HOME_CHANNEL_THREAD_ID") or None,
+        )
+
+    # Nostr
+    nostr_privkey = os.getenv("NOSTR_PRIVATE_KEY")
+    if nostr_privkey:
+        nostr_config = _enable_from_env(Platform.NOSTR)
+        nostr_config.extra.update({
+            "private_key": nostr_privkey,
+            "relays": os.getenv("NOSTR_RELAYS", ""),
+        })
+    nostr_home = os.getenv("NOSTR_HOME_CHANNEL")
+    if nostr_home and Platform.NOSTR in config.platforms:
+        config.platforms[Platform.NOSTR].home_channel = HomeChannel(
+            platform=Platform.NOSTR,
+            chat_id=nostr_home,
+            name=os.getenv("NOSTR_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Mattermost
