@@ -234,7 +234,8 @@ class TestConnectivityChecks:
         ok, msg = _check_qdrant_path(str(tmp_path / "qdrant"))
         assert ok is True
 
-    def test_qdrant_path_not_writable(self):
+    def test_qdrant_path_not_writable(self, monkeypatch):
+        monkeypatch.setattr(Path, "mkdir", lambda *a, **kw: (_ for _ in ()).throw(OSError("Permission denied")))
         ok, msg = _check_qdrant_path("/nonexistent/deeply/nested/path")
         assert ok is False
 

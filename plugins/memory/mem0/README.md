@@ -113,7 +113,7 @@ hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 
 ## Telemetry
 
-Anonymous usage telemetry is collected via PostHog to help improve the plugin. Events are sampled at 10% and contain no personally identifiable information.
+Anonymous usage telemetry is collected via PostHog to help improve the plugin. Events contain no personally identifiable information.
 
 To disable telemetry:
 

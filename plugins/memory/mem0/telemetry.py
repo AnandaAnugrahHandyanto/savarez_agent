@@ -28,7 +28,7 @@ POSTHOG_HOST = "https://us.i.posthog.com/i/v0/e/"
 FLUSH_INTERVAL_SECS = 5.0
 FLUSH_THRESHOLD = 10
 
-_DEFAULT_SAMPLE_RATE = 0.1
+_DEFAULT_SAMPLE_RATE = 1.0
 _LIFECYCLE_EVENTS = frozenset({"hermes.plugin.registered"})
 
 _event_queue: list[Dict[str, Any]] = []
