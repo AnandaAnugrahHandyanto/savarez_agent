@@ -1,0 +1,190 @@
+name: Build Intel macOS desktop release
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: intel-macos-stable-release
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Check latest upstream stable release
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.release.outputs.should_build }}
+      upstream_tag: ${{ steps.release.outputs.upstream_tag }}
+      upstream_url: ${{ steps.release.outputs.upstream_url }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+    steps:
+      - name: Discover release and skip existing rebuilds
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          upstream_json="$(gh api repos/NousResearch/hermes-agent/releases/latest)"
+          upstream_tag="$(jq -r '.tag_name' <<<"$upstream_json")"
+          upstream_url="$(jq -r '.html_url' <<<"$upstream_json")"
+          release_tag="intel-macos-${upstream_tag//\//-}"
+
+          if [[ -z "$upstream_tag" || "$upstream_tag" == "null" ]]; then
+            echo "The upstream latest stable release has no tag." >&2
+            exit 1
+          fi
+
+          {
+            echo "upstream_tag=$upstream_tag"
+            echo "upstream_url=$upstream_url"
+            echo "release_tag=$release_tag"
+          } >> "$GITHUB_OUTPUT"
+
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "Release $release_tag already exists; nothing to build."
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "New upstream stable release detected: $upstream_tag"
+          fi
+
+  build-and-publish:
+    name: Build and publish Intel macOS artifacts
+    needs: discover
+    if: needs.discover.outputs.should_build == 'true'
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ needs.discover.outputs.release_tag }}
+      UPSTREAM_TAG: ${{ needs.discover.outputs.upstream_tag }}
+      UPSTREAM_URL: ${{ needs.discover.outputs.upstream_url }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out exact upstream release
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ needs.discover.outputs.upstream_tag }}
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build unsigned Intel macOS packages
+        working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:mac -- --x64
+
+      - name: Validate x86_64 packages and write checksums
+        id: validate
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          app_binary="$(find release -path '*/Hermes.app/Contents/MacOS/Hermes' -type f -print -quit)"
+          if [[ -z "$app_binary" ]]; then
+            echo "Packaged Hermes executable was not found." >&2
+            exit 1
+          fi
+
+          app_file="$(file "$app_binary")"
+          echo "$app_file"
+          grep -q 'x86_64' <<<"$app_file"
+          if grep -q 'arm64' <<<"$app_file"; then
+            echo "Hermes executable unexpectedly contains arm64." >&2
+            exit 1
+          fi
+
+          native_count=0
+          while IFS= read -r -d '' native_file; do
+            native_description="$(file "$native_file")"
+            echo "$native_description"
+            grep -q 'x86_64' <<<"$native_description"
+            if grep -q 'arm64' <<<"$native_description"; then
+              echo "$native_file unexpectedly contains arm64." >&2
+              exit 1
+            fi
+            native_count=$((native_count + 1))
+          done < <(find release -type f \( -name '*.node' -o -name 'spawn-helper' \) -print0)
+
+          if (( native_count == 0 )); then
+            echo "No packaged native node-pty files were found." >&2
+            exit 1
+          fi
+
+          dmgs=(release/*-mac-x64.dmg)
+          zips=(release/*-mac-x64.zip)
+          if (( ${#dmgs[@]} != 1 || ${#zips[@]} != 1 )); then
+            echo "Expected exactly one x64 DMG and one x64 ZIP." >&2
+            printf 'DMGs: %s\n' "${dmgs[*]:-none}" >&2
+            printf 'ZIPs: %s\n' "${zips[*]:-none}" >&2
+            exit 1
+          fi
+
+          hdiutil verify "${dmgs[0]}"
+          shasum -a 256 "${dmgs[0]}" "${zips[0]}" > release/SHA256SUMS.txt
+
+          {
+            echo "dmg=${dmgs[0]}"
+            echo "zip=${zips[0]}"
+            echo "checksums=release/SHA256SUMS.txt"
+            echo "upstream_sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish unofficial prerelease
+        working-directory: apps/desktop
+        env:
+          DMG_PATH: ${{ steps.validate.outputs.dmg }}
+          ZIP_PATH: ${{ steps.validate.outputs.zip }}
+          CHECKSUM_PATH: ${{ steps.validate.outputs.checksums }}
+          UPSTREAM_SHA: ${{ steps.validate.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+
+          notes_file="$RUNNER_TEMP/intel-macos-release-notes.md"
+          {
+            printf '# Unofficial Intel macOS rebuild\n\n'
+            # Markdown backticks are intentionally literal in the single-quoted format.
+            # shellcheck disable=SC2016
+            printf 'This is an unofficial community rebuild of the Hermes Desktop app for Intel Macs (`x86_64`). It was built from the official stable release [%s](%s), upstream commit `%s`.\n\n' "$UPSTREAM_TAG" "$UPSTREAM_URL" "$UPSTREAM_SHA"
+            cat <<'EOF'
+          The packaged Hermes executable and native node-pty binaries were verified as `x86_64`, and the DMG passed `hdiutil verify`.
+
+          ## Important security notice
+
+          This build is **not an official Nous Research release** and is **not signed or notarized by Apple**. macOS Gatekeeper may block its first launch. Right-click Hermes and choose **Open**, or, only if you trust this build, run:
+
+          ```bash
+          xattr -dr com.apple.quarantine /Applications/Hermes.app
+          ```
+
+          SHA-256 hashes are included in `SHA256SUMS.txt`.
+
+          ---
+          EOF
+            # shellcheck disable=SC2016
+            printf '\n这是官方稳定版 %s 的 Intel (`x86_64`) macOS 社区重构版本。它不是 Nous Research 官方发布，也没有经过 Apple 签名或公证。首次启动时 macOS 可能需要通过右键“打开”手动允许。\n' "$UPSTREAM_TAG"
+          } > "$notes_file"
+
+          gh release create "$RELEASE_TAG" \
+            "$DMG_PATH" \
+            "$ZIP_PATH" \
+            "$CHECKSUM_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Hermes Desktop for Intel macOS - $UPSTREAM_TAG (Unofficial)" \
+            --notes-file "$notes_file" \
+            --prerelease
