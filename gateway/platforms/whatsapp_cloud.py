@@ -749,6 +749,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        allow_permanent: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Render a dangerous-command approval prompt with native buttons.
@@ -757,7 +758,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         waiting agent via ``tools.approval.resolve_gateway_approval`` —
         same mechanism as the text ``/approve`` flow. The agent thread
         is blocked until the user taps or types a response.
+
+        WhatsApp Cloud does not expose a permanent approval button here, but
+        accepts ``allow_permanent`` to keep the adapter compatible with the
+        gateway approval contract shared by other button-capable platforms.
         """
+        _ = allow_permanent
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
 

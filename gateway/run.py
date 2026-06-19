@@ -15109,6 +15109,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                allow_permanent = approval_data.get("allow_permanent", True)
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -15121,6 +15122,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
+                                allow_permanent=allow_permanent,
                                 metadata=_status_thread_metadata,
                             ),
                             _loop_for_step,
@@ -15147,12 +15149,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                scope_text = (
+                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
+                    if allow_permanent
+                    else f"for the session, or `{_p}deny` to cancel."
+                )
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
-                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
+                    f"{scope_text}"
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
