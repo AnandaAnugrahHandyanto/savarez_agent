@@ -726,6 +726,15 @@ platform_toolsets:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default true, set false to force legacy MarkdownV2
 #
+# Signal settings for group-specific authorizations:
+#
+# platforms:
+#   signal:
+#     extra:
+#       groups:
+#         "SIGNAL-GROUP-ID":
+#           allow_users: "+123456789,+987654321"
+#
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:
