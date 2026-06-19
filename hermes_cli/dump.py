@@ -164,7 +164,19 @@ def _configured_platforms() -> list[str]:
         "weixin": "WEIXIN_ACCOUNT_ID",
         "qqbot": "QQ_APP_ID",
     }
-    return [name for name, env in checks.items() if os.getenv(env)]
+    truthy = {"true", "1", "yes"}
+    configured: list[str] = []
+    for name, env in checks.items():
+        val = os.getenv(env)
+        if not val:
+            continue
+        # WHATSAPP_ENABLED is a boolean toggle, not a credential. Mirror the
+        # runtime parser (gateway/config.py) so an explicit WHATSAPP_ENABLED=false
+        # / 0 / no is not reported as a configured platform.
+        if name == "whatsapp" and val.strip().lower() not in truthy:
+            continue
+        configured.append(name)
+    return configured
 
 
 def _memory_provider(config: dict) -> str:
