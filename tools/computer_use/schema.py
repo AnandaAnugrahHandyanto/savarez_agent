@@ -16,14 +16,15 @@ from typing import Any, Dict
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the macOS desktop in the background — screenshots, mouse, "
-        "keyboard, scroll, drag — without stealing the user's cursor, "
-        "keyboard focus, or Space. Preferred workflow: call with "
-        "action='capture' (mode='som' gives numbered element overlays), "
-        "then click by `element` index for reliability. Pixel coordinates "
-        "are supported for models trained on them. Works on any window — "
-        "hidden, minimized, on another Space, or behind another app. "
-        "macOS only; requires cua-driver to be installed."
+        "Drive a desktop with screenshots, mouse, keyboard, scroll, and drag. "
+        "On macOS this uses cua-driver background automation without stealing "
+        "the user's cursor, keyboard focus, or Space. On Linux this uses the "
+        "linux-computer-use MCP driver; X11 is supported and may move the real "
+        "pointer/focus, while Wayland support depends on compositor portals. "
+        "Preferred workflow: call with action='capture' (mode='som' gives "
+        "numbered element overlays), then click by `element` index for "
+        "reliability. Pixel coordinates are supported for models trained on "
+        "them."
     ),
     "parameters": {
         "type": "object",
@@ -188,9 +189,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "boolean",
                 "description": (
                     "Only for action='focus_app'. If true, brings the "
-                    "window to front (DISRUPTS the user). Default false "
-                    "— input is routed to the app without raising, "
-                    "matching the background co-work model."
+                    "window to front (DISRUPTS the user). Default false. "
+                    "On macOS, background routing avoids raising the window; "
+                    "on Linux/X11, subsequent actions may still require or "
+                    "change focus depending on the window manager."
                 ),
             },
             # ── return shape ───────────────────────────────────────

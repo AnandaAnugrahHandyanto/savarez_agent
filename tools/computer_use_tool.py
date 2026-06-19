@@ -24,10 +24,11 @@ registry.register(
     check_fn=check_computer_use_requirements,
     requires_env=[],
     description=(
-        "Universal macOS desktop control via cua-driver. Works with any "
-        "tool-capable model (Anthropic, OpenAI, OpenRouter, local vLLM, "
-        "etc.). Background computer-use: does NOT steal the user's cursor "
-        "or keyboard focus."
+        "Universal desktop computer-use via cua-driver on macOS and "
+        "linux-computer-use on Linux. Works with any tool-capable model "
+        "(Anthropic, OpenAI, OpenRouter, local vLLM, etc.). macOS supports "
+        "background computer-use without stealing cursor/focus; Linux/X11 "
+        "support may move the real pointer/focus."
     ),
 )
 

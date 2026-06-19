@@ -3,12 +3,18 @@ title: Computer Use
 sidebar_position: 16
 ---
 
-# Computer Use (macOS)
+# Computer Use
 
-Hermes Agent can drive your Mac's desktop — clicking, typing, scrolling,
-dragging — in the **background**. Your cursor doesn't move, keyboard focus
-doesn't change, and macOS doesn't switch Spaces on you. You and the agent
-co-work on the same machine.
+Hermes Agent can drive desktop applications — clicking, typing, scrolling,
+dragging — through a model-agnostic `computer_use` tool.
+
+On **macOS**, Hermes uses `cua-driver` for true background computer-use: your
+cursor doesn't move, keyboard focus doesn't change, and macOS doesn't switch
+Spaces on you. On **Linux**, Hermes uses the companion
+[`linux-computer-use`](https://github.com/tyy130/linux-computer-use) MCP driver.
+The Linux path is X11-first and may move the real pointer/focus; Wayland support
+is intentionally reported as limited unless the compositor exposes automation
+portals.
 
 Unlike most computer-use integrations, this works with **any tool-capable
 model** — Claude, GPT, Gemini, or an open model on a local vLLM endpoint.
@@ -16,23 +22,28 @@ There's no Anthropic-native schema to worry about.
 
 ## How it works
 
-The `computer_use` toolset speaks MCP over stdio to [`cua-driver`](https://github.com/trycua/cua),
-a macOS driver that uses SkyLight private SPIs (`SLEventPostToPid`,
-`SLPSPostEventRecordTo`) and the `_AXObserverAddNotificationAndCheckRemote`
-accessibility SPI to:
+The `computer_use` toolset speaks MCP over stdio to a platform driver:
 
-- Post synthesized events directly to target processes — no HID event tap,
-  no cursor warp.
-- Flip AppKit active-state without raising windows — no Space switching.
-- Keep Chromium/Electron accessibility trees alive when windows are
-  occluded.
+- **macOS:** [`cua-driver`](https://github.com/trycua/cua), which uses SkyLight
+  private SPIs (`SLEventPostToPid`, `SLPSPostEventRecordTo`) and the
+  `_AXObserverAddNotificationAndCheckRemote` accessibility SPI to:
+  - Post synthesized events directly to target processes — no HID event tap,
+    no cursor warp.
+  - Flip AppKit active-state without raising windows — no Space switching.
+  - Keep Chromium/Electron accessibility trees alive when windows are
+    occluded.
+- **Linux:** [`linux-computer-use`](https://github.com/tyy130/linux-computer-use),
+  an X11-first MCP driver that uses `xdotool` for input, screenshot utilities
+  (`scrot`, `import`, or `gnome-screenshot`) for capture, and AT-SPI for the
+  accessibility tree/SOM element overlay.
 
-That combination is what OpenAI's Codex "background computer-use" ships.
-cua-driver is the open-source equivalent.
+The macOS combination is what OpenAI's Codex "background computer-use" ships;
+`cua-driver` is the open-source equivalent. Linux exposes the same Hermes schema
+but cannot yet promise background co-working on every compositor.
 
 ## Enabling
 
-Pick whichever path is most convenient — both run the same upstream installer:
+Pick whichever path is most convenient:
 
 **Option 1: dedicated CLI command (most direct).**
 
@@ -40,18 +51,18 @@ Pick whichever path is most convenient — both run the same upstream installer:
 hermes computer-use install
 ```
 
-This fetches and runs the upstream cua-driver installer:
-`curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh`.
+On macOS, this fetches and runs the upstream cua-driver installer. On Linux, it
+installs `linux-computer-use` from GitHub via `pipx` or `uv tool install`.
 Use `hermes computer-use status` to verify the install.
 
 **Option 2: enable the toolset interactively.**
 
-1. Run `hermes tools`, pick `🖱️ Computer Use (macOS)` → `cua-driver (background)`.
-2. The setup runs the upstream installer (same as Option 1).
+1. Run `hermes tools`, pick `🖱️ Computer Use (Desktop)` → the platform driver.
+2. The setup runs the same platform installer as Option 1.
 
-After installing, regardless of which path you took:
+After installing:
 
-3. Grant macOS permissions when prompted:
+3. macOS only: grant permissions when prompted:
    - **System Settings → Privacy & Security → Accessibility** → allow the
      terminal (or Hermes app).
    - **System Settings → Privacy & Security → Screen Recording** → allow
@@ -62,22 +73,17 @@ After installing, regardless of which path you took:
    ```
    or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 
-## Keeping cua-driver up to date
+## Keeping drivers up to date
 
-The cua-driver project ships fixes regularly (e.g. v0.1.6 fixed a Safari
-window-focus bug for UTM workflows). Hermes refreshes the binary in two
-places so you don't get stuck on a stale release:
+Hermes refreshes the platform driver in two places:
 
-- **`hermes update`** — when you update Hermes itself, if `cua-driver` is
-  on PATH the upstream installer re-runs at the end of the update.
-  No-op for non-macOS users and for users without cua-driver installed.
-- **`hermes computer-use install --upgrade`** — manual force-refresh.
-  Re-runs the upstream installer regardless of whether cua-driver is
-  already installed. Use this when you want the latest fix without
-  waiting for the next agent update.
+- **`hermes update`** — when you update Hermes itself, installed computer-use
+  drivers can be refreshed as part of the update flow.
+- **`hermes computer-use install --upgrade`** — manual force-refresh. On macOS
+  this re-runs the cua-driver installer. On Linux this upgrades
+  `linux-computer-use` when installed via `pipx`/`uv tool`.
 
-`hermes computer-use status` shows the installed version next to the
-binary path.
+`hermes computer-use status` shows the installed driver and binary path.
 
 ## Quick example
 
@@ -95,8 +101,9 @@ The agent's plan:
    and get the new screenshot.
 5. Click the top result, read the body, summarise.
 
-During all of this, your cursor stays wherever you left it and Mail never
-comes to front.
+On macOS, your cursor stays wherever you left it and Mail never comes to front.
+On Linux/X11, the same action sequence works, but the window manager may move
+pointer/focus because Linux does not expose the same background event primitive.
 
 ## Provider compatibility
 
@@ -149,12 +156,12 @@ of screenshot context, not ~600K.
 
 ## Limitations
 
-- **macOS only.** cua-driver uses private Apple SPIs that don't exist on
-  Linux or Windows. For cross-platform GUI automation, use the `browser`
-  toolset.
-- **Private SPI risk.** Apple can change SkyLight's symbol surface in any
+- **macOS private SPI risk.** Apple can change SkyLight's symbol surface in any
   OS update. Pin the driver version with the `HERMES_CUA_DRIVER_VERSION`
   env var if you want reproducibility across a macOS bump.
+- **Linux focus model.** The Linux backend is X11-first and may move the real
+  pointer or focus. Wayland compositors block global synthetic input by default;
+  future GNOME/KDE portal backends can improve this.
 - **Performance.** Background mode is slower than foreground —
   SkyLight-routed events take ~5-20ms vs direct HID posting. Not
   noticeable for agent-speed clicking; noticeable if you try to record a
@@ -167,21 +174,28 @@ of screenshot context, not ~600K.
 Override the driver binary path (tests / CI):
 
 ```
-HERMES_CUA_DRIVER_CMD=/opt/homebrew/bin/cua-driver
-HERMES_CUA_DRIVER_VERSION=0.5.0    # optional pin
+HERMES_CUA_DRIVER_CMD=/opt/homebrew/bin/cua-driver          # macOS
+HERMES_CUA_DRIVER_VERSION=0.5.0                            # optional macOS pin
+HERMES_LINUX_COMPUTER_USE_CMD=/usr/local/bin/linux-computer-use
 ```
 
 Swap the backend entirely (for testing):
 
 ```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
+HERMES_COMPUTER_USE_BACKEND=noop    # records calls, no side effects
+HERMES_COMPUTER_USE_BACKEND=linux   # force Linux backend
+HERMES_COMPUTER_USE_BACKEND=cua     # force macOS cua-driver backend
 ```
 
 ## Troubleshooting
 
-**`computer_use backend unavailable: cua-driver is not installed`** — Run
-`hermes computer-use install` to fetch the cua-driver binary, or run
+**`computer_use backend unavailable: cua-driver is not installed`** — On macOS,
+run `hermes computer-use install` to fetch the cua-driver binary, or run
 `hermes tools` and enable the Computer Use toolset.
+
+**`computer_use backend unavailable: linux-computer-use is not installed`** — On
+Linux, run `hermes computer-use install`, or install manually with
+`pipx install git+https://github.com/tyy130/linux-computer-use`.
 
 **Clicks seem to have no effect** — Capture and verify. A modal you
 didn't see may be blocking input. Dismiss it with `escape` or the close

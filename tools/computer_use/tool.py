@@ -128,14 +128,25 @@ _session_auto_approve = False
 _always_allow: set = set()  # action names the user unlocked for the session
 
 
+def _default_backend_name() -> str:
+    if sys.platform == "darwin":
+        return "cua"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return "cua"
+
+
 def _get_backend() -> ComputerUseBackend:
     global _backend
     with _backend_lock:
         if _backend is None:
-            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
+            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", _default_backend_name()).lower()
             if backend_name in {"cua", "cua-driver", ""}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
                 _backend = CuaDriverBackend()
+            elif backend_name in {"linux", "linux-computer-use", "linux_computer_use"}:
+                from tools.computer_use.linux_backend import LinuxComputerUseBackend
+                _backend = LinuxComputerUseBackend()
             elif backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             else:
@@ -810,12 +821,26 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    macOS uses cua-driver. Linux uses the companion linux-computer-use MCP
+    driver. HERMES_COMPUTER_USE_BACKEND can force a specific backend for tests
+    and advanced users.
     """
-    if sys.platform != "darwin":
-        return False
-    from tools.computer_use.cua_backend import cua_driver_binary_available
-    return cua_driver_binary_available()
+    forced = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "").lower()
+    if forced == "noop":
+        return True
+    if forced in {"cua", "cua-driver"}:
+        from tools.computer_use.cua_backend import cua_driver_binary_available
+        return sys.platform == "darwin" and cua_driver_binary_available()
+    if forced in {"linux", "linux-computer-use", "linux_computer_use"}:
+        from tools.computer_use.linux_backend import linux_driver_binary_available
+        return sys.platform.startswith("linux") and linux_driver_binary_available()
+    if sys.platform == "darwin":
+        from tools.computer_use.cua_backend import cua_driver_binary_available
+        return cua_driver_binary_available()
+    if sys.platform.startswith("linux"):
+        from tools.computer_use.linux_backend import linux_driver_binary_available
+        return linux_driver_binary_available()
+    return False
 
 
 def get_computer_use_schema() -> Dict[str, Any]:

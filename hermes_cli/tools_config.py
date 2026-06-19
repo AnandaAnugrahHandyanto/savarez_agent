@@ -516,23 +516,19 @@ TOOL_CATEGORIES = {
         ],
     },
     "computer_use": {
-        "name": "Computer Use (macOS)",
+        "name": "Computer Use (Desktop)",
         "icon": "🖱️",
-        "platform_gate": "darwin",
         "providers": [
             {
-                "name": "cua-driver (background)",
+                "name": "Platform driver (cua-driver on macOS, linux-computer-use on Linux)",
                 "badge": "★ recommended · free · local",
                 "tag": (
-                    "macOS background computer-use via SkyLight SPIs — does "
-                    "NOT steal your cursor or focus. Works with any model."
+                    "Desktop computer-use for any tool-capable model. macOS "
+                    "uses background cua-driver; Linux uses an X11-first MCP "
+                    "driver and may move pointer/focus."
                 ),
-                "env_vars": [
-                    # cua-driver reads HOME/TMPDIR from the process env, no
-                    # extra keys required. HERMES_CUA_DRIVER_VERSION is an
-                    # optional pin for reproducibility across macOS updates.
-                ],
-                "post_setup": "cua_driver",
+                "env_vars": [],
+                "post_setup": "computer_use_driver",
             },
         ],
     },
@@ -789,6 +785,65 @@ def install_cua_driver(upgrade: bool = False) -> bool:
     return ok
 
 
+def install_linux_computer_use(upgrade: bool = False) -> bool:
+    """Install or refresh the Linux computer-use MCP driver."""
+    import platform as _plat
+    import shutil
+    import subprocess
+
+    if _plat.system() != "Linux":
+        if not upgrade:
+            _print_warning("    linux-computer-use is Linux-only; skipping.")
+        return False
+
+    binary = shutil.which("linux-computer-use")
+    if binary and not upgrade:
+        _print_success(f"    linux-computer-use already installed: {binary}")
+        return True
+
+    pkg = "git+https://github.com/tyy130/linux-computer-use"
+    if shutil.which("pipx"):
+        cmd = ["pipx", "install", pkg]
+        if binary and upgrade:
+            cmd = ["pipx", "upgrade", "linux-computer-use"]
+    elif shutil.which("uv"):
+        cmd = ["uv", "tool", "install", pkg]
+        if upgrade:
+            cmd.insert(3, "--upgrade")
+    else:
+        _print_warning("    pipx or uv is required to install linux-computer-use automatically.")
+        _print_info(f"      pipx install {pkg}")
+        _print_info(f"      uv tool install {pkg}")
+        return bool(binary)
+
+    _print_info("    Installing linux-computer-use (Linux desktop MCP driver)...")
+    try:
+        result = subprocess.run(cmd, timeout=300)
+        if result.returncode == 0 and shutil.which("linux-computer-use"):
+            _print_success("    linux-computer-use installed.")
+            _print_info("    For full control on Linux, use an X11 session with xdotool + scrot installed.")
+            return True
+        _print_warning("    linux-computer-use installation did not complete. Run manually:")
+        _print_info(f"      {' '.join(cmd)}")
+        return bool(binary)
+    except subprocess.TimeoutExpired:
+        _print_warning("    linux-computer-use installation timed out. Run manually:")
+        _print_info(f"      {' '.join(cmd)}")
+        return bool(binary)
+
+
+def install_computer_use_driver(upgrade: bool = False) -> bool:
+    """Install the platform-appropriate Computer Use driver."""
+    import platform as _plat
+    system = _plat.system()
+    if system == "Darwin":
+        return install_cua_driver(upgrade=upgrade)
+    if system == "Linux":
+        return install_linux_computer_use(upgrade=upgrade)
+    _print_warning("    Computer Use desktop driver is currently supported on macOS and Linux.")
+    return False
+
+
 def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
     """Run the upstream cua-driver install.sh. Returns True on success.
 
@@ -970,8 +1025,8 @@ def _run_post_setup(post_setup_key: str):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
-    elif post_setup_key == "cua_driver":
-        install_cua_driver(upgrade=False)
+    elif post_setup_key in {"computer_use_driver", "cua_driver"}:
+        install_computer_use_driver(upgrade=False)
 
     elif post_setup_key == "kittentts":
         try:
@@ -2141,6 +2196,9 @@ _POST_SETUP_INSTALLED: dict = {
     # a no-key provider, and (b) an installed-state check is cheap and
     # doesn't trigger a heavy import.
     "cua_driver": lambda: bool(shutil.which(_cua_driver_cmd())),
+    "computer_use_driver": lambda: bool(
+        shutil.which(_cua_driver_cmd()) or shutil.which("linux-computer-use")
+    ),
 }
 
 
