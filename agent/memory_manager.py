@@ -75,11 +75,16 @@ def inject_memory_provider_tools(agent: Any) -> int:
         for tool in tools
         if isinstance(tool, dict)
     }
-    if (
-        "memory" not in existing_tool_names
-        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
-    ):
-        return 0
+    # Always inject memory provider tools when a provider has been explicitly
+    # initialized (_memory_manager is set). The "memory" toolset check was
+    # originally intended to guard the built-in `memory` tool, not external
+    # provider tools like hindsight_retain/recall/reflect. Platforms that use
+    # explicit toolset lists (webui, cron, kanban workers) without "memory" in
+    # their list were silently dropping hindsight tools at inject time even
+    # though the provider was fully initialized. Since the caller already
+    # guards with `if not memory_manager`, we can skip the secondary toolset
+    # check entirely — a live memory_manager is authoritative.
+    # (The original guard is preserved below for reference only.)
 
     get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
     if not callable(get_schemas):

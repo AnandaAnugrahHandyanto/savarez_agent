@@ -9671,6 +9671,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self.agent.valid_tool_names = {
                     tool["function"]["name"] for tool in self.agent.tools
                 } if self.agent.tools else set()
+                # Re-inject memory provider tools (e.g. hindsight_retain/recall/reflect)
+                # after MCP refresh, because get_tool_definitions() replaces agent.tools
+                # with only registry-registered tools, dropping any dynamically appended
+                # memory provider schemas. inject_memory_provider_tools() is idempotent
+                # (checks existing_tool_names to skip duplicates).
+                try:
+                    from agent.memory_manager import inject_memory_provider_tools as _inject_mpt
+                    _inject_mpt(self.agent)
+                except Exception:
+                    pass
 
             # Inject a message at the END of conversation history so the
             # model knows tools changed.  Appended after all existing

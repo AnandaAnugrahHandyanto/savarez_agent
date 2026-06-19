@@ -3577,6 +3577,14 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             agent.valid_tool_names = (
                 {t["function"]["name"] for t in new_defs} if new_defs else set()
             )
+            # Re-inject memory provider tools (e.g. hindsight_retain/recall/reflect)
+            # after late MCP refresh — get_tool_definitions() drops dynamically appended
+            # memory provider schemas. inject_memory_provider_tools() is idempotent.
+            try:
+                from agent.memory_manager import inject_memory_provider_tools as _inject_mpt_tui
+                _inject_mpt_tui(agent)
+            except Exception:
+                pass
             info = _session_info(agent, session)
         # Emit outside the lock — write_json must not block under _sessions_lock.
         _emit("session.info", sid, info)
@@ -8424,6 +8432,12 @@ def _(rid, params: dict) -> dict:
                 agent.valid_tool_names = (
                     {t["function"]["name"] for t in new_defs} if new_defs else set()
                 )
+                # Re-inject memory provider tools after /reload-mcp.
+                try:
+                    from agent.memory_manager import inject_memory_provider_tools as _inject_mpt_reload
+                    _inject_mpt_reload(agent)
+                except Exception:
+                    pass
             except Exception as _exc:
                 logger.warning(
                     "Failed to refresh cached agent tools after /reload-mcp: %s",

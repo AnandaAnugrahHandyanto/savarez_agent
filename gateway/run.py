@@ -11677,6 +11677,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _agent.valid_tool_names = {
                                 t["function"]["name"] for t in new_defs
                             } if new_defs else set()
+                            # Re-inject memory provider tools after MCP refresh.
+                            # get_tool_definitions() only returns registry-registered tools
+                            # and drops any dynamically appended memory provider schemas
+                            # (e.g. hindsight_retain/recall/reflect). inject_memory_provider_tools
+                            # is idempotent (checks existing_tool_names to skip duplicates).
+                            try:
+                                from agent.memory_manager import inject_memory_provider_tools as _inject_mpt_gw
+                                _inject_mpt_gw(_agent)
+                            except Exception:
+                                pass
             except Exception as _exc:
                 logger.debug(
                     "Failed to update cached agent tools after MCP reload: %s",
