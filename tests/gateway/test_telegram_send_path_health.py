@@ -50,6 +50,25 @@ async def test_send_succeeds_when_path_healthy():
 
 
 @pytest.mark.asyncio
+async def test_send_does_not_retrigger_typing_when_chat_is_paused():
+    """After the typing loop is cancelled, send() must not restart Telegram typing.
+
+    Telegram has no Bot API action that cancels an active typing indicator; the
+    indicator only expires naturally.  The important regression guard is that a
+    final/cleanup send does not create a fresh ~5s typing window on Android.
+    """
+    adapter = _make_adapter()
+    adapter._typing_paused.add("123")
+
+    result = await adapter.send("123", "hello")
+
+    assert result.success is True
+    assert adapter._bot is not None
+    adapter._bot.send_message.assert_awaited()
+    adapter._bot.send_chat_action.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_send_short_circuits_when_path_degraded():
     """Degraded adapter returns failure WITHOUT calling send_message,
     so cron's live-adapter branch falls through to standalone HTTP."""

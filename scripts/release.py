@@ -65,6 +65,7 @@ AUTHOR_MAP = {
     "dkobi16@gmail.com": "Diyoncrz18",
     "arnaud@nolimitdevelopment.com": "ali-nld",
     "sswdarius@gmail.com": "necoweb3",
+    "jvsantos.cunha@gmail.com": "plcunha",
     "peterhao@Peters-MacBook-Air.local": "pinguarmy",
     "joe.rinaldijohnson@shopify.com": "joerj123",
     "adalsteinnhelgason@Aalsteinns-MacBook-Pro-3.local": "AIalliAI",
