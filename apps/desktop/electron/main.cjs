@@ -3356,6 +3356,15 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+function loadAppIcon() {
+  for (const candidate of APP_ICON_PATHS) {
+    if (!fileExists(candidate)) continue
+    const image = nativeImage.createFromPath(candidate)
+    if (image && !image.isEmpty()) return image
+  }
+  return null
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const { webContents } = mainWindow
@@ -5155,7 +5164,7 @@ function createNewSessionWindow() {
 }
 
 function createWindow() {
-  const icon = getAppIconPath()
+  const icon = loadAppIcon()
   mainWindow = new BrowserWindow({
     width: 1220,
     height: 800,
@@ -6566,3 +6575,5 @@ app.on('before-quit', () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+module.exports = { ...(module.exports || {}), getAppIconPath, loadAppIcon }
