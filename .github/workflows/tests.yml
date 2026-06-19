@@ -11,6 +11,9 @@ on:
   # when no matching files change, which blocks merge).
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
 
 permissions:
   contents: read
