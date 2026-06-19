@@ -8503,11 +8503,22 @@ def _cmd_update_pip(args):
             # VIRTUAL_ENV; without it uv errors "No virtual environment found".
             export_virtualenv = True
         else:
-            # Outside any venv, ``--system`` lets uv target the active
-            # interpreter, matching pip's default behaviour.
+            # Outside any venv, pin to ``sys.executable`` because uv's
+            # ``--system`` default picks the FIRST system Python on PATH,
+            # not the one hermes is actually running under — on a
+            # multi-Python macOS box that installs into the wrong prefix
+            # (#48721).  ``--break-system-packages`` overrides PEP 668
+            # for externally-managed system Pythons (Homebrew, Debian,
+            # Ubuntu); pipx / uv-tool / venv installs never reach here.
             cmd.insert(3, "--system")
+            cmd.insert(3, "--python")
+            cmd.insert(4, sys.executable)
+            cmd.insert(-1, "--break-system-packages")
     else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
+        cmd = [
+            sys.executable, "-m", "pip", "install", "--upgrade",
+            "--break-system-packages", "hermes-agent",
+        ]
 
     print(f"→ Running: {' '.join(cmd)}")
     run_kwargs = {}
