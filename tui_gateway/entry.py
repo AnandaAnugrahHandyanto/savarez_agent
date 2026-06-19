@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # agent build briefly joins this so already-spawning fast servers land before
 # the agent snapshots its tool list (see wait_for_mcp_discovery).
 _mcp_discovery_thread = None
+# Signalled once background MCP discovery completes (success or failure).
+# Allows downstream code to wait for discovery without polling the thread.
+_mcp_discovery_done = None  # threading.Event -- set when background MCP discovery completes
 
 
 def _install_sidecar_publisher() -> None:
@@ -269,6 +272,10 @@ def main():
         # discovery (still backgrounded, so it can't block startup).
         _has_mcp_servers = True
     if _has_mcp_servers:
+        import threading as _mcp_threading
+
+        _mcp_discovery_done = _mcp_threading.Event()
+
         def _discover_mcp_background() -> None:
             try:
                 from tools.mcp_tool import discover_mcp_tools
@@ -277,6 +284,8 @@ def main():
                 logger.warning(
                     "Background MCP tool discovery failed", exc_info=True
                 )
+            finally:
+                _mcp_discovery_done.set()
 
         import threading as _mcp_threading
         _mcp_thread = _mcp_threading.Thread(
@@ -285,8 +294,6 @@ def main():
             daemon=True,
         )
         _mcp_thread.start()
-        # Publish the handle so the first agent build can briefly wait for
-        # already-spawning fast servers to land (see wait_for_mcp_discovery).
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
 
