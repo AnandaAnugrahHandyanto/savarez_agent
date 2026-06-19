@@ -1101,16 +1101,17 @@ def init_agent(
         "max_tokens": max_tokens,
     }
     
-    # In-memory todo list for task planning (one per agent/session)
-    from tools.todo_tool import TodoStore
-    agent._todo_store = TodoStore()
-    
-    # Load config once for memory, skills, and compression sections
+    # Load config once for memory, skills, compression, and todo store plugins
     try:
         from hermes_cli.config import load_config as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    from agent.todo_store_provider import init_todo_store
+
+    init_todo_store(agent, _agent_cfg, platform=platform)
+
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
@@ -1155,6 +1156,14 @@ def init_agent(
     if not skip_memory:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+            if not (_mem_provider_name and _mem_provider_name.strip()):
+                try:
+                    from plugins.memory.kynver.agentos_bridge import agentos_enabled as _kynver_enabled
+
+                    if _kynver_enabled():
+                        _mem_provider_name = "kynver"
+                except Exception:
+                    pass
 
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
@@ -1279,6 +1288,16 @@ def init_agent(
     except (TypeError, ValueError):
         _api_retries = 3
     agent._api_max_retries = _api_retries
+    try:
+        from agent.openai_codex_resilience import resolve_openai_codex_retry_budget
+
+        agent._api_max_retries = resolve_openai_codex_retry_budget(
+            platform=getattr(agent, "platform", None),
+            provider=getattr(agent, "provider", None),
+            default_retries=agent._api_max_retries,
+        )
+    except Exception:
+        pass
 
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit

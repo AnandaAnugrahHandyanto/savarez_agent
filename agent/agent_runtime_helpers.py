@@ -1804,10 +1804,32 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
+    def _finalize_agent_loop_result(result: Any, observed_args: Optional[dict] = None) -> Any:
+        from agent.agent_loop_observer import (
+            append_observer_metadata,
+            notify_agent_loop_tool,
+        )
+
+        hook_args = observed_args if isinstance(observed_args, dict) else function_args
+        annotations = notify_agent_loop_tool(
+            agent,
+            function_name,
+            hook_args,
+            result,
+            task_id=effective_task_id or "",
+            tool_call_id=tool_call_id or "",
+            duration_ms=int((time.monotonic() - tool_start_time) * 1000),
+        )
+        return append_observer_metadata(result, annotations)
+
+    def _finish_observed_agent_tool(result: Any, observed_args: Optional[dict] = None) -> Any:
+        result = _finish_agent_tool(result, observed_args)
+        return _finalize_agent_loop_result(result, observed_args)
+
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
-            return _finish_agent_tool(
+            return _finish_observed_agent_tool(
                 _todo_tool(
                     todos=next_args.get("todos"),
                     merge=next_args.get("merge", False),
@@ -1820,9 +1842,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             session_db = agent._get_session_db_for_recall()
             if not session_db:
                 from hermes_state import format_session_db_unavailable
-                return _finish_agent_tool(json.dumps({"success": False, "error": format_session_db_unavailable()}), next_args)
+                return _finish_observed_agent_tool(json.dumps({"success": False, "error": format_session_db_unavailable()}), next_args)
             from tools.session_search_tool import session_search as _session_search
-            return _finish_agent_tool(
+            return _finish_observed_agent_tool(
                 _session_search(
                     query=next_args.get("query", ""),
                     role_filter=next_args.get("role_filter"),
@@ -1875,7 +1897,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                         )
                     except Exception:
                         pass
-            return _finish_agent_tool(result, next_args)
+            return _finish_observed_agent_tool(result, next_args)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)
@@ -1903,7 +1925,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
-            return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
+            return _finish_observed_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
     else:
         def _execute(next_args: dict) -> Any:
             return _ra().handle_function_call(
