@@ -349,8 +349,13 @@ class SlackAdapter(BasePlatformAdapter):
         self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
         # Track threads where the bot has been @mentioned — once mentioned,
         # respond to ALL subsequent messages in that thread automatically.
+        # Persisted to disk so the rule survives gateway restarts.
         self._mentioned_threads: set = set()
         self._MENTIONED_THREADS_MAX = 5000
+        self._mentioned_threads_path = _Path(
+            os.path.expanduser("~/.hermes/state/slack_mentioned_threads.json")
+        )
+        self._load_mentioned_threads()
         # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
         # AI Assistant lifecycle events can arrive before/alongside message
         # events, and they carry the user/thread identity needed for stable
@@ -2502,6 +2507,17 @@ class SlackAdapter(BasePlatformAdapter):
                 pass  # Mention requirement disabled globally for Slack
             elif self._slack_strict_mention() and not is_mentioned:
                 return  # Strict mode: ignore until @-mentioned again
+            elif (
+                self._slack_thread_require_mention()
+                and not is_mentioned
+                and not is_thread_reply
+            ):
+                # Fresh channel post (no thread parent, no prior mention):
+                # require an explicit @-mention. Once the user @-mentions us
+                # in this thread, the message gets added to _mentioned_threads
+                # (persisted to disk) and all subsequent thread replies flow
+                # through the existing auto-trigger path.
+                return
             elif not is_mentioned:
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
@@ -2537,6 +2553,8 @@ class SlackAdapter(BasePlatformAdapter):
                     ]
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
+                # Persist so the thread remains "opted-in" across restarts.
+                self._save_mentioned_threads()
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
@@ -3762,6 +3780,50 @@ class SlackAdapter(BasePlatformAdapter):
             "no",
             "off",
         }
+
+    def _load_mentioned_threads(self) -> None:
+        """Restore the persisted set of threads where the bot was @mentioned.
+
+        Without this, the "once-mentioned thread auto-responds" rule is lost
+        on every gateway restart. Stored as a JSON array in
+        ``~/.hermes/state/slack_mentioned_threads.json``.
+        """
+        try:
+            if self._mentioned_threads_path.is_file():
+                raw = json.loads(self._mentioned_threads_path.read_text())
+                if isinstance(raw, list):
+                    self._mentioned_threads = {
+                        str(t) for t in raw if isinstance(t, (str, int, float))
+                    }
+        except Exception as e:  # noqa: BLE001 — corrupt file shouldn't crash boot
+            logger.warning("[Slack] Failed to load mentioned-threads state: %s", e)
+
+    def _save_mentioned_threads(self) -> None:
+        """Persist the current mentioned-threads set to disk (best-effort)."""
+        try:
+            self._mentioned_threads_path.parent.mkdir(parents=True, exist_ok=True)
+            self._mentioned_threads_path.write_text(
+                json.dumps(sorted(self._mentioned_threads))
+            )
+        except Exception as e:  # noqa: BLE001 — persistence is non-critical
+            logger.warning("[Slack] Failed to save mentioned-threads state: %s", e)
+
+    def _slack_thread_require_mention(self) -> bool:
+        """Return whether top-level channel messages require an explicit mention.
+
+        This is the gate the user asked for explicitly: in a fresh channel
+        post (no thread parent, no prior mention), require an @-mention to
+        respond. Defaults to True. Configure via
+        ``platforms.slack.thread_require_mention: false`` to disable, or
+        ``platforms.slack.require_mention: false`` to disable all Slack
+        mention gating.
+        """
+        configured = self.config.extra.get("thread_require_mention")
+        if configured is None:
+            return True
+        if isinstance(configured, str):
+            return configured.lower() not in {"false", "0", "no", "off"}
+        return bool(configured)
 
     def _slack_strict_mention(self) -> bool:
         """When true, channel threads require an explicit @-mention on every
