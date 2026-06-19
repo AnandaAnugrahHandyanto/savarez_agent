@@ -63,7 +63,6 @@ jobs:
       RELEASE_TAG: ${{ needs.discover.outputs.release_tag }}
       UPSTREAM_TAG: ${{ needs.discover.outputs.upstream_tag }}
       UPSTREAM_URL: ${{ needs.discover.outputs.upstream_url }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out exact upstream release
         uses: actions/checkout@v4
@@ -151,6 +150,7 @@ jobs:
           ZIP_PATH: ${{ steps.validate.outputs.zip }}
           CHECKSUM_PATH: ${{ steps.validate.outputs.checksums }}
           UPSTREAM_SHA: ${{ steps.validate.outputs.upstream_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 

@@ -79,7 +79,10 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac -- --x64 --publish never
 ```
 
 from `apps/desktop`. The explicit publish mode prevents Electron Builder from
-inferring an implicit CI publish before the artifacts have been validated.
+inferring an implicit CI publish before the artifacts have been validated. Do
+not expose `GH_TOKEN` at job scope because older Electron Builder releases use
+its presence to initialize GitHub update metadata even with publishing disabled;
+provide it only to the final `gh release create` step.
 
 - [ ] **Step 3: Add fail-closed artifact validation**
 
