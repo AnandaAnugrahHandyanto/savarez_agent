@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tarfile
 import threading
 from pathlib import Path
 
@@ -234,6 +235,69 @@ def test_kanban_list_json_includes_session_id(kanban_home):
         and row.get("session_id") == "acp-x"
         for row in payload
     )
+
+
+def test_kanban_export_redacts_coordinates_secrets_and_omits_raw_logs(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="probe https://api.weather.gov/points/41.8781,-87.6298",
+            body="OPENAI_API_KEY=sk-test1234567890",
+            assignee="alice",
+        )
+        kb.add_comment(conn, task_id, "alice", "coords 12.3456,-65.4321")
+    logs_dir = kb.worker_logs_dir()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / f"{task_id}.log").write_text(
+        "raw worker transcript 41.8781,-87.6298",
+        encoding="utf-8",
+    )
+
+    out_path = tmp_path / "kanban-export.tar.gz"
+    out = kc.run_slash(f"export {out_path}")
+    assert "redacted" in out
+
+    with tarfile.open(out_path, "r:gz") as tar:
+        names = tar.getnames()
+        assert not any(name.endswith("kanban.db") for name in names)
+        assert not any("/logs/" in name for name in names)
+        export_member = next(name for name in names if name.endswith("export.json"))
+        data = tar.extractfile(export_member).read().decode()
+
+    assert "41.8781" not in data
+    assert "-87.6298" not in data
+    assert "12.3456" not in data
+    assert "-65.4321" not in data
+    assert "[redacted-coordinate],[redacted-coordinate]" in data
+    assert "sk-test1234567890" not in data
+    assert '"raw_worker_logs_included": false' in data
+
+
+def test_kanban_export_full_fidelity_includes_raw_logs_and_db(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="probe 41.8781,-87.6298",
+            assignee="alice",
+        )
+    logs_dir = kb.worker_logs_dir()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / f"{task_id}.log").write_text(
+        "raw worker transcript 41.8781,-87.6298",
+        encoding="utf-8",
+    )
+
+    out_path = tmp_path / "kanban-full.tar.gz"
+    kc.run_slash(f"export {out_path} --full-fidelity")
+
+    with tarfile.open(out_path, "r:gz") as tar:
+        names = tar.getnames()
+        assert any(name.endswith("kanban.db") for name in names)
+        assert any(name.endswith(f"logs/{task_id}.log") for name in names)
+        export_member = next(name for name in names if name.endswith("export.json"))
+        data = tar.extractfile(export_member).read().decode()
+
+    assert "41.8781" in data
 
 
 def test_run_slash_usage_error_returns_message(kanban_home):

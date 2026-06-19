@@ -16,10 +16,15 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import json
 import os
+import re
+import shutil
 import shlex
+import tarfile
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -27,6 +32,142 @@ from typing import Any, Optional
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
+
+
+_COORD_PAIR_RE = re.compile(
+    r"(?<![-\d.])(-?(?:[1-8]?\d(?:\.\d+)?|90(?:\.0+)?))\s*,\s*"
+    r"(-?(?:1[0-7]\d(?:\.\d+)?|[1-9]?\d(?:\.\d+)?|180(?:\.0+)?))(?![-\d.])"
+)
+
+
+def _redact_kanban_export_text(value: str) -> str:
+    """Redact secrets and precise coordinate pairs for durable exports."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        value = redact_sensitive_text(value, force=True)
+    except Exception:
+        pass
+    return _COORD_PAIR_RE.sub("[redacted-coordinate],[redacted-coordinate]", value)
+
+
+def _redact_kanban_export_obj(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_kanban_export_text(value)
+    if isinstance(value, list):
+        return [_redact_kanban_export_obj(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _redact_kanban_export_obj(v) for k, v in value.items()}
+    return value
+
+
+def _dataclass_to_dict(value: Any) -> dict[str, Any]:
+    return dataclasses.asdict(value) if dataclasses.is_dataclass(value) else dict(value)
+
+
+def _kanban_export_payload(conn, *, include_archived: bool = True) -> dict[str, Any]:
+    tasks = kb.list_tasks(
+        conn,
+        include_archived=include_archived,
+        limit=100000,
+        order_by="created",
+    )
+    task_payloads = []
+    for task in tasks:
+        task_payloads.append(
+            {
+                "task": _dataclass_to_dict(task),
+                "comments": [_dataclass_to_dict(c) for c in kb.list_comments(conn, task.id)],
+                "events": [_dataclass_to_dict(e) for e in kb.list_events(conn, task.id)],
+                "runs": [_dataclass_to_dict(r) for r in kb.list_runs(conn, task.id)],
+            }
+        )
+    return {"tasks": task_payloads}
+
+
+def _write_kanban_export(args: argparse.Namespace) -> Path:
+    """Write a privacy-safe Kanban board export archive.
+
+    Default exports are redacted and intentionally omit raw SQLite/log files.
+    ``--full-fidelity`` opts back into raw DB + worker logs for debugging.
+    """
+    out_path = Path(args.output).expanduser()
+    board = getattr(args, "board", None)
+    full_fidelity = bool(getattr(args, "full_fidelity", False))
+    include_archived = bool(getattr(args, "archived", False) or full_fidelity)
+    with kb.connect_closing(board=board) as conn:
+        payload = _kanban_export_payload(conn, include_archived=include_archived)
+    if not full_fidelity:
+        payload = _redact_kanban_export_obj(payload)
+
+    metadata = {
+        "schema": "hermes-kanban-export-v1",
+        "board": board or kb.get_current_board(),
+        "created_at": int(time.time()),
+        "redacted": not full_fidelity,
+        "full_fidelity": full_fidelity,
+        "raw_worker_logs_included": full_fidelity,
+        "raw_sqlite_included": full_fidelity,
+        "coordinate_redaction": "[redacted-coordinate],[redacted-coordinate]",
+        "secret_redaction": "agent.redact.redact_sensitive_text(force=True)",
+        "sensitive_at_rest": True,
+    }
+
+    if out_path.suffix != ".gz":
+        out_path = (
+            out_path.with_suffix(out_path.suffix + ".tar.gz")
+            if out_path.suffix
+            else out_path.with_suffix(".tar.gz")
+        )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    base_name = (
+        out_path.name[:-7] if out_path.name.endswith(".tar.gz") else out_path.stem
+    )
+
+    with tempfile.TemporaryDirectory(prefix="hermes-kanban-export-") as tmp:
+        root = Path(tmp) / base_name
+        root.mkdir(parents=True)
+        (root / "export.json").write_text(
+            json.dumps({"metadata": metadata, **payload}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        with (root / "export.jsonl").open("w", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {"type": "metadata", "metadata": metadata},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            for item in payload["tasks"]:
+                fh.write(json.dumps({"type": "task", **item}, ensure_ascii=False) + "\n")
+        readme = "# Hermes Kanban export\n\n"
+        if full_fidelity:
+            readme += (
+                "This is a full-fidelity export and may contain secrets, precise "
+                "coordinates, raw worker transcripts, local paths, and the raw "
+                "Kanban SQLite database. Treat it as sensitive at rest.\n"
+            )
+        else:
+            readme += (
+                "This default export is redacted for durable storage: coordinate "
+                "pairs and secret patterns are masked, and raw worker logs plus "
+                "the raw SQLite database are omitted. Treat it as sensitive at rest.\n"
+            )
+        (root / "README.md").write_text(
+            readme,
+            encoding="utf-8",
+        )
+        if full_fidelity:
+            db_path = kb.kanban_db_path(board=board)
+            if db_path.exists():
+                shutil.copy2(db_path, root / "kanban.db")
+            logs_dir = kb.worker_logs_dir(board=board)
+            if logs_dir.exists():
+                shutil.copytree(logs_dir, root / "logs", dirs_exist_ok=True)
+        with tarfile.open(out_path, "w:gz") as tar:
+            tar.add(root, arcname=base_name)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +558,30 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="KEY",
         help="Restrict to tasks with this current_step_key",
     )
+
+    # --- export ---
+    p_export = sub.add_parser(
+        "export",
+        help="Write a redacted Kanban board export archive",
+        description=(
+            "Write a Kanban board export as a .tar.gz archive. By default, "
+            "text fields are redacted for secrets and coordinate pairs, and "
+            "raw worker logs plus the raw SQLite database are omitted. Use "
+            "--full-fidelity only for sensitive debugging archives."
+        ),
+    )
+    p_export.add_argument("output", help="Output .tar.gz path")
+    p_export.add_argument(
+        "--archived",
+        action="store_true",
+        help="Include archived tasks in the redacted export",
+    )
+    p_export.add_argument(
+        "--full-fidelity",
+        action="store_true",
+        help="Include raw SQLite database and full worker logs (sensitive)",
+    )
+    p_export.add_argument("--json", action="store_true", help="Emit JSON result")
 
     # --- show ---
     p_show = sub.add_parser("show", help="Show a task with comments + events")
@@ -926,6 +1091,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
+            "export":   _cmd_export,
             "show":     _cmd_show,
             "assign":   _cmd_assign,
             "reclaim":  _cmd_reclaim,
@@ -1395,6 +1561,21 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         print("Workers: " + ", ".join(created.worker_ids))
         print(f"Verifier: {created.verifier_id}")
         print(f"Synthesizer: {created.synthesizer_id}")
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    path = _write_kanban_export(args)
+    payload = {
+        "path": str(path),
+        "redacted": not bool(getattr(args, "full_fidelity", False)),
+        "full_fidelity": bool(getattr(args, "full_fidelity", False)),
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        mode = "full-fidelity sensitive" if payload["full_fidelity"] else "redacted"
+        print(f"Exported {mode} Kanban archive: {path}")
     return 0
 
 
