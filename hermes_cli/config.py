@@ -1635,6 +1635,20 @@ DEFAULT_CONFIG = {
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 
+    # Desktop-app-only preferences. Keep these out of ``display`` so CLI/TUI
+    # rendering config does not absorb renderer-specific editor behavior.
+    "desktop": {
+        "editor": {
+            # Enable Chromium/native spellcheck on chat composer contenteditable
+            # surfaces. The browser spellchecker ignores IME preedit text and
+            # only checks committed text, so CJK composition stays untouched.
+            "spellcheck": True,
+            # BCP 47 language tag for composer spellcheck. Blank follows the
+            # renderer's ``navigator.language``.
+            "language": "",
+        },
+    },
+
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"

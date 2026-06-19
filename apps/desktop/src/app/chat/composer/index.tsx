@@ -40,6 +40,7 @@ import {
   isBrowsingHistory,
   resetBrowseState
 } from '@/store/composer-input-history'
+import { $composerEditorPreferences } from '@/store/composer-preferences'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
@@ -182,6 +183,7 @@ export function ChatBar({
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
   const attachments = useStore($composerAttachments)
+  const editorPreferences = useStore($composerEditorPreferences)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const statusItemsBySession = useStore($statusItemsBySession)
   const scrolledUp = useStore($threadScrolledUp)
@@ -1759,6 +1761,7 @@ export function ChatBar({
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
+        lang={editorPreferences.language}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={event => {
           composingRef.current = false
@@ -1785,7 +1788,7 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
-        spellCheck={false}
+        spellCheck={editorPreferences.spellcheck}
         suppressContentEditableWarning
       />
       {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
