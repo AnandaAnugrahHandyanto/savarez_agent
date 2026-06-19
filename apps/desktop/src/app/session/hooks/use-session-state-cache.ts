@@ -129,6 +129,15 @@ export function useSessionStateCache({
     return created
   }, [])
 
+  const resetViewSync = useCallback(() => {
+    pendingViewStateRef.current = null
+
+    if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(viewSyncRafRef.current)
+      viewSyncRafRef.current = null
+    }
+  }, [])
+
   const flushPendingViewState = useCallback(() => {
     const pending = pendingViewStateRef.current
     pendingViewStateRef.current = null
@@ -279,6 +288,7 @@ export function useSessionStateCache({
   return {
     activeSessionIdRef,
     ensureSessionState,
+    resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef,
