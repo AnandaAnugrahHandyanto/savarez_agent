@@ -76,6 +76,7 @@ import { useAtCompletions } from './hooks/use-at-completions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
+import { useEndVoiceOnSessionSwitch, useStopVoicePlaybackOnUnmount } from './hooks/use-voice-session-reset'
 import {
   dragHasAttachments,
   droppedFileInlineRefs,
@@ -1698,6 +1699,28 @@ export function ChatBar({
     onTranscribeAudio,
     pendingResponse
   })
+
+  // Tear down voice state when the user switches sessions so the prior
+  // session's listening + read-aloud playback status doesn't leak into the
+  // newly selected session's composer (#46194). Disabling the conversation
+  // stops the idle effect from auto-restarting listening under the new
+  // session; the direct `conversation.end()` is load-bearing for the
+  // read-aloud-only case (no active conversation), where flipping
+  // `voiceConversationActive` is a no-op and won't trigger the hook's own
+  // teardown — it cancels recording and stops playback.
+  const endVoiceRef = useRef(conversation.end)
+  endVoiceRef.current = conversation.end
+
+  const resetVoiceForSessionSwitch = useCallback(() => {
+    setVoiceConversationActive(false)
+    void endVoiceRef.current()
+  }, [])
+
+  useEndVoiceOnSessionSwitch(sessionId, resetVoiceForSessionSwitch)
+  // Cold switch unmounts the composer instead of re-rendering it, so the
+  // hook above never runs on that path; stop the surviving module-level
+  // read-aloud playback on unmount.
+  useStopVoicePlaybackOnUnmount()
 
   const contextMenu = (
     <ContextMenu
