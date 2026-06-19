@@ -1837,11 +1837,14 @@ async function applyUpdates(opts = {}) {
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
 
-    // Give the OS a beat to register the new process, then quit. The updater
-    // rebuilds and relaunches us when it's done.
-    setTimeout(() => {
-      app.quit()
-    }, 600)
+    // Force-exit immediately.  releaseBackendLockForUpdate() above already
+    // killed every backend and waited for the venv shim to unlock, so there
+    // is nothing left for a graceful shutdown to do.  Using app.quit()
+    // instead races the updater: on Windows app.quit() drains window-close
+    // handlers and can take seconds, during which the updater starts
+    // `npm ci` which needs to wipe node_modules/electron — still locked by
+    // our live process — causing EBUSY (#48854).
+    app.exit(0)
 
     return { ok: true, handedOff: true, updater }
   } finally {
@@ -1880,9 +1883,8 @@ async function handOffWindowsBootstrapRecovery(reason) {
   child.unref()
 
   rememberLog(`[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`)
-  setTimeout(() => {
-    app.quit()
-  }, 600)
+  // Force-exit immediately — see applyUpdates() rationale above.
+  app.exit(0)
 
   return true
 }
@@ -2086,7 +2088,8 @@ fi
   child.unref()
   rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
-  setTimeout(() => app.quit(), 600)
+  // Force-exit immediately — see applyUpdates() rationale above.
+  app.exit(0)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }
 }
 

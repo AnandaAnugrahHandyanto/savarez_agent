@@ -2288,6 +2288,49 @@ function Try-RestoreElectronDist {
     return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
 }
 
+# Wait for the Hermes Desktop (Electron) process to exit before proceeding
+# with npm ci / npm run pack.  On Windows, a still-running Electron process
+# holds an exclusive lock on node_modules\electron, causing npm to fail with
+# EBUSY when it tries to rmdir or rename that directory (#48854).  The
+# Desktop's own app.exit(0) path should release the lock promptly, but
+# this belt-and-suspenders loop covers any lag.
+function Wait-ForDesktopExit {
+    param(
+        [string]$InstallDir,
+        [int]$TimeoutSec = 30
+    )
+    if ($env:OS -ne 'Windows_NT') { return }
+
+    # Hermes.exe is the packaged Electron binary produced by `npm run pack`.
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+    $waited = $false
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $procs = Get-Process -Name 'Hermes' -ErrorAction SilentlyContinue
+        if (-not $procs -or $procs.Count -eq 0) { break }
+        # Only match processes whose path is inside our install tree.
+        $ours = $procs | Where-Object {
+            try { $_.Path -like "$InstallDir*" } catch { $false }
+        }
+        if (-not $ours -or $ours.Count -eq 0) { break }
+        if (-not $waited) {
+            Write-Info "Waiting for Hermes Desktop to exit (EBUSY guard)..."
+            $waited = $true
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($waited) {
+        # Final check — log if it didn't exit in time so the subsequent
+        # npm error can be attributed to the lock rather than a mystery.
+        $stale = Get-Process -Name 'Hermes' -ErrorAction SilentlyContinue |
+            Where-Object { try { $_.Path -like "$InstallDir*" } catch { $false } }
+        if ($stale -and $stale.Count -gt 0) {
+            Write-Warn "Hermes Desktop still running after ${TimeoutSec}s — npm may hit EBUSY on node_modules\electron"
+        } else {
+            Write-Success "Hermes Desktop exited cleanly"
+        }
+    }
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -2343,6 +2386,11 @@ function Install-Desktop {
     # the SAME `npm install` Install-NodeDeps does for browser tools,
     # but at the root rather than the browser-tools workspace, so all
     # apps/* workspaces resolve.
+    #
+    # Wait for the Hermes Desktop (Electron) process to exit first: it
+    # holds an exclusive lock on node_modules\electron on Windows, which
+    # causes npm ci to fail with EBUSY (#48854).
+    Wait-ForDesktopExit -InstallDir $InstallDir
     Write-Info "Installing desktop workspace dependencies (this includes Electron ~150MB, takes 1-3min)..."
     Push-Location $InstallDir
     $prevEAP = $ErrorActionPreference
