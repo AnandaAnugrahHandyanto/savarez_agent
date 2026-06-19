@@ -255,7 +255,7 @@ The router excludes secrets and local deployment metadata from context/files/dif
 - `.env` and `.env.*`
 - `auth.json`
 - `.ssh/**`
-- `.hermes/**`
+- `.hermes/**` for workspace reads, lists, and diffs, except explicit markdown development plans under `.hermes/plans/*.md`. Profile context hydration has its own separate exception: `profile_context_get` may read explicit allowlisted profile instruction files such as `profiles/<profile>/SOUL.md`, after profile-root containment checks, bounded output, and secret-field redaction.
 - `.git/**`
 - `.aws/**`, `.azure/**`, `.config/gcloud/**`, `.gnupg/**`
 - `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`

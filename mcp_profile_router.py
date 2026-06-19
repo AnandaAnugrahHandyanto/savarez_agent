@@ -135,6 +135,8 @@ WORKSPACE_INSTRUCTION_FILES = (
 )
 FUNCIONES_TXT_FILENAME = "funciones.txt"
 PROTECTED_WORKSPACE_DIFF_DIRS = frozenset({".hermes"})
+SAFE_WORKSPACE_PLAN_DIR = ".hermes/plans"
+SAFE_WORKSPACE_PLAN_SUFFIXES = (".md",)
 SAFE_GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 SHELL_CONTROL_TOKENS = frozenset({";", "&&", "||", "|", "|&", "&", "(", ")"})
 MODEL_COMMAND_NAMES = frozenset(
@@ -503,6 +505,65 @@ def _ensure_not_secret_path(path: str) -> None:
             "secret_path_denied",
             "Path is blocked by the profile-router secret denylist",
         )
+
+
+def _is_safe_workspace_plan_path(
+    relative_path: str,
+    *,
+    allow_directory: bool = False,
+) -> bool:
+    """Allow only explicit markdown development plans under ``.hermes/plans``.
+
+    This is intentionally narrower than opening ``.hermes/**``: it supports
+    ChatGPT reading repo-local development plans while keeping runtime state,
+    tokens, configs, JSON state, dotfiles, nested metadata, and secret-looking
+    paths blocked.  Contents are still bounded and redacted by the file-read
+    layer.
+    """
+
+    if not isinstance(relative_path, str):
+        return False
+    normalized = posixpath.normpath(relative_path.strip() or ".")
+    if normalized == SAFE_WORKSPACE_PLAN_DIR:
+        return allow_directory
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) != 3 or "/".join(parts[:2]) != SAFE_WORKSPACE_PLAN_DIR:
+        return False
+    filename = parts[2]
+    filename_lower = filename.lower()
+    if filename.startswith(".") or filename_lower == FUNCIONES_TXT_FILENAME:
+        return False
+    if filename_lower in SECRET_PATH_NAMES:
+        return False
+    if any(filename_lower.startswith(prefix) for prefix in SECRET_PATH_PREFIXES):
+        return False
+    if filename_lower.endswith((".key", ".pem", ".p12", ".pfx")):
+        return False
+    return filename_lower.endswith(SAFE_WORKSPACE_PLAN_SUFFIXES)
+
+
+def _ensure_workspace_read_path_not_secret(
+    path: str,
+    relative_path: str,
+    *,
+    allow_plan_directory: bool = False,
+) -> None:
+    if _is_secret_path(path) and not _is_safe_workspace_plan_path(
+        relative_path,
+        allow_directory=allow_plan_directory,
+    ):
+        raise ProfileRouterError(
+            "secret_path_denied",
+            "Path is blocked by the profile-router secret denylist",
+        )
+
+
+def _resolved_relative_workspace_path(root: Path, candidate: Path) -> str:
+    try:
+        relative = candidate.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root") from exc
+    return relative or "."
 
 
 def _resolve_existing_local_path(path: str, field: str) -> Path:
@@ -1021,7 +1082,13 @@ def resolve_workspace_path(
     normalized_candidate = posixpath.normpath(posixpath.join(workspace.root, raw_path))
     if not _path_within_root(normalized_candidate, workspace.root):
         raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
-    _ensure_not_secret_path(normalized_candidate)
+    normalized_relative_path = posixpath.normpath(raw_path)
+    allow_plan_directory = normalized_relative_path == SAFE_WORKSPACE_PLAN_DIR
+    _ensure_workspace_read_path_not_secret(
+        normalized_candidate,
+        normalized_relative_path,
+        allow_plan_directory=allow_plan_directory,
+    )
 
     resolved_root = _resolve_existing_local_path(workspace.root, "workspace root")
     if require_exists:
@@ -1034,7 +1101,17 @@ def resolve_workspace_path(
 
     if not _path_is_relative_to(resolved_candidate, resolved_root):
         raise ProfileRouterError("symlink_traversal_denied", "path escapes workspace root")
-    _ensure_not_secret_path(str(resolved_candidate))
+    resolved_relative_path = _resolved_relative_workspace_path(resolved_root, resolved_candidate)
+    if _is_safe_workspace_plan_path(
+        normalized_relative_path,
+        allow_directory=allow_plan_directory,
+    ) and resolved_relative_path != normalized_relative_path:
+        raise ProfileRouterError("symlink_traversal_denied", "workspace plan path may not be a symlink")
+    _ensure_workspace_read_path_not_secret(
+        str(resolved_candidate),
+        resolved_relative_path,
+        allow_plan_directory=allow_plan_directory,
+    )
     return str(resolved_candidate)
 
 
@@ -1207,10 +1284,53 @@ def _redact_context_excerpt(text: str) -> str:
     return _redact_sensitive_text_fields(text)
 
 
-def _read_context_file(path: Path, public_path: str) -> dict:
+def _is_explicit_profile_context_file(
+    path: Path,
+    public_path: str,
+    profile_dir: Path | None,
+) -> bool:
+    """Return whether a file is a profile instruction allowlisted by name.
+
+    Real Hermes profiles usually live under ``~/.hermes/profiles/<profile>``.
+    The broad secret denylist intentionally blocks ``.hermes`` for workspace
+    reads, but profile context hydration still needs to read a tiny, explicit
+    set of non-secret profile instruction files such as ``SOUL.md``.  This
+    helper keeps that exception narrow: only direct children of the selected
+    profile directory whose relative path is listed in ``PROFILE_CONTEXT_FILES``
+    qualify.  Secret-looking filenames still fail closed.
+    """
+
+    if profile_dir is None:
+        return False
+    try:
+        relative_path = path.relative_to(profile_dir)
+    except ValueError:
+        return False
+    relative_text = relative_path.as_posix()
+    return (
+        relative_text == public_path
+        and relative_text in PROFILE_CONTEXT_FILES
+        and not _is_secret_path(relative_text)
+    )
+
+
+def _read_context_file(
+    path: Path,
+    public_path: str,
+    *,
+    profile_context_root: Path | None = None,
+) -> dict:
     """Read bounded, sanitized context-file metadata and excerpt."""
 
-    _ensure_not_secret_path(str(path))
+    if _is_secret_path(str(path)) and not _is_explicit_profile_context_file(
+        path,
+        public_path,
+        profile_context_root,
+    ):
+        raise ProfileRouterError(
+            "secret_path_denied",
+            "Path is blocked by the profile-router secret denylist",
+        )
     try:
         stat = path.stat()
     except OSError as exc:
@@ -1294,7 +1414,30 @@ def build_profile_context(profile_ref: str) -> dict:
 
     assert_default_tools_are_no_model()
     ref, route_policy, router_policy = _require_local_profile_policy(profile_ref)
-    profile_dir = get_profile_dir(ref.profile).resolve()
+    profile_dir_path = get_profile_dir(ref.profile)
+    if profile_dir_path.is_symlink():
+        raise ProfileRouterError(
+            "profile_symlink_denied",
+            f"Profile directory may not be a symlink: {ref.value}",
+        )
+    if ref.profile != "default" and profile_dir_path.parent.is_symlink():
+        raise ProfileRouterError(
+            "profile_symlink_denied",
+            f"Profile parent directory may not be a symlink: {ref.value}",
+        )
+    try:
+        profile_dir = profile_dir_path.resolve(strict=True)
+    except OSError as exc:
+        raise ProfileRouterError("profile_not_found", f"Profile not found: {ref.value}") from exc
+    if not profile_dir.is_dir():
+        raise ProfileRouterError("profile_not_found", f"Profile not found: {ref.value}")
+    if ref.profile != "default":
+        profile_parent = profile_dir_path.parent.resolve(strict=True)
+        if not _path_is_relative_to(profile_dir, profile_parent):
+            raise ProfileRouterError(
+                "profile_symlink_denied",
+                f"Profile directory escapes profiles root: {ref.value}",
+            )
     policy_context = _public_policy_context(route_policy, router_policy)
 
     files: list[dict] = []
@@ -1305,7 +1448,13 @@ def build_profile_context(profile_ref: str) -> dict:
         resolved = candidate.resolve(strict=True)
         if not _path_is_relative_to(resolved, profile_dir):
             raise ProfileRouterError("symlink_traversal_denied", f"Profile context file escapes profile root: {filename}")
-        files.append(_read_context_file(resolved, filename))
+        files.append(
+            _read_context_file(
+                resolved,
+                filename,
+                profile_context_root=profile_dir,
+            )
+        )
 
     hashes = {f"profile:{item['path']}": item["sha256"] for item in files}
     hashes["profile:policy"] = _stable_json_hash(policy_context)
@@ -2159,10 +2308,11 @@ def _workspace_diff_path_status(workspace: WorkspaceMetadata, rel_path: str) -> 
         return None, "invalid_path"
     parts = [part for part in normalized.split("/") if part]
     if parts and parts[0] in PROTECTED_WORKSPACE_DIFF_DIRS:
-        return normalized, "protected_local_metadata"
+        if not _is_safe_workspace_plan_path(normalized):
+            return normalized, "protected_local_metadata"
     if parts and parts[-1] == FUNCIONES_TXT_FILENAME:
         return normalized, "protected_local_metadata"
-    if _is_secret_path(normalized):
+    if _is_secret_path(normalized) and not _is_safe_workspace_plan_path(normalized):
         return normalized, "secret_path_denied"
 
     candidate = posixpath.normpath(posixpath.join(workspace.root, normalized))

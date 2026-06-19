@@ -567,6 +567,13 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     git_dir = workspace_root / ".git"
     git_dir.mkdir()
     (git_dir / "config").write_text("[remote]\nurl=https://token@example.invalid/repo.git\n", encoding="utf-8")
+    hermes_metadata_dir = workspace_root / ".hermes" / "plans"
+    hermes_metadata_dir.mkdir(parents=True)
+    (hermes_metadata_dir / "implementation-plan.md").write_text(
+        "# Implementation plan\nRead-only plan context.\n",
+        encoding="utf-8",
+    )
+    (hermes_metadata_dir / "state.json").write_text("local planning state\n", encoding="utf-8")
     (workspace_root / ".env.local").write_text("SECRET=1\n", encoding="utf-8")
     (workspace_root / "binary.bin").write_bytes(b"alpha\x00secret")
 
@@ -638,6 +645,34 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     git_metadata = json.loads(workspace_file_read(workspace["workspace_id"], ".git/config", context_token=token))
     assert git_metadata["ok"] is False
     assert git_metadata["error"]["code"] == "secret_path_denied"
+
+    plan_list = json.loads(
+        workspace_file_list(
+            workspace["workspace_id"],
+            path=".hermes/plans",
+            file_glob="*.md",
+            context_token=token,
+        )
+    )
+    assert plan_list["ok"] is True
+    assert [entry["path"] for entry in plan_list["file_list"]["entries"]] == [
+        ".hermes/plans/implementation-plan.md"
+    ]
+    plan_read = json.loads(
+        workspace_file_read(
+            workspace["workspace_id"],
+            ".hermes/plans/implementation-plan.md",
+            context_token=token,
+        )
+    )
+    assert plan_read["ok"] is True
+    assert "Read-only plan context" in plan_read["file"]["content"]
+
+    hermes_metadata = json.loads(
+        workspace_file_read(workspace["workspace_id"], ".hermes/plans/state.json", context_token=token)
+    )
+    assert hermes_metadata["ok"] is False
+    assert hermes_metadata["error"]["code"] == "secret_path_denied"
 
     search_result = json.loads(
         file_search(workspace["workspace_id"], "alpha", file_glob="*.md", context_token=token)
@@ -740,6 +775,88 @@ def test_profile_context_get_loads_bounded_soul_and_policy_without_secrets(
     assert "super-secret-value" not in dumped
     assert "SHOULD_NOT_LEAK" not in dumped
     assert context["secret_handling"]["funciones_txt_content_excluded"] is True
+
+
+def test_profile_context_allows_safe_profile_soul_under_dot_hermes_only(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    profile_dir = hermes_home / "profiles" / "main-bot"
+    profile_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    profile_dir.joinpath("SOUL.md").write_text(
+        "# Main Bot\nSafe profile instructions.\nPASSWORD=must-not-leak\n",
+        encoding="utf-8",
+    )
+    profile_dir.joinpath(".env").write_text("SHOULD_NOT_LEAK=1\n", encoding="utf-8")
+    profile_dir.joinpath("auth.json").write_text(
+        '{"access_token":"SHOULD_NOT_LEAK"}\n',
+        encoding="utf-8",
+    )
+    profile_dir.joinpath("memories").mkdir()
+    profile_dir.joinpath("memories", "MEMORY.md").write_text(
+        "private memory should not be included\n",
+        encoding="utf-8",
+    )
+    _write_router_config(hermes_home)
+
+    result = json.loads(profile_context_get("local:main-bot"))
+
+    assert result["ok"] is True
+    assert result["llm_calls"] == 0
+    context = result["context"]
+    assert [item["path"] for item in context["profile_instructions"]] == ["SOUL.md"]
+    assert "Safe profile instructions" in context["profile_instructions"][0]["excerpt"]
+    dumped = json.dumps(context)
+    assert "must-not-leak" not in dumped
+    assert "SHOULD_NOT_LEAK" not in dumped
+    assert "private memory" not in dumped
+
+
+def test_profile_context_rejects_symlinked_profile_directory(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    profiles_root = hermes_home / "profiles"
+    profiles_root.mkdir(parents=True)
+    external_profile = tmp_path / "external-profile"
+    external_profile.mkdir()
+    external_profile.joinpath("SOUL.md").write_text(
+        "# External profile\nShould not be read through a profile symlink.\n",
+        encoding="utf-8",
+    )
+    try:
+        profiles_root.joinpath("main-bot").symlink_to(external_profile, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_router_config(hermes_home)
+
+    result = json.loads(profile_context_get("local:main-bot"))
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "profile_symlink_denied"
+    assert "Should not be read" not in json.dumps(result)
+
+
+def test_profile_context_rejects_symlinked_profiles_parent(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    external_profiles = tmp_path / "external-profiles"
+    external_profile = external_profiles / "main-bot"
+    external_profile.mkdir(parents=True)
+    external_profile.joinpath("SOUL.md").write_text(
+        "# External profile\nShould not be read through a profiles-parent symlink.\n",
+        encoding="utf-8",
+    )
+    try:
+        hermes_home.joinpath("profiles").symlink_to(external_profiles, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_router_config(hermes_home)
+
+    result = json.loads(profile_context_get("local:main-bot"))
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "profile_symlink_denied"
+    assert "profiles-parent symlink" not in json.dumps(result)
 
 
 def test_workspace_context_hydration_tracks_instruction_staleness_and_blocks_powerful_tools(
@@ -1560,6 +1677,8 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
     plans_dir.mkdir(parents=True)
     plan_state = plans_dir / "state.json"
     plan_state.write_text("local plan state\n", encoding="utf-8")
+    plan_md = plans_dir / "implementation-plan.md"
+    plan_md.write_text("# Plan\nalpha plan\n", encoding="utf-8")
 
     _git(workspace_root, "init")
     _git(workspace_root, "config", "user.email", "router-test@example.invalid")
@@ -1575,7 +1694,17 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
     )
     (workspace_root / ".gitattributes").write_text("*.md diff=routertextconv\n", encoding="utf-8")
     _git(workspace_root, "config", "diff.routertextconv.textconv", f"{sys.executable} {textconv_script}")
-    _git(workspace_root, "add", "AGENTS.md", "notes.md", "funciones.txt", ".hermes/plans/state.json", ".gitattributes", "textconv.py")
+    _git(
+        workspace_root,
+        "add",
+        "AGENTS.md",
+        "notes.md",
+        "funciones.txt",
+        ".hermes/plans/state.json",
+        ".hermes/plans/implementation-plan.md",
+        ".gitattributes",
+        "textconv.py",
+    )
     _git(workspace_root, "commit", "-m", "initial")
 
     _write_router_config(
@@ -1601,6 +1730,7 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
     notes.write_text("beta\n", encoding="utf-8")
     funciones.write_text("private deployment notes changed\n", encoding="utf-8")
     plan_state.write_text("local plan state changed\n", encoding="utf-8")
+    plan_md.write_text("# Plan\nbeta plan\n", encoding="utf-8")
     (workspace_root / "new.txt").write_text("new file\n", encoding="utf-8")
     (workspace_root / ".env").write_text("SECRET=should-not-leak\n", encoding="utf-8")
 
@@ -1608,7 +1738,7 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
     assert result["ok"] is True
     assert result["llm_calls"] == 0
     diff = result["workspace_diff"]
-    assert diff["tracked_files"] == ["notes.md"]
+    assert diff["tracked_files"] == [".hermes/plans/implementation-plan.md", "notes.md"]
     assert diff["untracked_files"] == ["new.txt"]
     skipped = {(item["path"], item["reason"]) for item in diff["skipped"]}
     assert ("funciones.txt", "protected_local_metadata") in skipped
@@ -1625,6 +1755,8 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
     assert not textconv_marker.exists()
     assert "-alpha" in diff["diff"]["unified"]
     assert "+beta" in diff["diff"]["unified"]
+    assert "-alpha plan" in diff["diff"]["unified"]
+    assert "+beta plan" in diff["diff"]["unified"]
     dumped = json.dumps(result)
     assert str(workspace_root) not in dumped
     assert "private deployment" not in dumped
