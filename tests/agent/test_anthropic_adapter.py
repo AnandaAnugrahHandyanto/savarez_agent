@@ -1,4 +1,4 @@
-﻿"""Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
+"""Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
 import json
 import sys
