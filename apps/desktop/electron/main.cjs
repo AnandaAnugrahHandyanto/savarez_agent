@@ -30,6 +30,7 @@ const {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
+  isAllowedChatNavigation,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
@@ -78,7 +79,8 @@ const {
   encryptDesktopSecret: encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
-  resolveTimeoutMs
+  resolveTimeoutMs,
+  shouldRevealExternalFilePath
 } = require('./hardening.cjs')
 
 let nodePty = null
@@ -857,8 +859,11 @@ function openExternalUrl(rawUrl) {
       return false
     }
 
-    void shell
-      .openPath(localPath)
+    const openPromise = shouldRevealExternalFilePath(localPath)
+      ? Promise.resolve('blocked executable file URL; revealing in folder instead')
+      : shell.openPath(localPath)
+
+    void openPromise
       .then(error => {
         if (!error) {
           return
@@ -5067,7 +5072,12 @@ function wireCommonWindowHandlers(win) {
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (event, url) => {
-    if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
+    if (
+      isAllowedChatNavigation(url, {
+        devServer: DEV_SERVER,
+        rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+      })
+    ) {
       return
     }
 
