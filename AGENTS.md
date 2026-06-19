@@ -210,6 +210,54 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Operating Workflow
+
+- Track Hermes-specific work in the Linear `Hermes` team using `HERMES-*`
+  issues. Update the active Linear issue as work starts, meaningful findings
+  appear, code changes, tests run, blockers surface, and work finishes.
+- Add useful Linear labels while working. Always include `Hermes`; add domain
+  labels such as `Telegram`, `Fantastical`, `MCP`, `Models`, `YouTube`,
+  `Spotify`, `Apple Music`, `Vapi`, `Dashboard`, `UI`, `Bug`, `Feature`,
+  or `Improvement` when they describe the work.
+- Link every Hermes code PR to its Linear issue. Branch names, commit messages,
+  PR titles, and PR bodies should include the relevant `HERMES-*` identifier
+  when practical, and the Linear issue must get a short comment with the PR URL,
+  commit SHA, files changed, tests run, and remaining risks.
+- Prefer Linear's GitHub integration or native PR attachments when available,
+  but keep the human-readable Linear handoff comment even when auto-linking
+  works.
+- For Linear work, use the connector for simple reads, creates, comments, and
+  status changes. For precise or structural operations such as attachments,
+  saved views, bulk cleanup, or anything the connector does not expose, go
+  straight to the authenticated Linear CLI/raw GraphQL path before calling it
+  blocked. Use browser/UI only when auth, visual setup, or unavailable API
+  surface requires it.
+- When user action is needed, lead the update with an `Action Items For You`
+  list. Keep it short, concrete, and separate from agent-owned next steps; if
+  there are no user actions, say `Action Items For You: None`. Keep the
+  durable action item in Linear when it is a real task; use
+  `docs/operator/ACTION_ITEMS.md` as a short side-panel index that links to the
+  Linear issue. Label user-owned asks with `User Action` so they appear in the
+  shared Linear view `Hermes - Action Items For Jesse`.
+- Keep a canonical Hermes runbook at `docs/operator/HERMES_RUNTIME.md` and
+  update it whenever the runtime state, integrations, blockers, or next steps
+  change in a meaningful way. New Codex threads should treat that runbook as
+  the first handoff source before relying on chat history.
+- Use this operator checklist for Hermes work:
+  1. Identify the active `HERMES-*` issue before changing state.
+  2. Update Linear with current state, blocker, next step, and relevant links.
+  3. Refresh `docs/operator/HERMES_RUNTIME.md` when runtime behavior,
+     integrations, model routing, blockers, or next steps change.
+  4. Keep `docs/operator/ACTION_ITEMS.md` current for user-owned asks that need
+     side-panel visibility.
+  5. If a change only adds a comment, note, or follow-up without changing
+     runtime state, update Linear only unless the runbook would otherwise become
+     stale.
+- Do not design a new subsystem until you have reported the reuse scan. Before
+  implementing new behavior, search existing Hermes mechanisms, nearby tests,
+  and docs; then state what is reused, what new code/config is necessary, and
+  why it does not duplicate existing behavior.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
