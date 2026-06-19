@@ -428,6 +428,74 @@ def test_telegram_group_chat_allowlist_rejects_anonymous_sender_in_other_chat(mo
     assert runner._is_user_authorized(source) is False
 
 
+def test_feishu_open_group_rule_authorizes_group_human_without_global_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_jack")
+
+    runner, _adapter = _make_runner(
+        Platform.FEISHU,
+        GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "group_rules": {
+                            "oc_target": {
+                                "policy": "open",
+                                "require_mention": False,
+                            },
+                        },
+                    },
+                ),
+            },
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="ou_non_jack_member",
+        chat_id="oc_target",
+        user_name="teammate",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_feishu_open_group_rule_does_not_authorize_other_groups(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_jack")
+
+    runner, _adapter = _make_runner(
+        Platform.FEISHU,
+        GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "group_rules": {
+                            "oc_target": {
+                                "policy": "open",
+                                "require_mention": False,
+                            },
+                        },
+                    },
+                ),
+            },
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="ou_non_jack_member",
+        chat_id="oc_other",
+        user_name="teammate",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is False
+
+
 @pytest.mark.asyncio
 async def test_handle_message_does_not_drop_anonymous_sender_in_allowlisted_chat(monkeypatch):
     """End-to-end: a group message with from_user=None in an allowlisted

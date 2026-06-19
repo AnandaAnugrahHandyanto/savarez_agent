@@ -173,6 +173,50 @@ class GatewayAuthorizationMixin:
             return any(str(item).strip() for item in sender_allow)
         return False
 
+    def _feishu_explicit_group_rule_policy(self, chat_id: Optional[str]) -> str:
+        """Return the policy for an explicit Feishu ``group_rules`` entry.
+
+        Feishu can intentionally opt a single group into ``policy: open`` plus
+        ``require_mention: false``. That per-chat rule is an operator-scoped
+        authorization decision, unlike the platform default ``open`` policy.
+        """
+        if not chat_id:
+            return ""
+
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(Platform.FEISHU)
+        group_rules = getattr(adapter, "_group_rules", None) if adapter is not None else None
+        if group_rules is None:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(Platform.FEISHU)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                group_rules = extra.get("group_rules")
+
+        if not isinstance(group_rules, dict):
+            return ""
+
+        chat_id_str = str(chat_id)
+        rule = group_rules.get(chat_id_str)
+        if rule is None:
+            lowered = chat_id_str.lower()
+            for key, value in group_rules.items():
+                if isinstance(key, str) and key.lower() == lowered:
+                    rule = value
+                    break
+        if rule is None:
+            return ""
+
+        if isinstance(rule, dict):
+            policy = rule.get("policy")
+        else:
+            policy = getattr(rule, "policy", None)
+        return str(policy or "").strip().lower()
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -311,6 +355,17 @@ class GatewayAuthorizationMixin:
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):
+            return True
+
+        # Feishu per-group rules are config-scoped chat authorization. An
+        # explicit ``policy: open`` for one chat authorizes humans in that chat
+        # even when FEISHU_ALLOWED_USERS remains locked to the owner for DMs and
+        # other groups.
+        if (
+            source.platform == Platform.FEISHU
+            and source.chat_type in {"group", "forum", "channel"}
+            and self._feishu_explicit_group_rule_policy(source.chat_id) == "open"
+        ):
             return True
 
         # Check platform-specific and global allowlists
