@@ -2759,3 +2759,39 @@ class TestHomeTargetEnvVarRegistry:
         from cron.scheduler import _HOME_TARGET_ENV_VARS
 
         assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"
+
+class TestCronMemoryAccess:
+    """Cron agents get MEMORY.md/USER.md context but cannot write to local stores."""
+
+    def test_run_job_passes_skip_memory_false(self, tmp_path):
+        """skip_memory=False lets cron agents read user memory context."""
+        job = {"id": "mem-test", "name": "memory test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs.get("skip_memory") is False, (
+            "Cron must pass skip_memory=False so agents inherit memory context"
+        )
+        assert kwargs.get("platform") == "cron", (
+            "Agent must receive platform='cron' for dispatch-site write-block"
+        )
