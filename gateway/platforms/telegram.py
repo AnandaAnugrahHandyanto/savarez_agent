@@ -106,7 +106,7 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 }
 
 
-MAX_COMMANDS_PER_SCOPE = 30
+MAX_COMMANDS_PER_SCOPE = 75
 
 
 def check_telegram_requirements() -> bool:
