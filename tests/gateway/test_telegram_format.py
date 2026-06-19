@@ -839,45 +839,63 @@ class TestEditMessageStreamingSafety:
         }
 
     @pytest.mark.asyncio
-    async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):
-        """When edit_message_text exceeds Telegram's 4096 UTF-16 limit, the
-        adapter must split the content across the existing message + new
-        continuation messages so the user gets the full reply.  Previously
-        the adapter best-effort truncated the content with '…' and returned
-        success=True, dropping everything past the truncation boundary
-        (#19537)."""
+    async def test_mid_stream_overflow_truncates_not_splits(self):
+        """When finalize=False and content exceeds the 4096 UTF-16 limit,
+        edit_message must truncate the preview instead of spawning continuation
+        messages.  Splitting during streaming triggers an infinite reply chain
+        because the next token edit carries the full accumulated text (#48648).
+        """
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
         adapter._bot = MagicMock()
         adapter._bot.edit_message_text = AsyncMock()
-        # Continuation sends return monotonically increasing message ids.
-        _next_id = [1000]
-        async def _fake_send(**kwargs):
-            _next_id[0] += 1
-            return SimpleNamespace(message_id=_next_id[0])
-        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+        adapter._bot.send_message = AsyncMock()
 
         # 6000-char content well over the 4096 UTF-16 limit.
         oversized = "x" * 6000
         result = await adapter.edit_message("123", "456", oversized, finalize=False)
 
-        # Adapter reports success with continuations populated.
+        # Adapter reports success.
         assert result.success is True
         assert result.error is None
-        assert len(result.continuation_message_ids) >= 1, (
-            "expected at least one continuation message"
-        )
-        # The reported message_id is the LAST visible message (the final
-        # continuation), so subsequent edits target the most recent.
-        assert result.message_id == result.continuation_message_ids[-1]
-        # Original message_id (456) was edited with chunk 1.
+        # No continuations — truncation keeps everything on the same message.
+        assert len(result.continuation_message_ids) == 0
+        # send_message was NOT called (no overflow continuations).
+        adapter._bot.send_message.assert_not_called()
+        # The edit used truncated content (≤ 4000 chars).
         first_edit = adapter._bot.edit_message_text.call_args
+        edited_text = first_edit.kwargs.get("text") or first_edit[1].get("text")
+        assert len(edited_text) <= 4000
+        # Original message_id was used (not a continuation).
         assert first_edit.kwargs["message_id"] == 456
-        # Continuations were sent threaded as replies for visual grouping.
-        assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
 
     @pytest.mark.asyncio
-    async def test_message_too_long_continuations_preserve_topic_metadata(self):
-        """Overflow continuations should stay in the originating Telegram topic."""
+    async def test_finalize_true_still_splits_into_continuations(self):
+        """When finalize=True and content exceeds the limit, the adapter must
+        still split into continuation messages (the real delivery path)."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        _next_id = [1000]
+
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        oversized = "x" * 6000
+        result = await adapter.edit_message("123", "456", oversized, finalize=True)
+
+        assert result.success is True
+        assert len(result.continuation_message_ids) >= 1, (
+            "expected at least one continuation message on finalize"
+        )
+        assert adapter._bot.send_message.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_finalize_true_continuations_preserve_topic_metadata(self):
+        """When finalize=True, overflow continuations should stay in the
+        originating Telegram topic (thread_id propagated)."""
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
         adapter._bot = MagicMock()
         adapter._bot.edit_message_text = AsyncMock()
@@ -893,12 +911,12 @@ class TestEditMessageStreamingSafety:
             "-100123",
             "456",
             "x" * 6000,
-            finalize=False,
+            finalize=True,
             metadata={"thread_id": "17585"},
         )
 
         assert result.success is True
-        assert sent_kwargs, "expected at least one overflow continuation"
+        assert sent_kwargs, "expected at least one overflow continuation on finalize"
         assert all(kwargs.get("message_thread_id") == 17585 for kwargs in sent_kwargs)
         assert sent_kwargs[0]["reply_to_message_id"] == 456
 
