@@ -4854,7 +4854,7 @@ class SessionDB:
         def _do(conn):
             conn.execute(
                 "UPDATE shadow_clone_tasks "
-                "SET status = ?, completed_at = ?, result_json = ? "
+                "SET status = ?, completed_at = ?, result_json = COALESCE(?, result_json) "
                 "WHERE delegation_id = ?",
                 (status, ts, result_json, delegation_id),
             )
@@ -4912,24 +4912,29 @@ class SessionDB:
         try:
             if self._conn is None:
                 return [], []
-            rows = self._conn.execute(
+            cur = self._conn.execute(
                 "SELECT delegation_id, session_key, kanban_ticket_id, goal, "
                 "dispatched_at, routing_meta FROM shadow_clone_tasks "
                 "WHERE status = 'running'"
-            ).fetchall()
+            )
+            col_names = [d[0] for d in cur.description]
+            raw_rows = cur.fetchall()
         except Exception as _e:
             logger.warning("recover_inflight_shadow_clone_tasks: read failed: %s", _e)
             return [], []
 
         import json as _json
 
-        for row in rows:
-            did = row[0] if isinstance(row, (tuple, list)) else row["delegation_id"]
-            dispatched_at = row[4] if isinstance(row, (tuple, list)) else row["dispatched_at"]
+        for raw in raw_rows:
+            # Always use named column access via description — avoids fragile
+            # positional indexing (W2) if the SELECT column order ever changes.
+            row = dict(zip(col_names, raw)) if not isinstance(raw, sqlite3.Row) else raw
+            did = row["delegation_id"]
+            dispatched_at = row["dispatched_at"]
             if dispatched_at < cutoff:
                 stale_ids.append(did)
             else:
-                routing_raw = row[5] if isinstance(row, (tuple, list)) else row["routing_meta"]
+                routing_raw = row["routing_meta"]
                 routing = {}
                 if routing_raw:
                     try:
@@ -4938,9 +4943,9 @@ class SessionDB:
                         pass
                 fresh.append({
                     "delegation_id": did,
-                    "session_key": row[1] if isinstance(row, (tuple, list)) else row["session_key"],
-                    "kanban_ticket_id": row[2] if isinstance(row, (tuple, list)) else row["kanban_ticket_id"],
-                    "goal": row[3] if isinstance(row, (tuple, list)) else row["goal"],
+                    "session_key": row["session_key"],
+                    "kanban_ticket_id": row["kanban_ticket_id"],
+                    "goal": row["goal"],
                     "dispatched_at": dispatched_at,
                     "routing_meta": routing,
                 })

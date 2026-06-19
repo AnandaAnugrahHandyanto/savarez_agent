@@ -5596,11 +5596,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Silently skips events whose session_key has no active agent and cannot
         be routed — the event is consumed so it doesn't accumulate.
+
+        Shadow clone GC runs every ~5 minutes (not every tick) so we don't
+        open a new SessionDB connection on each 2-second watcher iteration (W1).
         """
         from tools.process_registry import process_registry as _pr
         from tools.process_registry import format_process_notification
 
         logger.debug("Async delegation watcher started")
+        _gc_interval = max(1, int(300 / interval))  # ticks between GC runs (~5 min)
+        _tick = 0
         while True:
             try:
                 await asyncio.sleep(interval)
@@ -5697,16 +5702,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # ── P1: Shadow clone GC ────────────────────────────────────────────
                 # Delete completed/failed rows older than 24 h to prevent unbounded
                 # DB growth.  Best-effort — never blocks the watcher tick.
-                try:
-                    from hermes_state import SessionDB as _SDBGC
-                    _sdb_gc = _SDBGC()
-                    _gc_deleted = _sdb_gc.gc_shadow_clone_tasks(retain_hours=24.0)
-                    if _gc_deleted:
-                        logger.debug(
-                            "Shadow clone GC: deleted %d completed/failed row(s)", _gc_deleted
-                        )
-                except Exception as _gc_exc:
-                    logger.debug("Shadow clone GC error: %s", _gc_exc)
+                # Throttled: runs every ~5 min (not every 2s tick) so we don't
+                # open a new SessionDB connection on each iteration (W1 fix).
+                _tick += 1
+                if _tick % _gc_interval == 0:
+                    try:
+                        from hermes_state import SessionDB as _SDBGC
+                        _sdb_gc = _SDBGC()
+                        _gc_deleted = _sdb_gc.gc_shadow_clone_tasks(retain_hours=24.0)
+                        if _gc_deleted:
+                            logger.debug(
+                                "Shadow clone GC: deleted %d completed/failed row(s)", _gc_deleted
+                            )
+                    except Exception as _gc_exc:
+                        logger.debug("Shadow clone GC error: %s", _gc_exc)
                 # ──────────────────────────────────────────────────────────────────
             except asyncio.CancelledError:
                 raise
