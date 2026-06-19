@@ -5812,14 +5812,24 @@ class TestAnthropicCredentialRefresh:
             )
 
         response = SimpleNamespace(content=[])
+        stream_ctx = MagicMock()
+        stream_obj = MagicMock()
+        stream_obj.get_final_message.return_value = response
+        stream_ctx.__enter__.return_value = stream_obj
+        stream_ctx.__exit__.return_value = None
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create.return_value = response
+        agent._anthropic_client.messages.stream.return_value = stream_ctx
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True) as refresh:
-            result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
+            result = agent._anthropic_messages_create(
+                {"model": "claude-sonnet-4-20250514", "stream": False}
+            )
 
         refresh.assert_called_once_with()
-        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.messages.create.assert_not_called()
+        agent._anthropic_client.messages.stream.assert_called_once_with(
+            model="claude-sonnet-4-20250514"
+        )
         assert result is response
 
 

@@ -9,6 +9,7 @@ OpenAI-wire client that speaks the wrong protocol.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -105,3 +106,46 @@ def test_custom_endpoint_chat_completions_still_uses_openai_wire():
     assert client is not None
     assert model == "my-model"
     assert not isinstance(client, AnthropicAuxiliaryClient)
+
+
+def test_anthropic_completions_adapter_uses_stream_final_message():
+    """Anthropic auxiliary calls must support streaming-only endpoints."""
+    from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+    final_message = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=11, output_tokens=7)
+    )
+    normalized = SimpleNamespace(
+        content="streamed final",
+        tool_calls=[],
+        reasoning=None,
+        finish_reason="end_turn",
+    )
+    client = MagicMock()
+    stream_ctx = MagicMock()
+    stream_obj = MagicMock()
+    stream_obj.get_final_message.return_value = final_message
+    stream_ctx.__enter__.return_value = stream_obj
+    stream_ctx.__exit__.return_value = None
+    client.messages.stream.return_value = stream_ctx
+    transport = SimpleNamespace(normalize_response=MagicMock(return_value=normalized))
+
+    with patch(
+        "agent.anthropic_adapter.build_anthropic_kwargs",
+        return_value={"model": "claude", "messages": [], "stream": False},
+    ), patch(
+        "agent.transports.get_transport",
+        return_value=transport,
+    ):
+        result = _AnthropicCompletionsAdapter(client, "claude").create(model="claude")
+
+    client.messages.create.assert_not_called()
+    client.messages.stream.assert_called_once_with(model="claude", messages=[])
+    transport.normalize_response.assert_called_once_with(
+        final_message, strip_tool_prefix=False
+    )
+    assert result.choices[0].message.content == "streamed final"
+    assert result.choices[0].finish_reason == "end_turn"
+    assert result.usage.prompt_tokens == 11
+    assert result.usage.completion_tokens == 7
+    assert result.usage.total_tokens == 18

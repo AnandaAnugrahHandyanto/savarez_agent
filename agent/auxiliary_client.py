@@ -1041,7 +1041,9 @@ class _AnthropicCompletionsAdapter:
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
-        response = self._client.messages.create(**anthropic_kwargs)
+        anthropic_kwargs.pop("stream", None)
+        with self._client.messages.stream(**anthropic_kwargs) as stream:
+            response = stream.get_final_message()
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth
