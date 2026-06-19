@@ -72,6 +72,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # NVIDIA
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     # OpenRouter routers
+    ("openrouter/fusion",                      "multi-model deliberation (panel + judge); priced as sum of all completions"),
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
@@ -1357,6 +1358,14 @@ def fetch_openrouter_models(
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
     preferred_ids = [mid for mid, _ in fallback]
 
+    # Ensure OpenRouter's first-party deliberation routers are always offered in
+    # the picker even when the (remote) curated manifest omits them. These are
+    # known-good meta routers we vouch for; they report empty
+    # supported_parameters but drive the agent loop fine (verified for fusion).
+    for _router_id in ("openrouter/fusion",):
+        if _router_id not in preferred_ids:
+            preferred_ids.append(_router_id)
+
     try:
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/models",
@@ -1388,7 +1397,14 @@ def fetch_openrouter_models(
         # Hide models that don't advertise tool-calling support — hermes-agent
         # requires it and surfacing them leads to immediate runtime failures
         # when the user selects them. Ported from Kilo-Org/kilocode#9068.
-        if not _openrouter_model_supports_tools(live_item):
+        #
+        # Exception: OpenRouter's own first-party router models (openrouter/*,
+        # e.g. fusion, auto, pareto-code) are deliberation/meta routers that
+        # report empty supported_parameters but still drive the agent loop fine
+        # — they synthesize a final answer server-side. They're in our curated
+        # list precisely because we vouch for them, so don't let the generic
+        # tool-support gate hide them.
+        if not preferred_id.startswith("openrouter/") and not _openrouter_model_supports_tools(live_item):
             continue
         desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
