@@ -626,24 +626,37 @@ async def test_auto_create_thread_truncates_long_names(adapter):
 
 
 @pytest.mark.asyncio
-async def test_auto_create_thread_falls_back_to_seed_message(adapter):
+async def test_auto_create_thread_reuses_existing_thread_when_direct_create_loses_race(adapter):
     thread = SimpleNamespace(id=555, name="Hello")
-    seed_message = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
     message = SimpleNamespace(
+        id=555,
         content="Hello",
-        create_thread=AsyncMock(side_effect=RuntimeError("no perms")),
-        channel=SimpleNamespace(send=AsyncMock(return_value=seed_message)),
+        thread=thread,
+        create_thread=AsyncMock(side_effect=RuntimeError("already has thread")),
+        channel=SimpleNamespace(send=AsyncMock()),
         author=SimpleNamespace(display_name="Jezza"),
     )
 
     result = await adapter._auto_create_thread(message)
     assert result is thread
-    message.channel.send.assert_awaited_once_with("🧵 Thread created by Hermes: **Hello**")
-    seed_message.create_thread.assert_awaited_once_with(
-        name="Hello",
-        auto_archive_duration=1440,
-        reason="Auto-threaded from mention by Jezza",
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_does_not_post_seed_message_when_direct_create_fails(adapter):
+    message = SimpleNamespace(
+        id=123,
+        content="Hello",
+        create_thread=AsyncMock(side_effect=RuntimeError("no perms")),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
     )
+    adapter._client.get_channel = lambda _id: None
+    adapter._client.fetch_channel = AsyncMock(side_effect=RuntimeError("not found"))
+
+    result = await adapter._auto_create_thread(message)
+    assert result is None
+    message.channel.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
