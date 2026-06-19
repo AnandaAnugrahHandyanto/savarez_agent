@@ -64,3 +64,12 @@ def test_no_audit_when_unconfigured():
     a = _adapter(dlp=True, audit=None)
     asyncio.run(a.send("CHAT1", "hello"))
     assert len(a._app.sent) == 1  # reply only, no mirror
+
+
+def test_dlp_text_helper_for_cards():
+    a = TeamsAdapter.__new__(TeamsAdapter)
+    a._dlp_cfg = DlpConfig(enabled=True)
+    out = a._dlp_text("approve: curl -H 'Authorization: Bearer abcdef0123456789xyz' x")
+    assert "Bearer abcdef" not in out and "[REDACTED:secret]" in out
+    a._dlp_cfg = DlpConfig(enabled=False)
+    assert a._dlp_text("sk-proj-ABCDEFGH12345678") == "sk-proj-ABCDEFGH12345678"

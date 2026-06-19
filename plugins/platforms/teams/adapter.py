@@ -1181,10 +1181,14 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Teams app not initialized")
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        # DLP: redact secrets in the command/reason shown on the approval card.
+        cmd_preview = self._dlp_text(cmd_preview)
+        description = self._dlp_text(description)
         # Truncated for button data payload — just enough to reconstruct the card body.
+        btn_cmd = command[:200] + "..." if len(command) > 200 else command
         btn_data_base = {
             "session_key": session_key,
-            "cmd": command[:200] + "..." if len(command) > 200 else command,
+            "cmd": self._dlp_text(btn_cmd),
             "desc": description,
         }
 
@@ -1292,6 +1296,17 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception as e:  # noqa: BLE001 — auditing must never break delivery
             logger.debug("[teams] audit mirror failed: %s", e)
 
+    def _dlp_text(self, text: str) -> str:
+        """Redact a string with the configured DLP policy (no-op when disabled).
+
+        Used for card / caption text that doesn't pass through ``send()``."""
+        if not text or not self._dlp_cfg.enabled:
+            return text
+        from .dlp import redact
+
+        out, _ = redact(text, self._dlp_cfg)
+        return out
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._app:
             return
@@ -1329,7 +1344,7 @@ class TeamsAdapter(BasePlatformAdapter):
             attachment = Attachment(content_type=mime_type, content_url=content_url)
             activity = MessageActivityInput().add_attachments(attachment)
             if caption:
-                activity = activity.add_text(caption)
+                activity = activity.add_text(self._dlp_text(caption))
 
             conv_ref = self._conv_refs.get(chat_id)
             if conv_ref:
