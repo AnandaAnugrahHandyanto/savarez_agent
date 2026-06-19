@@ -16574,6 +16574,40 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    # ── Proxy / trust_env global monkeypatch ──────────────────────────────
+    # Stop client sessions from implicitly trusting system/task environment
+    # proxy variables (trust_env=False by default) unless explicitly enabled.
+    # We patch aiohttp.ClientSession and httpx.AsyncClient at startup so that
+    # all platform adapters (including built-in and third-party plugins)
+    # automatically default to the resolved trust_env setting.
+    try:
+        import aiohttp
+        _orig_aiohttp_init = aiohttp.ClientSession.__init__
+
+        def _new_aiohttp_init(self, *args, **kwargs):
+            if "trust_env" not in kwargs:
+                from gateway.platforms.base import should_trust_env
+                kwargs["trust_env"] = should_trust_env()
+            _orig_aiohttp_init(self, *args, **kwargs)
+
+        aiohttp.ClientSession.__init__ = _new_aiohttp_init
+    except ImportError:
+        pass
+
+    try:
+        import httpx
+        _orig_httpx_init = httpx.AsyncClient.__init__
+
+        def _new_httpx_init(self, *args, **kwargs):
+            if "trust_env" not in kwargs:
+                from gateway.platforms.base import should_trust_env
+                kwargs["trust_env"] = should_trust_env()
+            _orig_httpx_init(self, *args, **kwargs)
+
+        httpx.AsyncClient.__init__ = _new_httpx_init
+    except ImportError:
+        pass
+
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile

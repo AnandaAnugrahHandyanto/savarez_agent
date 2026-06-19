@@ -996,3 +996,61 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestApplyEnvOverridesExplicitDisablement:
+    def test_explicit_disablement_prevents_env_enablement(self, caplog):
+        # 1. Telegram
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=False, extra={"_enabled_explicit": True})
+            }
+        )
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token_abc"}, clear=True):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.TELEGRAM].enabled is False
+        assert any(
+            "will remain disabled because it was explicitly disabled in the configuration" in record.message
+            for record in caplog.records
+        )
+
+        # 2. WeChat (weixin)
+        caplog.clear()
+        config = GatewayConfig(
+            platforms={
+                Platform.WEIXIN: PlatformConfig(enabled=False, extra={"_enabled_explicit": True})
+            }
+        )
+        with patch.dict(os.environ, {"WEIXIN_TOKEN": "token_abc"}, clear=True):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.WEIXIN].enabled is False
+        assert any(
+            "will remain disabled because it was explicitly disabled in the configuration" in record.message
+            for record in caplog.records
+        )
+
+
+class TestShouldTrustEnv:
+    def test_should_trust_env_default(self):
+        from gateway.platforms.base import should_trust_env
+        with patch.dict(os.environ, {}, clear=True):
+            assert should_trust_env() is False
+
+    def test_should_trust_env_env_vars(self):
+        from gateway.platforms.base import should_trust_env
+        for var in ("GATEWAY_TRUST_PROXY", "GATEWAY_TRUST_ENV"):
+            with patch.dict(os.environ, {var: "true"}, clear=True):
+                assert should_trust_env() is True
+            with patch.dict(os.environ, {var: "1"}, clear=True):
+                assert should_trust_env() is True
+
+    def test_should_trust_env_platform_config(self):
+        from gateway.platforms.base import should_trust_env
+        pcfg = PlatformConfig(extra={"trust_proxy": True})
+        with patch.dict(os.environ, {}, clear=True):
+            assert should_trust_env(pcfg) is True
+
+        pcfg = PlatformConfig(extra={"trust_env": True})
+        with patch.dict(os.environ, {}, clear=True):
+            assert should_trust_env(pcfg) is True
+

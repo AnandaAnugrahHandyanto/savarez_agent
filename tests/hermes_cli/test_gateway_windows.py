@@ -200,7 +200,9 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
     )
 
     assert "pythonw.exe" in content
-    assert "gateway run" in content
+    assert "watchdog" in content
+    assert "gateway" in content
+    assert "run" in content
     assert "--replace" not in content
     assert "start \"\"" not in content
     assert "exit /b 0" in content

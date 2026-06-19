@@ -363,18 +363,40 @@ def _build_gateway_cmd_script(
     venv_dir = str(Path(python_path).resolve().parent.parent)
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
 
+    import json
     pythonw_path = _derive_venv_pythonw(python_path)
     prog_args = [pythonw_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
+
+    env_overlay = {
+        "HERMES_HOME": hermes_home,
+        "PYTHONIOENCODING": "utf-8",
+        "HERMES_GATEWAY_DETACHED": "1",
+        "VIRTUAL_ENV": venv_dir,
+    }
+
+    watchdog_args = [
+        pythonw_path,
+        "-m",
+        "hermes_cli.gateway_windows",
+        "watchdog",
+        "--working-dir",
+        working_dir,
+        "--argv",
+        json.dumps(prog_args),
+        "--env",
+        json.dumps(env_overlay),
+    ]
+
     # `pythonw.exe` is a GUI-subsystem executable: cmd.exe launches it and
     # returns immediately, so the Scheduled Task action finishes without a
     # visible console window. Do NOT use `start` here; that creates an extra
     # wrapper process and made gateway lifecycle/status harder to reason about.
     # Do NOT use `--replace` for service-managed starts; repeated /Run calls
     # should be idempotent, not churn parent/child takeover loops.
-    lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
+    lines.append(" ".join(_quote_cmd_script_arg(a) for a in watchdog_args))
     lines.append("exit /b 0")
     return "\r\n".join(lines) + "\r\n"
 
@@ -625,8 +647,20 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     _assert_windows()
     argv, working_dir, env_overlay = _build_gateway_argv()
 
-    # Inherit PATH etc. from the current env, overlay our required vars.
-    env = {**os.environ, **env_overlay}
+    import json
+    python_exe = argv[0]
+    watchdog_argv = [
+        python_exe,
+        "-m",
+        "hermes_cli.gateway_windows",
+        "watchdog",
+        "--working-dir",
+        working_dir,
+        "--argv",
+        json.dumps(argv),
+        "--env",
+        json.dumps(env_overlay),
+    ]
 
     # DETACHED_PROCESS        0x00000008  — no console attached to child
     # CREATE_NEW_PROCESS_GROUP 0x00000200 — child gets its own group, won't
@@ -652,9 +686,9 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     try:
         with open(stray_log, "ab", buffering=0) as log_fh:
             proc = subprocess.Popen(
-                argv,
+                watchdog_argv,
                 cwd=working_dir,
-                env=env,
+                env=os.environ,
                 creationflags=flags,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
@@ -669,9 +703,9 @@ def _spawn_detached(script_path: Path | None = None) -> int:
         flags_no_breakaway = flags & ~0x01000000
         with open(stray_log, "ab", buffering=0) as log_fh:
             proc = subprocess.Popen(
-                argv,
+                watchdog_argv,
                 cwd=working_dir,
-                env=env,
+                env=os.environ,
                 creationflags=flags_no_breakaway,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
@@ -1309,3 +1343,104 @@ def restart() -> None:
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
     start()
+
+
+def run_watchdog(working_dir: str, argv: list[str], env_overlay: dict[str, str]) -> None:
+    """Watchdog loop that monitors the gateway child process on Windows."""
+    import os
+    import sys
+    import time
+    import subprocess
+    from pathlib import Path
+
+    env = {**os.environ, **env_overlay}
+    hermes_home = env.get("HERMES_HOME")
+    if not hermes_home:
+        try:
+            from hermes_cli.config import get_hermes_home
+            hermes_home = str(get_hermes_home())
+        except Exception:
+            hermes_home = str(Path.home() / ".hermes")
+
+    log_dir = Path(hermes_home) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stray_log = log_dir / "gateway-stdio.log"
+
+    def log_watchdog(message: str):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        log_line = f"[{ts}] [Watchdog] {message}\n"
+        print(log_line, end="")
+        try:
+            with open(stray_log, "a", encoding="utf-8") as f:
+                f.write(log_line)
+        except Exception:
+            pass
+
+    log_watchdog(f"Starting gateway watchdog process (PID {os.getpid()})")
+    log_watchdog(f"Child command: {argv}")
+
+    # Derive python.exe from the watchdog's python path (which might be pythonw.exe)
+    child_argv = list(argv)
+    if child_argv and child_argv[0].lower().endswith("pythonw.exe"):
+        child_argv[0] = child_argv[0][:-11] + "python.exe"
+
+    restart_delay = 5  # Respawn in 5 seconds
+    
+    while True:
+        try:
+            with open(stray_log, "ab", buffering=0) as log_fh:
+                proc = subprocess.Popen(
+                    child_argv,
+                    cwd=working_dir,
+                    env=env,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                    close_fds=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_fh,
+                    stderr=log_fh,
+                )
+            
+            log_watchdog(f"Spawned gateway worker (PID {proc.pid})")
+            
+            exit_code = proc.wait()
+            
+            if exit_code == 0:
+                log_watchdog("Worker exited cleanly (code 0). Stopping watchdog.")
+                sys.exit(0)
+            elif exit_code == 75:  # GATEWAY_SERVICE_RESTART_EXIT_CODE
+                log_watchdog("Worker requested restart (code 75). Respawning immediately.")
+                continue
+            else:
+                log_watchdog(f"Worker exited with code {exit_code}, respawning in {restart_delay} seconds...")
+                time.sleep(restart_delay)
+                
+        except KeyboardInterrupt:
+            log_watchdog("Watchdog interrupted by user.")
+            sys.exit(0)
+        except Exception as exc:
+            log_watchdog(f"Watchdog encountered error: {exc}. Retrying in {restart_delay} seconds...")
+            time.sleep(restart_delay)
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "watchdog":
+        parser = argparse.ArgumentParser(description="Hermes Gateway Watchdog")
+        parser.add_argument("command", choices=["watchdog"])
+        parser.add_argument("--working-dir", required=True)
+        parser.add_argument("--argv", required=True)
+        parser.add_argument("--env", required=True)
+        
+        args = parser.parse_args()
+        
+        try:
+            argv_list = json.loads(args.argv)
+            env_dict = json.loads(args.env)
+        except Exception as e:
+            print(f"Error parsing watchdog arguments: {e}", file=sys.stderr)
+            sys.exit(1)
+            
+        run_watchdog(args.working_dir, argv_list, env_dict)

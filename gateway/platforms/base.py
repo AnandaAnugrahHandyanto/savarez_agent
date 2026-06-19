@@ -130,6 +130,32 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     return True
 
 
+def should_trust_env(config=None) -> bool:
+    """Determine whether to trust the system environment for proxies."""
+    for var in ("GATEWAY_TRUST_PROXY", "GATEWAY_TRUST_ENV"):
+        if os.environ.get(var, "").strip().lower() in ("true", "1", "yes", "on"):
+            return True
+    if config:
+        # Check platform config's extra dict first (bridged from YAML)
+        extra = getattr(config, "extra", {})
+        if isinstance(extra, dict):
+            for k in ("trust_proxy", "trust_env"):
+                if extra.get(k) is True:
+                    return True
+        for k in ("trust_proxy", "trust_env"):
+            if getattr(config, k, False) is True:
+                return True
+    try:
+        from gateway.config import load_gateway_config
+        gw_cfg = load_gateway_config()
+        if getattr(gw_cfg, "trust_proxy", False) or getattr(gw_cfg, "trust_env", False):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+
 def utf16_len(s: str) -> int:
     """Count UTF-16 code units in *s*.
 
@@ -349,6 +375,7 @@ def resolve_proxy_url(
     platform_env_var: str | None = None,
     *,
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
+    config=None,
 ) -> str | None:
     """Return a proxy URL from env vars, or macOS system proxy.
 
@@ -366,6 +393,10 @@ def resolve_proxy_url(
             if should_bypass_proxy(target_hosts):
                 return None
             return normalize_proxy_url(value)
+
+    if not should_trust_env(config):
+        return None
+
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
