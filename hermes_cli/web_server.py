@@ -579,6 +579,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "approvals": "security",
     "human_delay": "display",
     "dashboard": "display",
+    "desktop": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",
     "goals": "agent",
