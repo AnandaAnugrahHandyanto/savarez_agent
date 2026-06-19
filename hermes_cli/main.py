@@ -6114,6 +6114,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         capture_output=True,
         text=True,
         check=True,
+        timeout=30,
     )
     if not status.stdout.strip():
         return None
@@ -6127,10 +6128,11 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     if unmerged.stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
-        subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
+        subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True, timeout=30)
 
     from datetime import datetime, timezone
 
@@ -6142,6 +6144,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
         check=True,
+        timeout=60,
     )
     stash_ref = subprocess.run(
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
@@ -6149,6 +6152,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         capture_output=True,
         text=True,
         check=True,
+        timeout=15,
     ).stdout.strip()
     return stash_ref
 
@@ -6162,6 +6166,7 @@ def _resolve_stash_selector(
         capture_output=True,
         text=True,
         check=True,
+        timeout=30,
     )
     for line in stash_list.stdout.splitlines():
         selector, _, commit = line.partition(" ")
@@ -6216,6 +6221,7 @@ def _restore_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True,
+        timeout=60,
     )
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
@@ -6224,6 +6230,7 @@ def _restore_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     has_conflicts = bool(unmerged.stdout.strip())
 
@@ -6251,6 +6258,7 @@ def _restore_stashed_changes(
             git_cmd + ["reset", "--hard", "HEAD"],
             cwd=cwd,
             capture_output=True,
+            timeout=30,
         )
         print("Working tree reset to clean state.")
         print(f"Restore your changes later with: git stash apply {stash_ref}")
@@ -6274,6 +6282,7 @@ def _restore_stashed_changes(
             cwd=cwd,
             capture_output=True,
             text=True,
+            timeout=30,
         )
         if drop.returncode != 0:
             print(
@@ -6326,6 +6335,7 @@ def _discard_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     if drop.returncode != 0:
         print(
