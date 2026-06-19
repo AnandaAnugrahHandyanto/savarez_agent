@@ -540,3 +540,109 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestScriptProfileFallback:
+    """Test that scripts resolve to the default ~/.hermes/scripts/ when not
+    found in the profile-specific scripts directory."""
+
+    def test_script_in_default_dir_found_from_profile_context(self, tmp_path, monkeypatch):
+        """When HERMES_HOME points to a profile dir, scripts in the default
+        ~/.hermes/scripts/ should still be found."""
+        from cron.scheduler import _run_job_script
+
+        # Simulate a profile context: HERMES_HOME = ~/.hermes/profiles/personal/
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "personal"
+        profile_home.mkdir(parents=True)
+        (profile_home / "scripts").mkdir()
+
+        # Script exists in default scripts dir, NOT in profile scripts dir
+        default_scripts = default_home / "scripts"
+        default_scripts.mkdir(parents=True)
+        script = default_scripts / "watchdog.sh"
+        script.write_text('#!/bin/bash\necho "default fallback"')
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        import cron.scheduler as sched_mod
+        monkeypatch.setattr(sched_mod, "_hermes_home", profile_home)
+        monkeypatch.setattr(
+            "cron.scheduler._get_platform_default_hermes_home",
+            lambda: default_home,
+        )
+
+        success, output = _run_job_script("watchdog.sh")
+        assert success is True
+        assert "default fallback" in output
+
+    def test_profile_script_takes_precedence_over_default(self, tmp_path, monkeypatch):
+        """When a script exists in both profile and default dirs, the profile
+        version should take precedence."""
+        from cron.scheduler import _run_job_script
+
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "personal"
+        (profile_home / "scripts").mkdir(parents=True)
+        (default_home / "scripts").mkdir(parents=True)
+
+        # Same script name in both locations with different content
+        (profile_home / "scripts" / "check.py").write_text('print("profile")')
+        (default_home / "scripts" / "check.py").write_text('print("default")')
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        import cron.scheduler as sched_mod
+        monkeypatch.setattr(sched_mod, "_hermes_home", profile_home)
+        monkeypatch.setattr(
+            "cron.scheduler._get_platform_default_hermes_home",
+            lambda: default_home,
+        )
+
+        success, output = _run_job_script("check.py")
+        assert success is True
+        assert output == "profile"
+
+    def test_fallback_not_triggered_in_default_context(self, tmp_path, monkeypatch):
+        """When HERMES_HOME IS the default dir, no fallback should occur
+        (the dirs are the same)."""
+        from cron.scheduler import _run_job_script
+
+        default_home = tmp_path / ".hermes"
+        (default_home / "scripts").mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+        import cron.scheduler as sched_mod
+        monkeypatch.setattr(sched_mod, "_hermes_home", default_home)
+        monkeypatch.setattr(
+            "cron.scheduler._get_platform_default_hermes_home",
+            lambda: default_home,
+        )
+
+        # Script doesn't exist — should fail without fallback attempt
+        success, output = _run_job_script("nonexistent.py")
+        assert success is False
+        assert "not found" in output.lower()
+
+    def test_fallback_path_traversal_still_blocked(self, tmp_path, monkeypatch):
+        """Path traversal must be blocked even in the fallback path."""
+        from cron.scheduler import _run_job_script
+
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "personal"
+        (profile_home / "scripts").mkdir(parents=True)
+        (default_home / "scripts").mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        import cron.scheduler as sched_mod
+        monkeypatch.setattr(sched_mod, "_hermes_home", profile_home)
+        monkeypatch.setattr(
+            "cron.scheduler._get_platform_default_hermes_home",
+            lambda: default_home,
+        )
+
+        # Traversal attempt — should be blocked by the initial check
+        success, output = _run_job_script("../../etc/passwd")
+        assert success is False
