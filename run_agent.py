@@ -4736,6 +4736,8 @@ class AIAgent:
         for msg in prepared:
             if not isinstance(msg, dict):
                 continue
+            if msg.get("role") == "tool":
+                continue
             content = msg.get("content")
             if isinstance(content, str):
                 msg["content"] = [{"type": "text", "text": content}]
@@ -4768,6 +4770,8 @@ class AIAgent:
 
         for msg in messages:
             if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "tool":
                 continue
             content = msg.get("content")
             if isinstance(content, str):
