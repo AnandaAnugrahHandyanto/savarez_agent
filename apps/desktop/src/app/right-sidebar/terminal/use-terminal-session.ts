@@ -545,6 +545,14 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     cleanup.push(() => dataDisposable.dispose())
 
+    term.attachCustomKeyEventHandler(ev => {
+      if (ev.type === 'keydown' && ev.ctrlKey && ev.key === 'c' && selectionRef.current) {
+        void navigator.clipboard.writeText(selectionRef.current)
+        term.clearSelection()
+        return false
+      }
+      return true
+    })
     const selectionDisposable = term.onSelectionChange(() => {
       const next = term.getSelection()
       selectionRef.current = next
