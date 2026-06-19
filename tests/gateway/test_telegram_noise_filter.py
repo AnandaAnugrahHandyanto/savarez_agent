@@ -62,6 +62,69 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
     assert "req_abc" not in sanitized
 
 
+def test_telegram_final_response_sanitizes_codex_incomplete_continuation_error():
+    """Codex continuation failures are infrastructure errors, not user-facing prose."""
+    raw = "Codex response remained incomplete after 3 continuation attempts"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "model provider failed" in sanitized.lower()
+    assert "Codex response" not in sanitized
+    assert "continuation attempts" not in sanitized
+
+
+def test_telegram_status_sanitizes_codex_incomplete_continuation_error():
+    """Status callbacks should not leak raw Codex continuation errors to Telegram."""
+    raw = "Codex response remained incomplete after 3 continuation attempts"
+
+    sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "error", raw)
+
+    assert sanitized is not None
+    assert "model provider failed" in sanitized.lower()
+    assert "Codex response" not in sanitized
+    assert "continuation attempts" not in sanitized
+
+
+def test_default_whatsapp_final_response_keeps_admin_diagnostics(monkeypatch):
+    """Default/admin WhatsApp gateways keep existing diagnostic behaviour."""
+    monkeypatch.setenv("HERMES_PROFILE", "default")
+    monkeypatch.setenv("HERMES_HOME", "/home/test/.hermes")
+    raw = "Codex response remained incomplete after 3 continuation attempts"
+
+    assert _sanitize_gateway_final_response(Platform.WHATSAPP, raw) == raw
+
+
+def test_ochied_whatsapp_final_response_uses_guest_safe_provider_wording(monkeypatch):
+    """Ochied WhatsApp chats should never see technical provider wording."""
+    monkeypatch.setenv("HERMES_PROFILE", "ochied")
+    monkeypatch.setenv("HERMES_HOME", "/home/test/.hermes/profiles/ochied")
+    raw = "Codex response remained incomplete after 3 continuation attempts"
+
+    sanitized = _sanitize_gateway_final_response(Platform.WHATSAPP, raw)
+
+    assert "Ochied" in sanitized
+    assert "gangguan sebentar" in sanitized
+    assert "Codex response" not in sanitized
+    assert "provider" not in sanitized.lower()
+    assert "continuation attempts" not in sanitized
+
+
+def test_ochied_whatsapp_status_uses_guest_safe_provider_wording(monkeypatch):
+    """Ochied WhatsApp status callbacks should not leak raw provider errors."""
+    monkeypatch.setenv("HERMES_PROFILE", "ochied")
+    monkeypatch.setenv("HERMES_HOME", "/home/test/.hermes/profiles/ochied")
+    raw = "❌ API failed after 3 retries — HTTP 500: upstream unavailable"
+
+    sanitized = _prepare_gateway_status_message(Platform.WHATSAPP, "lifecycle", raw)
+
+    assert sanitized is not None
+    assert "Ochied" in sanitized
+    assert "gangguan sebentar" in sanitized
+    assert "HTTP 500" not in sanitized
+    assert "upstream" not in sanitized.lower()
+    assert "provider" not in sanitized.lower()
+
+
 def test_telegram_final_response_redacts_auth_secrets():
     """Authentication errors should be useful without leaking key material."""
     raw = (
