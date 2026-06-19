@@ -1021,7 +1021,7 @@ def _file_lock(
             elif msvcrt:
                 try:
                     lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                    getattr(msvcrt, "locking")(lock_file.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
                 except (OSError, IOError):
                     pass
 
@@ -3551,6 +3551,178 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     return dict(imported)
 
 
+def _shared_codex_auth_file_path() -> Optional[Path]:
+    """Return the operator-configured shared Codex auth file, if enabled."""
+    raw = os.getenv("HERMES_CODEX_SHARED_AUTH_FILE", "").strip()
+    if not raw:
+        shared_home = os.getenv("HERMES_CODEX_SHARED_CODEX_HOME", "").strip()
+        if shared_home:
+            raw = str(Path(shared_home).expanduser() / "auth.json")
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+@contextmanager
+def _shared_codex_auth_lock(auth_path: Path, timeout_seconds: float):
+    """Lock a shared Codex auth file across Hermes profiles before refreshing it."""
+    lock_path = auth_path.with_name(f"{auth_path.name}.hermes.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock_file:
+        deadline = time.time() + max(1.0, float(timeout_seconds))
+        while True:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt:
+                    lock_file.seek(0)
+                    getattr(msvcrt, "locking")(lock_file.fileno(), getattr(msvcrt, "LK_NBLCK"), 1)
+                break
+            except (BlockingIOError, OSError, PermissionError):
+                if time.time() >= deadline:
+                    raise TimeoutError("Timed out waiting for shared Codex auth lock")
+                time.sleep(0.05)
+
+        try:
+            yield
+        finally:
+            if fcntl:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            elif msvcrt:
+                try:
+                    lock_file.seek(0)
+                    getattr(msvcrt, "locking")(lock_file.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+                except (OSError, IOError):
+                    pass
+
+
+def _read_codex_tokens_from_auth_file(auth_path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise AuthError(
+            f"Shared Codex auth file not found: {auth_path}",
+            provider="openai-codex",
+            code="codex_shared_auth_missing",
+            relogin_required=True,
+        ) from exc
+    except Exception as exc:
+        raise AuthError(
+            f"Shared Codex auth file is invalid: {auth_path}",
+            provider="openai-codex",
+            code="codex_shared_auth_invalid_json",
+            relogin_required=True,
+        ) from exc
+
+    tokens = payload.get("tokens") if isinstance(payload, dict) else None
+    if not isinstance(tokens, dict):
+        raise AuthError(
+            f"Shared Codex auth file is missing tokens: {auth_path}",
+            provider="openai-codex",
+            code="codex_shared_auth_invalid_shape",
+            relogin_required=True,
+        )
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise AuthError(
+            f"Shared Codex auth file is missing access_token: {auth_path}",
+            provider="openai-codex",
+            code="codex_shared_auth_missing_access_token",
+            relogin_required=True,
+        )
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise AuthError(
+            f"Shared Codex auth file is missing refresh_token: {auth_path}",
+            provider="openai-codex",
+            code="codex_shared_auth_missing_refresh_token",
+            relogin_required=True,
+        )
+    return {
+        "payload": payload,
+        "tokens": dict(tokens),
+        "last_refresh": payload.get("last_refresh") if isinstance(payload, dict) else None,
+    }
+
+
+def _save_shared_codex_auth_file(auth_path: Path, payload: Dict[str, Any], tokens: Dict[str, str], last_refresh: str) -> None:
+    updated = dict(payload)
+    updated["tokens"] = tokens
+    updated["last_refresh"] = last_refresh
+    updated.setdefault("auth_mode", "chatgpt")
+    updated.setdefault("OPENAI_API_KEY", None)
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = auth_path.with_name(f"{auth_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(updated, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        atomic_replace(tmp_path, auth_path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+    try:
+        auth_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
+def _resolve_shared_codex_runtime_credentials(
+    *,
+    auth_path: Path,
+    force_refresh: bool,
+    refresh_if_expiring: bool,
+    refresh_skew_seconds: int,
+    refresh_timeout_seconds: float,
+) -> Dict[str, Any]:
+    lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)
+    with _shared_codex_auth_lock(auth_path, timeout_seconds=lock_timeout):
+        data = _read_codex_tokens_from_auth_file(auth_path)
+        payload = data["payload"]
+        tokens = dict(data["tokens"])
+        access_token = str(tokens.get("access_token", "") or "").strip()
+
+        should_refresh = bool(force_refresh)
+        if (not should_refresh) and refresh_if_expiring:
+            should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
+
+        last_refresh = data.get("last_refresh")
+        if should_refresh:
+            refreshed = refresh_codex_oauth_pure(
+                access_token,
+                str(tokens.get("refresh_token", "") or ""),
+                timeout_seconds=refresh_timeout_seconds,
+            )
+            last_refresh = refreshed.get("last_refresh") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            tokens["access_token"] = refreshed["access_token"]
+            tokens["refresh_token"] = refreshed["refresh_token"]
+            _save_shared_codex_auth_file(auth_path, payload, tokens, str(last_refresh))
+            access_token = str(tokens.get("access_token", "") or "").strip()
+
+    if last_refresh is None:
+        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    # Keep this profile's local auth store and credential-pool seed in sync
+    # without letting each profile independently consume the refresh token.
+    _save_codex_tokens(tokens, str(last_refresh))
+
+    base_url = (
+        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_CODEX_BASE_URL
+    )
+    return {
+        "provider": "openai-codex",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": f"shared-codex-auth:{auth_path}",
+        "last_refresh": last_refresh,
+        "auth_mode": "chatgpt",
+    }
+
+
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -3774,6 +3946,17 @@ def resolve_codex_runtime_credentials(
     HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
     """
+    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
+    shared_auth_path = _shared_codex_auth_file_path()
+    if shared_auth_path is not None:
+        return _resolve_shared_codex_runtime_credentials(
+            auth_path=shared_auth_path,
+            force_refresh=force_refresh,
+            refresh_if_expiring=refresh_if_expiring,
+            refresh_skew_seconds=refresh_skew_seconds,
+            refresh_timeout_seconds=refresh_timeout_seconds,
+        )
+
     read_error: Optional[AuthError] = None
     try:
         data = _read_codex_tokens()
@@ -3838,7 +4021,6 @@ def resolve_codex_runtime_credentials(
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
 
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:

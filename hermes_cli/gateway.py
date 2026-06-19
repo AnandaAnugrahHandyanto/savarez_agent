@@ -3391,6 +3391,16 @@ def generate_launchd_plist() -> str:
     )
     prog_args_xml = "\n        ".join(prog_args)
 
+    shared_codex_auth_file = os.environ.get("HERMES_CODEX_SHARED_AUTH_FILE", "").strip()
+    shared_codex_auth_xml = ""
+    if shared_codex_auth_file:
+        from xml.sax.saxutils import escape as _xml_escape
+
+        shared_codex_auth_xml = (
+            "\n        <key>HERMES_CODEX_SHARED_AUTH_FILE</key>"
+            f"\n        <string>{_xml_escape(shared_codex_auth_file)}</string>"
+        )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -3413,7 +3423,7 @@ def generate_launchd_plist() -> str:
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{hermes_home}</string>{shared_codex_auth_xml}
     </dict>
 
     <key>LimitLoadToSessionType</key>
