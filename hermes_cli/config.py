@@ -1018,10 +1018,13 @@ DEFAULT_CONFIG = {
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
-        # Inline LLM risk annotations for terminal tool calls.
-        #   risky  — confirm only explicit HIGH/UNKNOWN risk annotations
+        # Inline LLM risk annotations for terminal tool calls. These are
+        # advisory self-reports, not security scans: LOW/MEDIUM does not
+        # prove a command is safe, and deterministic guards still run.
+        #   risky  — confirm explicit HIGH/UNKNOWN advisory annotations
         #   always — confirm each distinct terminal command
-        #   never  — bypass approval prompts like --yolo / approvals.mode=off
+        #   never  — ignore annotation prompts in trusted environments;
+        #             hardline/sudo-stdin floors still apply
         "confirmation_policy": "risky",
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
