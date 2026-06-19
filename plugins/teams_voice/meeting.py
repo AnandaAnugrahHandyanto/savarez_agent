@@ -111,7 +111,18 @@ async def _deliver_file_to_teams(conversation_id: str, file_path: str, display_n
         content = Path(file_path).read_bytes()
     except OSError:
         return False
-    pconfig = type("_PConfig", (), {"extra": {}})()
+    # Pass the resolved SharePoint site id (config.yaml or env) so the standalone
+    # sender can upload even though its own pconfig has no platform extra.
+    extra: dict = {}
+    try:
+        from .config import resolve_config
+
+        site_id = resolve_config().share_point_site_id
+        if site_id:
+            extra["share_point_site_id"] = site_id
+    except Exception:  # noqa: BLE001
+        pass
+    pconfig = type("_PConfig", (), {"extra": extra})()
     docx_ct = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     try:
         result = await _standalone_send_file(

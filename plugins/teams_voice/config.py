@@ -65,6 +65,9 @@ class TeamsVoiceConfig:
     wake_phrases: tuple[str, ...] = ("assistant", "hermes")
     # Post end-of-call meeting minutes to the Teams chat (opt-in).
     meeting_recap: bool = False
+    # SharePoint (OneDrive) site id (host,siteGuid,webGuid) for attaching files /
+    # minutes to the chat; empty = text-only delivery.
+    share_point_site_id: str = ""
 
     @property
     def configured(self) -> bool:
@@ -158,6 +161,10 @@ def resolve_config(extra: Mapping[str, Any] | None = None) -> TeamsVoiceConfig:
     meeting_recap = str(
         extra.get("meeting_recap", "") or os.getenv("TEAMS_VOICE_MEETING_RECAP", "")
     ).strip().lower() in ("1", "true", "yes", "on")
+    _sp = str(extra.get("share_point_site_id") or extra.get("sharePointSiteId") or "").strip()
+    if _sp.startswith("${"):  # an unexpanded ${VAR} reference — ignore, use env
+        _sp = ""
+    share_point_site_id = _sp or os.getenv("TEAMS_SHAREPOINT_SITE_ID", "").strip()
 
     return TeamsVoiceConfig(
         shared_secret=shared_secret,
@@ -173,6 +180,7 @@ def resolve_config(extra: Mapping[str, Any] | None = None) -> TeamsVoiceConfig:
         session_scope=session_scope,
         wake_phrases=wake or ("assistant", "hermes"),
         meeting_recap=meeting_recap,
+        share_point_site_id=share_point_site_id,
         allowlist_allow_names=_coerce_bool(extra.get("allowlist_allow_names"), "TEAMS_VOICE_ALLOWLIST_ALLOW_NAMES"),
         allow_remote_worker=_coerce_bool(extra.get("allow_remote_worker"), "TEAMS_VOICE_ALLOW_REMOTE_WORKER"),
     )
