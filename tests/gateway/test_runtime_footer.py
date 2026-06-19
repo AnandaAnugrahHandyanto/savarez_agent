@@ -10,9 +10,13 @@ import pytest
 from gateway.runtime_footer import (
     _home_relative_cwd,
     _model_short,
+    apply_runtime_prefix,
     build_footer_line,
+    build_prefix_line,
     format_runtime_footer,
+    format_runtime_prefix,
     resolve_footer_config,
+    resolve_prefix_config,
 )
 
 
@@ -200,6 +204,93 @@ def test_resolve_ignores_malformed_config():
     user = {"display": {"runtime_footer": "on"}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# runtime_prefix — first-line model markers
+# ---------------------------------------------------------------------------
+
+def test_format_runtime_prefix_uses_configured_label():
+    assert format_runtime_prefix(
+        model="openai/gpt-5.5",
+        labels={"gpt-5.5": "[gpt5.5]"},
+    ) == "[gpt5.5]"
+
+
+def test_format_runtime_prefix_normalizes_custom_label_to_bracket_marker():
+    assert format_runtime_prefix(
+        model="openai/gpt-5.5",
+        labels={"gpt-5.5": "gpt5.5:"},
+    ) == "[gpt5.5:]"
+
+
+def test_format_runtime_prefix_drops_multiline_custom_label():
+    assert format_runtime_prefix(
+        model="openai/gpt-5.5",
+        labels={"gpt-5.5": "gpt5.5\n@everyone"},
+    ) == "[gpt5.5]"
+
+
+def test_format_runtime_prefix_sanitizes_mention_like_custom_label():
+    assert format_runtime_prefix(
+        model="openai/gpt-5.5",
+        labels={"gpt-5.5": "@everyone"},
+    ) == "[everyone]"
+    assert format_runtime_prefix(
+        model="openai/gpt-5.5",
+        labels={"gpt-5.5": "<!channel>"},
+    ) == "[channel]"
+
+
+def test_format_runtime_prefix_falls_back_to_model_short():
+    assert format_runtime_prefix(model="openai/gpt-5.5") == "[gpt-5.5]"
+
+
+def test_resolve_prefix_platform_override_and_custom_label():
+    user = {
+        "display": {
+            "runtime_prefix": {"enabled": False, "labels": {"gpt": "[gpt]"}},
+            "platforms": {"slack": {"runtime_prefix": {"enabled": True}}},
+        },
+    }
+    cfg = resolve_prefix_config(user, "slack")
+    assert cfg["enabled"] is True
+    assert cfg["labels"]["gpt"] == "[gpt]"
+
+
+def test_build_prefix_line_empty_when_disabled():
+    assert build_prefix_line(
+        user_config={}, platform_key="slack", model="openai/gpt-5.5"
+    ) == ""
+
+
+def test_build_prefix_line_when_enabled_with_label():
+    assert build_prefix_line(
+        user_config={
+            "display": {
+                "runtime_prefix": {"enabled": True, "labels": {"gpt-5.5": "[gpt5.5]"}}
+            }
+        },
+        platform_key="slack",
+        model="openai/gpt-5.5",
+    ) == "[gpt5.5]"
+
+
+def test_apply_runtime_prefix_prepends_once():
+    assert apply_runtime_prefix("hello", "[gpt5.5]") == "[gpt5.5] hello"
+    assert apply_runtime_prefix("[gpt5.5] hello", "[gpt5.5]") == "[gpt5.5] hello"
+
+
+def test_prefixed_error_still_matches_error_prefix_for_voice_suppression():
+    """Regression guard for gateway voice-mode error suppression.
+
+    Gateway responses may be decorated as ``[model] Error: ...`` before the
+    auto-TTS decision runs; the error must still be recognized as an error.
+    """
+    import re
+
+    response = apply_runtime_prefix("Error: provider unavailable", "[gpt5.5]").lstrip()
+    assert re.match(r"^\[[^\]\n]{1,64}\]\s+Error:", response)
 
 
 # ---------------------------------------------------------------------------
