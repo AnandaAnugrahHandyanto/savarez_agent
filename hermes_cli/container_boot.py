@@ -199,12 +199,48 @@ def _maybe_migrate_legacy_gateway_run_state(
 
 
 def _read_container_argv() -> tuple[str, ...]:
-    """Best-effort read of the container PID 1 argv."""
+    """Best-effort read of the container's real command argv.
+
+    Under the legacy tini init, PID 1 ``/proc/1/cmdline`` directly holds
+    the hermes command.  Under s6-overlay v3, PID 1 is ``s6-svscan`` and
+    the real command is launched by ``rc.init`` on a separate PID.  Walk
+    ``/proc/*/cmdline`` to find a process whose argv contains
+    ``main-wrapper.sh`` — that process is the one that re-execs
+    ``hermes <subcommand>`` and carries the role we need to detect.
+    """
     try:
         raw = Path("/proc/1/cmdline").read_bytes()
+        argv = tuple(
+            part.decode("utf-8", "replace") for part in raw.split(b"\0") if part
+        )
     except OSError:
-        return ()
-    return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
+        argv = ()
+
+    # Fast path: legacy tini / s6 v2 where PID 1 is `init` or already
+    # contains main-wrapper.sh.
+    if argv and (Path(argv[0]).name == "init" or any(
+        "main-wrapper.sh" in a for a in argv
+    )):
+        return argv
+
+    # s6-overlay v3 fallback: walk /proc/*/cmdline for the rc.init-spawned
+    # process whose command line contains main-wrapper.sh.
+    try:
+        import glob as _glob
+        for proc_path in _glob.glob("/proc/[0-9]*/cmdline"):
+            try:
+                raw = Path(proc_path).read_bytes()
+            except OSError:
+                continue
+            parts = tuple(
+                part.decode("utf-8", "replace") for part in raw.split(b"\0") if part
+            )
+            if any("main-wrapper.sh" in a for a in parts):
+                return parts
+    except Exception:
+        pass
+
+    return argv
 
 
 def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
@@ -215,6 +251,11 @@ def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
     the wrapper re-execs ``hermes <subcommand>``. Peel ``init`` →
     ``main-wrapper.sh`` → ``hermes`` so callers can match on the bare
     subcommand. Shared by the legacy-gateway and dashboard role detectors.
+
+    Under s6-overlay v3 the argv may look like
+    ``/bin/sh -e /run/s6/basedir/scripts/rc.init top /opt/hermes/docker/main-wrapper.sh <subcommand> ...``;
+    this variant is also handled by locating ``main-wrapper.sh`` anywhere
+    in the prefix and stripping everything up to and including it.
     """
     args = list(argv)
     if args and Path(args[0]).name == "init":
@@ -223,6 +264,20 @@ def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
         args = args[1:]
     if args and Path(args[0]).name == "hermes":
         args = args[1:]
+
+    # s6-overlay v3 fallback: main-wrapper.sh may appear after rc.init
+    # args (e.g. ``/bin/sh -e .../rc.init top .../main-wrapper.sh dashboard ...``).
+    # Find and strip everything up to and including main-wrapper.sh.
+    if args:
+        for i, a in enumerate(args):
+            if "main-wrapper.sh" in a:
+                args = args[i + 1:]
+                break
+
+    # After stripping main-wrapper.sh, also strip a trailing "hermes" if present.
+    if args and Path(args[0]).name == "hermes":
+        args = args[1:]
+
     return args
 
 

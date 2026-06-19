@@ -849,3 +849,44 @@ def test_main_ignores_removed_skip_reconcile_env_var(
     assert rc == 0
     # Reconcile still ran despite the stale env var.
     assert (scandir / "gateway-worker").exists()
+
+
+def test_main_skips_reconcile_in_s6v3_dashboard_container(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """main() skips reconciliation when PID 1 is s6-svscan and the real
+    command is a dashboard — the s6-overlay v3 fallback path."""
+    from hermes_cli import container_boot
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("S6_PROFILE_GATEWAY_SCANDIR", str(scandir))
+
+    # Simulate the s6-overlay v3 scenario: _read_container_argv returns
+    # the rc.init-spawned process argv (found by walking /proc/*/cmdline).
+    rc_init_proc = (
+        "/bin/sh",
+        "-e",
+        "/run/s6/basedir/scripts/rc.init",
+        "top",
+        "/opt/hermes/docker/main-wrapper.sh",
+        "dashboard",
+        "--host", "0.0.0.0",
+        "--port", "9119",
+        "--no-open",
+        "--insecure",
+    )
+
+    monkeypatch.setattr(
+        container_boot,
+        "_read_container_argv",
+        lambda: rc_init_proc,
+    )
+
+    rc = container_boot.main()
+
+    assert rc == 0
+    assert not (scandir / "gateway-default").exists()
+    assert "skipping (dashboard container" in capsys.readouterr().out
