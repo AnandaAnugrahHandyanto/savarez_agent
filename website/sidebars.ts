@@ -35,6 +35,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/secrets/index',
             'user-guide/secrets/bitwarden',
+            'user-guide/secrets/infisical',
           ],
         },
         'user-guide/sessions',
