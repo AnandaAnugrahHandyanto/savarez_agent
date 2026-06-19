@@ -12,6 +12,7 @@ const {
   powerMonitor,
   protocol,
   safeStorage,
+  screen,
   session,
   shell,
   systemPreferences
@@ -25,6 +26,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
+const { resolveInitialBounds } = require('./window-bounds.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
   buildSessionWindowUrl,
@@ -427,6 +429,62 @@ function writePersistedTranslucency(intensity) {
 }
 
 let translucencyIntensity = readPersistedTranslucency()
+
+// ─── Main window size/position persistence ─────────────────────────
+// The window bounds are mirrored to a small JSON file under userData so the
+// window reopens where the user last left it, like a normal desktop app.
+// Decision logic (validation + off-screen recovery) lives in the pure,
+// unit-tested window-bounds.cjs.
+const WINDOW_BOUNDS_CONFIG_PATH = path.join(app.getPath('userData'), 'window-bounds.json')
+
+function readPersistedWindowBounds() {
+  try {
+    return JSON.parse(fs.readFileSync(WINDOW_BOUNDS_CONFIG_PATH, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function writePersistedWindowBounds(bounds) {
+  try {
+    fs.mkdirSync(path.dirname(WINDOW_BOUNDS_CONFIG_PATH), { recursive: true })
+    writeFileAtomic(WINDOW_BOUNDS_CONFIG_PATH, JSON.stringify(bounds, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[window-bounds] write failed: ${error?.message || error}`)
+  }
+}
+
+// Capture the window's current geometry. When maximized/fullscreen we keep the
+// pre-maximize rectangle (getNormalBounds) so un-maximizing later restores a
+// sane size.
+function captureWindowBounds(window) {
+  if (!window || window.isDestroyed()) return
+  try {
+    const isMaximized = Boolean(window.isMaximized?.())
+    const normal = window.getNormalBounds?.() || window.getBounds?.()
+    if (!normal) return
+    writePersistedWindowBounds({
+      x: normal.x,
+      y: normal.y,
+      width: normal.width,
+      height: normal.height,
+      isMaximized
+    })
+  } catch (error) {
+    rememberLog(`[window-bounds] capture failed: ${error?.message || error}`)
+  }
+}
+
+let windowBoundsSaveTimer = null
+
+// Debounced so a drag-resize doesn't write the file on every pixel.
+function scheduleWindowBoundsSave(window) {
+  if (windowBoundsSaveTimer) clearTimeout(windowBoundsSaveTimer)
+  windowBoundsSaveTimer = setTimeout(() => {
+    windowBoundsSaveTimer = null
+    captureWindowBounds(window)
+  }, 400)
+}
 
 // Map the 0–100 lever to a window opacity. Floor at 0.3 so the most see-through
 // setting is still usable rather than nearly invisible. 0 → fully opaque.
@@ -5156,9 +5214,20 @@ function createNewSessionWindow() {
 
 function createWindow() {
   const icon = getAppIconPath()
+  const displays = (() => {
+    try {
+      return screen.getAllDisplays()
+    } catch {
+      return []
+    }
+  })()
+  const initialBounds = resolveInitialBounds(readPersistedWindowBounds(), displays)
   mainWindow = new BrowserWindow({
-    width: 1220,
-    height: 800,
+    width: initialBounds.width,
+    height: initialBounds.height,
+    ...(Number.isFinite(initialBounds.x) && Number.isFinite(initialBounds.y)
+      ? { x: initialBounds.x, y: initialBounds.y }
+      : {}),
     minWidth: 400,
     minHeight: 620,
     title: 'Hermes',
@@ -5205,6 +5274,21 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
   })
+
+  if (initialBounds.isMaximized) {
+    // Electron has no `maximized` constructor option; maximize once the window
+    // is ready so the restored "normal" bounds are remembered underneath.
+    mainWindow.once('ready-to-show', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.maximize()
+    })
+  }
+
+  // Persist size/position so the window reopens where the user left it (#48539).
+  mainWindow.on('resize', () => scheduleWindowBoundsSave(mainWindow))
+  mainWindow.on('move', () => scheduleWindowBoundsSave(mainWindow))
+  mainWindow.on('maximize', () => scheduleWindowBoundsSave(mainWindow))
+  mainWindow.on('unmaximize', () => scheduleWindowBoundsSave(mainWindow))
+  mainWindow.on('close', () => captureWindowBounds(mainWindow))
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
