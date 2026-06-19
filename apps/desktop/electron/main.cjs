@@ -120,6 +120,7 @@ const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
+const IS_LINUX = process.platform === 'linux'
 const IS_WSL = isWslEnvironment()
 const APP_ROOT = app.getAppPath()
 
@@ -2032,7 +2033,40 @@ async function applyUpdatesPosixInApp() {
     path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
     path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
   ].find(directoryExists)
+  // Linux: the packaged build is an executable, not a bundle. Check for the
+  // newly-built binary so we can auto-restart into it after the update.
+  const rebuiltLinuxApp = IS_LINUX ? [
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'linux-unpacked', 'Hermes'),
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'linux-unpacked', 'hermes'),
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'linux-arm64-unpacked', 'Hermes'),
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'linux-arm64-unpacked', 'hermes')
+  ].find(fileExists) : null
   const targetApp = runningAppBundle()
+
+  // Linux in-place restart: the binary was already replaced on disk during the
+  // rebuild (`npm run pack` overwrites linux-unpacked/<exe>). We spawn a
+  // detached script that waits for us to quit, then launches the fresh binary.
+  if (IS_LINUX && rebuiltLinuxApp) {
+    emitUpdateProgress({ stage: 'restart', message: 'Restarting into the updated app…', percent: 95 })
+    const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
+    const launchScript = `#!/bin/bash\nset -u\nAPP_PID=${process.pid}\nNEW=${shellQuote(rebuiltLinuxApp)}\nfor _ in $(seq 1 240); do\n  kill -0 "$APP_PID" 2>/dev/null || break\n  sleep 0.5\ndone\nexec "$NEW"\n`
+    try {
+      fs.writeFileSync(scriptPath, launchScript, { mode: 0o755 })
+    } catch (err) {
+      emitUpdateProgress({
+        stage: 'done',
+        message: 'Backend + app updated. Restart Hermes to load the new version.',
+        percent: 100
+      })
+      rememberLog(`[updates] could not write linux restart script: ${err.message}; rebuilt app at ${rebuiltLinuxApp}`)
+      return { ok: true, backendUpdated: true, rebuiltApp: rebuiltLinuxApp }
+    }
+    const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
+    child.unref()
+    rememberLog(`[updates] launched linux restart: ${scriptPath} (${rebuiltLinuxApp})`)
+    setTimeout(() => app.quit(), 600)
+    return { ok: true, handedOff: true, rebuiltApp: rebuiltLinuxApp }
+  }
 
   // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
   // backend is updated; the next launch picks up the rebuilt GUI.
