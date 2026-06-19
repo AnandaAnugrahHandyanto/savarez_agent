@@ -459,6 +459,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("profile"):
+        result["profile"] = job["profile"]
+    if job.get("buttons"):
+        result["buttons"] = job["buttons"]
     return result
 
 
@@ -482,6 +486,8 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    profile: Optional[str] = None,
+    buttons: Optional[List[Any]] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -548,6 +554,8 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                profile=_normalize_optional_job_value(profile),
+                buttons=buttons,
             )
             return json.dumps(
                 {
@@ -681,6 +689,13 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if profile is not None:
+                # Empty string clears the field (restores old behaviour);
+                # otherwise pass raw — update_job() validates / normalizes.
+                updates["profile"] = _normalize_optional_job_value(profile) or None
+            if buttons is not None:
+                from cron.jobs import normalize_buttons
+                updates["buttons"] = normalize_buttons(buttons)
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -834,6 +849,27 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "profile": {
+                "type": "string",
+                "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
+            },
+            "buttons": {
+                "type": "array",
+                "description": "Optional inline buttons to attach to cron delivery on supported platforms (currently Telegram live gateway). Each item may be a string or an object with text and optional value. Button presses are recorded locally for later review.",
+                "items": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "value": {"type": "string"}
+                            },
+                            "required": ["text"]
+                        }
+                    ]
+                }
+            },
         },
         "required": ["action"]
     }
@@ -889,6 +925,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        buttons=args.get("buttons"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
