@@ -8,18 +8,21 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import codecs
 import contextvars
 import fnmatch
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
 import unicodedata
 from typing import Optional
-from hermes_cli.config import cfg_get
 
+from hermes_cli.config import cfg_get
+from tools.ansi_strip import strip_ansi
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,15 @@ logger = logging.getLogger(__name__)
 # would allow any skill running inside the process to set this variable and
 # instantly bypass all approval checks — a prompt-injection escalation path.
 _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
+
+# Freeze SUDO_PASSWORD presence at module import time — same prompt-injection
+# class as YOLO. A skill setting os.environ["SUDO_PASSWORD"] = "x" mid-session
+# would bypass the sudo stdin guard on the next call.
+_SUDO_PASSWORD_CONFIGURED: bool = "SUDO_PASSWORD" in os.environ
+
+# Maximum unwrap passes for iterative $()/backtick expansion. Prevents infinite
+# loops on crafted deeply-nested substitution chains.
+_MAX_UNWRAP_PASSES = 5
 
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
@@ -321,11 +333,12 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     Returns:
         (is_blocked: bool, description: str | None)
     """
-    if "SUDO_PASSWORD" in os.environ:
+    if _SUDO_PASSWORD_CONFIGURED:
         return (False, None)
-    normalized = _normalize_command_for_detection(command).lower()
-    if _SUDO_STDIN_RE.search(normalized):
-        return (True, "sudo password guessing via stdin (sudo -S)")
+    candidates, _ = _detection_candidates(command)
+    for candidate in candidates:
+        if _SUDO_STDIN_RE.search(candidate):
+            return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
 
 
@@ -335,10 +348,11 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
-            return (True, description)
+    candidates, _ = _detection_candidates(command)
+    for candidate in candidates:
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(candidate):
+                return (True, description)
     return (False, None)
 
 
@@ -558,18 +572,22 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
-    Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
-    null bytes, and normalizes Unicode fullwidth characters so that
+    Strips ANSI escape sequences (full ECMA-48), null bytes, zero-width
+    characters, and normalizes Unicode fullwidth characters so that
     obfuscation techniques cannot bypass the pattern-based detection.
     """
-    from tools.ansi_strip import strip_ansi
-
     # Strip all ANSI escape sequences (CSI, OSC, DCS, 8-bit C1, etc.)
     command = strip_ansi(command)
     # Strip null bytes
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Strip zero-width and format characters (Unicode category Cf).
+    # r\u200bm breaks \brm\b word boundaries; r\u200b\u200cm is invisible.
+    command = ''.join(c for c in command if unicodedata.category(c) != 'Cf')
+    # Decode ANSI-C quoted strings ($'r\155' -> rm) before backslash stripping
+    # so the octal/hex escapes inside $'...' are resolved, not destroyed.
+    command = _decode_ansi_c_quoting(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
@@ -653,17 +671,320 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return command
 
 
+def _unwrap_command_substitution(command: str) -> tuple[str, bool]:
+    """Iteratively unwrap $() and backtick command substitutions.
+
+    Uses bracket-counting to handle nested parens and parens inside
+    quoted strings. Runs up to _MAX_UNWRAP_PASSES iterations to prevent
+    infinite loops on crafted deeply-nested chains.
+
+    Returns (unwrapped_command, had_unresolvable).
+    """
+    def _unwrap_one_pass(s: str) -> str:
+        """Unwrap one level of $() and backtick substitutions."""
+        result: list[str] = []
+        i = 0
+        while i < len(s):
+            if s[i:i+2] == '$(' and (i == 0 or s[i-1] != '\\'):
+                depth = 1
+                j = i + 2
+                while j < len(s) and depth > 0:
+                    if s[j] == '(' and (j == 0 or s[j-1] != '\\'):
+                        depth += 1
+                    elif s[j] == ')' and (j == 0 or s[j-1] != '\\'):
+                        depth -= 1
+                    j += 1
+                if depth == 0:
+                    inner = s[i+2:j-1]
+                    result.append(' ')
+                    result.append(inner)
+                    result.append(' ')
+                    i = j
+                    continue
+            if s[i] == '`' and (i == 0 or s[i-1] != '\\'):
+                j = i + 1
+                while j < len(s) and (s[j] != '`' or s[j-1] == '\\'):
+                    j += 1
+                if j < len(s):
+                    inner = s[i+1:j]
+                    result.append(' ')
+                    result.append(inner)
+                    result.append(' ')
+                    i = j + 1
+                    continue
+            result.append(s[i])
+            i += 1
+        return ''.join(result)
+
+    result = command
+    had_unresolvable = False
+    for _ in range(_MAX_UNWRAP_PASSES):
+        prev = result
+        result = _unwrap_one_pass(result)
+        if result == prev:
+            break
+    else:
+        had_unresolvable = True
+    return result, had_unresolvable
+
+
+def _decode_ansi_c_quoting(command: str) -> str:
+    """Decode ANSI-C quoted strings ($'...') to their literal values.
+
+    $'r\\155' decodes to 'rm' (octal 155 = 'm'), $'r\\x6d' decodes to 'rm'
+    (hex 6d = 'm'). These bypass literal regex matching on the raw string.
+    """
+    def _replace(match: re.Match) -> str:
+        inner = match.group(1)
+        try:
+            decoded = codecs.decode(inner, 'unicode_escape')
+            return ' ' + decoded + ' '
+        except Exception:
+            return match.group(0)
+
+    return re.sub(r"\$'([^']*)'", _replace, command)
+
+
+def _expand_braces(command: str) -> list[str]:
+    """Expand bash brace expansions to all possible resulting strings.
+
+    {r,R}{m,M} produces rm, rM, Rm, RM. {rm,cp} produces rm, cp.
+    Returns a list of all expanded forms (or [command] if no braces found).
+    """
+    brace_re = re.compile(r'\{([^{}]*?,[^{}]*)\}')
+    matches = list(brace_re.finditer(command))
+    if not matches:
+        return [command]
+
+    segments: list[tuple[str, list[str] | str]] = []
+    last_end = 0
+    for m in matches:
+        if m.start() > last_end:
+            segments.append(('literal', command[last_end:m.start()]))
+        alternatives = [a.strip() for a in m.group(1).split(',')]
+        segments.append(('brace', alternatives))
+        last_end = m.end()
+    if last_end < len(command):
+        segments.append(('literal', command[last_end:]))
+
+    results: list[str] = ['']
+    for seg_type, seg_value in segments:
+        if seg_type == 'literal':
+            results = [r + seg_value for r in results]
+        else:
+            new_results: list[str] = []
+            for r in results:
+                for alt in seg_value:
+                    new_results.append(r + alt)
+            results = new_results
+
+    return results
+
+
+def _resolve_inline_vars(command: str) -> str:
+    """Resolve inline variable assignments within the same command string.
+
+    X=r; ${X}m -rf / resolves to rm -rf / by tracking VAR=val assignments
+    separated by ; or newline and substituting ${VAR} / $VAR references.
+    Only variables assigned in this command string are resolved; pre-existing
+    environment variables are not touched.
+    """
+    statements = re.split(r'[;\n]', command)
+    var_map: dict[str, str] = {}
+    resolved_parts: list[str] = []
+
+    for stmt in statements:
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        assign_match = re.match(r'^(\w+)=(\S+)$', stmt)
+        if assign_match:
+            var_map[assign_match.group(1)] = assign_match.group(2)
+            continue
+        for var_name, var_val in var_map.items():
+            stmt = re.sub(
+                r'\$\{' + re.escape(var_name) + r'\}',
+                var_val, stmt,
+            )
+            stmt = re.sub(
+                r'\$' + re.escape(var_name) + r'(?![a-zA-Z0-9_])',
+                var_val, stmt,
+            )
+        resolved_parts.append(stmt)
+
+    return '; '.join(resolved_parts) if resolved_parts else command
+
+
+def _detection_candidates(command: str) -> tuple[list[str], bool]:
+    """Return normalised forms of a command to match the denylist against.
+
+    The regex denylist matches a raw string, but bash performs backslash and
+    quote removal, command substitution, brace expansion, and variable
+    expansion *before* executing. Shell-level encodings of a blocked keyword
+    (``r\\m``, ``r''m``, ``$(echo rm)``, ``${0/x/r}m``, ``{r,R}{m,M}``,
+    ``$'r\\155'``) slip past a literal regex.
+
+    We generate multiple normalised forms that neutralise these encodings.
+    This only ever *adds* detections — it never suppresses an existing match —
+    so it cannot create a new bypass.
+
+    Returns (candidates, has_unresolvable) where has_unresolvable is True
+    when the command contains indirection that could not be statically
+    resolved (deeply nested substitutions, parameter expansion operators).
+    """
+    base = _normalize_command_for_detection(command).lower()
+    candidates: list[str] = [base]
+    has_unresolvable = False
+
+    # Step 1: shlex dequote — resolves backslash escapes so that
+    # \$(echo rm) becomes $(echo rm) before the unwrap step sees it.
+    shlex_candidates: list[str] = []
+    for cand in list(candidates):
+        try:
+            tokens = shlex.split(cand)
+        except ValueError:
+            continue
+        if tokens:
+            joined = ' '.join(tokens)
+            if joined not in candidates and joined not in shlex_candidates:
+                shlex_candidates.append(joined)
+    candidates.extend(shlex_candidates)
+
+    # Step 2: Iterative $()/backtick unwrap with bracket-counting.
+    # Runs on all candidates (backslashes already resolved by step 1).
+    unwrap_candidates: list[str] = []
+    for cand in list(candidates):
+        unwrapped, sub_unresolvable = _unwrap_command_substitution(cand)
+        if sub_unresolvable:
+            has_unresolvable = True
+        if unwrapped != cand and unwrapped not in candidates and unwrapped not in unwrap_candidates:
+            unwrap_candidates.append(unwrapped)
+    candidates.extend(unwrap_candidates)
+
+    # Step 4: shlex dequote again — unwrap may have exposed new quoted content
+    # (e.g. $(echo "'rm'") -> 'rm' after unwrap, then shlex resolves quotes).
+    shlex2_candidates: list[str] = []
+    for cand in list(candidates):
+        try:
+            tokens = shlex.split(cand)
+        except ValueError:
+            continue
+        if tokens:
+            joined = ' '.join(tokens)
+            if joined not in candidates and joined not in shlex2_candidates:
+                shlex2_candidates.append(joined)
+    candidates.extend(shlex2_candidates)
+
+    # Step 5: Brace expansion on each candidate.
+    brace_candidates: list[str] = []
+    for cand in list(candidates):
+        for expanded in _expand_braces(cand):
+            if expanded not in candidates and expanded not in brace_candidates:
+                brace_candidates.append(expanded)
+    candidates.extend(brace_candidates)
+
+    # Step 6: Inline variable assignment resolution.
+    inline_resolved = _resolve_inline_vars(base)
+    if inline_resolved != base and inline_resolved not in candidates:
+        candidates.append(inline_resolved)
+        try:
+            tokens = shlex.split(inline_resolved)
+        except ValueError:
+            tokens = None
+        if tokens:
+            joined = ' '.join(tokens)
+            if joined not in candidates:
+                candidates.append(joined)
+
+    # Step 7: Flag remaining unresolvable indirection.
+    # Parameter expansion operators that survived all normalisation.
+    for cand in candidates:
+        if re.search(r'\$\{[^}]*(?::[-=?+%#]|/)[^}]*\}', cand):
+            has_unresolvable = True
+            break
+
+    return candidates, has_unresolvable
+
+
+def _has_suspicious_indirection(command: str) -> bool:
+    """Check for shell indirection patterns that cannot be statically resolved.
+
+    These patterns indicate the command is using shell features to hide its
+    true intent — parameter expansion operators, history expansion, command
+    substitution, or non-Latin homoglyph characters. Commands with these
+    patterns are blocked unconditionally (before yolo/mode=off) because
+    there is no legitimate reason for an agent to construct command names
+    via indirection.
+    """
+    # Parameter expansion with operators: ${VAR:-val}, ${VAR:=val},
+    # ${VAR:?val}, ${VAR:+val}, ${VAR%pat}, ${VAR#pat}, ${VAR/pat/repl}
+    if re.search(r'\$\{[^}]*(?::[-=?+%#]|/)[^}]*\}', command):
+        return True
+
+    # Command substitution at command position: $(...) or backticks where
+    # a shell would begin parsing a new command (start of string, after
+    # separators, or after wrapper commands). This catches $(echo rm) -rf /
+    # and sudo $(echo rm) -rf / but allows benign argument-position uses
+    # like echo $(pwd) or mkdir -p "$(dirname /tmp/x)".
+    # Strip heredoc bodies first — $(pwd) inside a heredoc is content fed
+    # to the command on stdin, not a command to execute. Must run before
+    # quote stripping so quoted delimiters (<<'EOF') are preserved.
+    stripped = re.sub(
+        r"<<-?\s*(['\"]?)(\w+)\1[ \t]*\n.*?\n\2[ \t]*(?:\n|$)",
+        '', command, flags=re.DOTALL,
+    )
+    # Strip quoted content — a ; inside '; $(pwd)' is a literal string,
+    # not a command separator.
+    stripped = re.sub(r"'[^']*'", '', stripped)
+    stripped = re.sub(r'"[^"]*"', '', stripped)
+    if re.search(_CMDPOS + r'(\$\(|`)', stripped):
+        return True
+
+    # History expansion: !rm, !! (word-initial ! not in quotes)
+    if re.search(r'(?:^|[;&|\n\s])!(?:\w|!)', command):
+        return True
+
+    # Non-Latin script characters (homoglyph risk).
+    # Cyrillic г (U+0433) looks like Latin r, Greek ο (U+03BF) looks like o.
+    for c in command:
+        if not c.isalpha():
+            continue
+        cp = ord(c)
+        if (0x0400 <= cp <= 0x04FF or 0x0500 <= cp <= 0x052F or
+                0x0370 <= cp <= 0x03FF or 0x1F00 <= cp <= 0x1FFF):
+            return True
+
+    return False
+
+
+def _suspicious_indirection_block_result() -> dict:
+    """Build the standard block result for suspicious shell indirection."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            "BLOCKED (suspicious indirection): This command uses shell "
+            "features (parameter expansion, history expansion, or non-Latin "
+            "characters) that can hide the true command being executed. "
+            "There is no legitimate reason for an agent to construct command "
+            "names via indirection. If you genuinely need to run this "
+            "command, run it yourself in a terminal outside the agent."
+        ),
+    }
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
-            pattern_key = description
-            return (True, pattern_key, description)
+    candidates, _ = _detection_candidates(command)
+    for candidate in candidates:
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if pattern_re.search(candidate):
+                pattern_key = description
+                return (True, pattern_key, description)
     return (False, None, None)
 
 
@@ -1161,6 +1482,15 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    # Suspicious indirection floor: commands using shell features to hide
+    # their true intent (parameter expansion operators, history expansion,
+    # non-Latin homoglyph characters) are blocked unconditionally. There is
+    # no legitimate reason for an agent to construct command names via
+    # indirection — this fires BEFORE yolo/mode=off.
+    if _has_suspicious_indirection(command):
+        logger.warning("Suspicious indirection block: %s", command[:200])
+        return _suspicious_indirection_block_result()
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -1405,6 +1735,15 @@ def check_all_command_guards(command: str, env_type: str,
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
 
+    # == Suspicious indirection guard ==
+    # Commands using shell features to hide their true intent (parameter
+    # expansion operators, history expansion, non-Latin homoglyph characters)
+    # are blocked unconditionally. There is no legitimate reason for an agent
+    # to construct command names via indirection — fires BEFORE yolo/mode=off.
+    if _has_suspicious_indirection(command):
+        logger.warning("Suspicious indirection block: %s", command[:200])
+        return _suspicious_indirection_block_result()
+
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
@@ -1424,6 +1763,10 @@ def check_all_command_guards(command: str, env_type: str,
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
+                # Suspicious indirection is blocked unconditionally in cron too
+                if _has_suspicious_indirection(command):
+                    logger.warning("Suspicious indirection block (cron): %s", command[:200])
+                    return _suspicious_indirection_block_result()
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
                 if is_dangerous:
