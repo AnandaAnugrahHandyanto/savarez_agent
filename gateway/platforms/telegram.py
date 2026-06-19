@@ -6389,6 +6389,17 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
+                if ext == ".amr" or doc_mime in {"audio/amr", "audio/amr-nb", "audio/amr-wb"}:
+                    file_obj = await doc.get_file()
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".amr")
+                    event.media_urls = [cached_path]
+                    event.media_types = [doc_mime if doc_mime.startswith("audio/") else "audio/amr"]
+                    event.message_type = MessageType.VOICE
+                    logger.info("[Telegram] Cached user AMR document as voice at %s", cached_path)
+                    await self.handle_message(event)
+                    return
+
                 # NOTE: image-document handling is performed earlier in this
                 # function (ext in _TELEGRAM_IMAGE_EXTENSIONS or image/* mime),
                 # which returns before reaching here.  Any subsequent

@@ -149,6 +149,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
+    monkeypatch.setattr(
+        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +262,26 @@ class TestDocumentDownloadBlock:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls and event.media_urls[0].endswith("archive.zip")
         assert event.media_types == ["application/zip"]
+
+    @pytest.mark.asyncio
+    async def test_amr_document_is_routed_as_voice_audio(self, adapter):
+        """Telegram may deliver mobile recorder AMR files as documents; route them to STT."""
+        file_obj = _make_file_obj(b"#!AMR\n")
+        doc = _make_document(
+            file_name="call.amr",
+            mime_type="audio/amr-nb",
+            file_size=6,
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VOICE
+        assert event.media_urls and event.media_urls[0].endswith(".amr")
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["audio/amr-nb"]
 
     @pytest.mark.asyncio
     async def test_png_document_is_routed_as_image(self, adapter):
