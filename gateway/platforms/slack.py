@@ -320,6 +320,12 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     MARKDOWN_BLOCK_TEXT_LIMIT = 12000
+    # Slack accepts richer Block Kit markdown content than the top-level
+    # fallback ``text`` field on chat.postMessage/chat.update.  Keep the full
+    # response in the markdown block and cap only the plain-text fallback used
+    # for notifications, accessibility, and legacy clients.
+    MARKDOWN_BLOCK_FALLBACK_TEXT_LIMIT = 3000
+    MARKDOWN_BLOCK_FALLBACK_TRUNCATION_SUFFIX = "\n… [truncated fallback]"
     MARKDOWN_BLOCKS_PER_MESSAGE_LIMIT = 50
     MARKDOWN_BLOCK_MODE = "markdown_block"
     # Explicit opt-out values for platforms.slack.extra.rich_output that force
@@ -431,11 +437,23 @@ class SlackAdapter(BasePlatformAdapter):
     def _markdown_block_text(self, content: str) -> str:
         return self._sanitize_slack_rich_entities(content)
 
-    def _markdown_block_fallback_text(self, content: str) -> str:
+    def _truncate_markdown_block_fallback_text(self, text: str) -> str:
+        limit = self.MARKDOWN_BLOCK_FALLBACK_TEXT_LIMIT
+        if len(text) <= limit:
+            return text
+        suffix = self.MARKDOWN_BLOCK_FALLBACK_TRUNCATION_SUFFIX
+        if len(suffix) >= limit:
+            return text[:limit]
+        return f"{text[: limit - len(suffix)]}{suffix}"
+
+    def _markdown_block_fallback_text(self, content: str, *, truncate: bool = False) -> str:
         formatted = self.format_message(content)
         if formatted is None:
             return ""
-        return self._sanitize_slack_rich_entities(formatted)
+        sanitized = self._sanitize_slack_rich_entities(formatted)
+        if truncate:
+            return self._truncate_markdown_block_fallback_text(sanitized)
+        return sanitized
 
     def _should_attempt_markdown_block(
         self,
@@ -462,7 +480,7 @@ class SlackAdapter(BasePlatformAdapter):
         if len(block_text) > self.MARKDOWN_BLOCK_TEXT_LIMIT:
             raise ValueError("markdown block text exceeds Slack limit")
         return {
-            "text": self._markdown_block_fallback_text(content),
+            "text": self._markdown_block_fallback_text(content, truncate=True),
             "blocks": [{"type": "markdown", "text": block_text}],
         }
 

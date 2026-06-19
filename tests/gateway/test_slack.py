@@ -3161,6 +3161,21 @@ class TestSlackRichMarkdownBlocks:
         assert "*Title*" in payload["text"]
         assert "```python\nprint('hi')\n```" in payload["text"]
 
+    def test_markdown_block_payload_caps_only_top_level_fallback_text(self):
+        adapter = self._rich_adapter()
+        content = "## Long fallback\n\n" + "x" * (
+            adapter.MARKDOWN_BLOCK_FALLBACK_TEXT_LIMIT + 500
+        )
+
+        payload = adapter._build_markdown_block_payload(content)
+
+        assert payload["blocks"] == [{"type": "markdown", "text": content}]
+        assert len(payload["text"]) == adapter.MARKDOWN_BLOCK_FALLBACK_TEXT_LIMIT
+        assert payload["text"].endswith(
+            adapter.MARKDOWN_BLOCK_FALLBACK_TRUNCATION_SUFFIX
+        )
+        assert len(payload["blocks"][0]["text"]) > len(payload["text"])
+
     def test_markdown_block_payload_sanitizes_slack_entities(self):
         adapter = self._rich_adapter()
         payload = adapter._build_markdown_block_payload(
