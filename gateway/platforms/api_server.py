@@ -40,6 +40,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -89,9 +90,33 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+MAX_STT_UPLOAD_BYTES = 6 * 1024 * 1024
+STT_MULTIPART_OVERHEAD_BYTES = 128 * 1024
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+_AUDIO_MIME_EXTENSIONS = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/m4a": ".m4a",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/webm": ".webm",
+    "audio/x-m4a": ".m4a",
+    "audio/x-wav": ".wav",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+}
+
+
+def _audio_extension_for_mime(mime_type: str) -> str:
+    normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+    return _AUDIO_MIME_EXTENSIONS.get(normalized, "")
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1173,6 +1198,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "memory_write_api": False,
                 "skills_api": True,
                 "audio_api": False,
+                "audio_transcription": True,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
@@ -1200,7 +1226,117 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "audio_transcribe": {"method": "POST", "path": "/api/audio/transcribe"},
             },
+        })
+
+    async def _handle_audio_transcribe(self, request: Any) -> Any:
+        """POST /api/audio/transcribe — authenticated multipart STT endpoint."""
+        assert web is not None
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        content_length = request.headers.get("Content-Length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_STT_UPLOAD_BYTES + STT_MULTIPART_OVERHEAD_BYTES:
+                    return web.json_response(
+                        _openai_error("Audio recording is too large", code="audio_too_large"),
+                        status=413,
+                    )
+            except ValueError:
+                return web.json_response(
+                    _openai_error("Invalid Content-Length header", code="invalid_content_length"),
+                    status=400,
+                )
+
+        if not request.content_type.startswith("multipart/"):
+            return web.json_response(
+                _openai_error("Expected multipart/form-data", code="invalid_content_type"),
+                status=415,
+            )
+
+        temp_path = ""
+        saw_audio = False
+
+        try:
+            reader = await request.multipart()
+            async for part in reader:
+                name = part.name or ""
+                if name != "audio":
+                    return web.json_response(
+                        _openai_error(f"Unsupported multipart field: {name}", code="unsupported_field"),
+                        status=400,
+                    )
+                if saw_audio:
+                    return web.json_response(
+                        _openai_error("Exactly one audio file is allowed", code="too_many_audio_files"),
+                        status=400,
+                    )
+                if not part.filename:
+                    return web.json_response(
+                        _openai_error("Audio field must be a file", code="invalid_audio_file"),
+                        status=400,
+                    )
+
+                mime_type = (part.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                suffix = _audio_extension_for_mime(mime_type)
+                if not suffix:
+                    return web.json_response(
+                        _openai_error("Unsupported audio format", code="unsupported_audio_format"),
+                        status=415,
+                    )
+
+                saw_audio = True
+                total = 0
+                with tempfile.NamedTemporaryFile(prefix="hermes-api-voice-", suffix=suffix, delete=False) as tmp:
+                    temp_path = tmp.name
+                    while True:
+                        chunk = await part.read_chunk(64 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_STT_UPLOAD_BYTES:
+                            return web.json_response(
+                                _openai_error("Audio recording is too large", code="audio_too_large"),
+                                status=413,
+                            )
+                        tmp.write(chunk)
+
+            if not saw_audio:
+                return web.json_response(
+                    _openai_error("Exactly one audio file is required", code="missing_audio"),
+                    status=400,
+                )
+
+            from tools.transcription_tools import transcribe_audio
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, transcribe_audio, temp_path)
+        except Exception as exc:
+            logger.exception("[api_server] audio transcription failed")
+            return web.json_response(
+                _openai_error(f"Transcription failed: {exc}", err_type="server_error", code="transcription_failed"),
+                status=500,
+            )
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+        if not result.get("success"):
+            return web.json_response(
+                _openai_error(result.get("error") or "Transcription failed", code="transcription_failed"),
+                status=400,
+            )
+
+        return web.json_response({
+            "ok": True,
+            "transcript": str(result.get("transcript") or "").strip(),
+            "provider": result.get("provider"),
         })
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
@@ -4173,6 +4309,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            self._app.router.add_post("/api/audio/transcribe", self._handle_audio_transcribe)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
