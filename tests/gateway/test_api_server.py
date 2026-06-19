@@ -584,15 +584,23 @@ class TestHealthDetailedEndpoint:
 class TestModelsEndpoint:
     @pytest.mark.asyncio
     async def test_models_returns_hermes_agent(self, adapter):
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/models")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["object"] == "list"
-            assert len(data["data"]) == 1
-            assert data["data"][0]["id"] == "hermes-agent"
-            assert data["data"][0]["owned_by"] == "hermes"
+        with patch.object(adapter, "_available_model_routes", return_value=[{
+            "id": "hermes-agent",
+            "route": "default",
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+            "profile_model": True,
+        }]):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "list"
+                assert len(data["data"]) == 1
+                assert data["data"][0]["id"] == "hermes-agent"
+                assert data["data"][0]["owned_by"] == "hermes"
+                assert data["data"][0]["hermes"]["route"] == "default"
 
     @pytest.mark.asyncio
     async def test_models_returns_profile_name(self):
@@ -600,12 +608,19 @@ class TestModelsEndpoint:
         with patch("gateway.platforms.api_server.APIServerAdapter._resolve_model_name", return_value="lucas"):
             adapter = _make_adapter()
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/models")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["data"][0]["id"] == "lucas"
-            assert data["data"][0]["root"] == "lucas"
+        with patch.object(adapter, "_available_model_routes", return_value=[{
+            "id": "lucas",
+            "route": "default",
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+            "profile_model": True,
+        }]):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["data"][0]["id"] == "lucas"
+                assert data["data"][0]["root"] == "lucas"
 
     @pytest.mark.asyncio
     async def test_models_returns_explicit_model_name(self):
@@ -627,6 +642,91 @@ class TestModelsEndpoint:
         """Named profile uses the profile name as model name."""
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="lucas"):
             assert APIServerAdapter._resolve_model_name("") == "lucas"
+
+    def test_available_model_routes_include_primary_and_fallbacks(self, adapter):
+        cfg = {
+            "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+            "fallback_providers": [
+                {"provider": "google-gemini-cli", "model": "gemini-3.1-pro-preview"},
+                {"provider": "xai-oauth", "model": "grok-4.3"},
+            ],
+        }
+        with patch("gateway.run._load_gateway_config", return_value=cfg), \
+             patch("gateway.run._resolve_gateway_model", return_value="gpt-5.5"), \
+             patch("gateway.run.get_fallback_chain", return_value=cfg["fallback_providers"]):
+            routes = adapter._available_model_routes()
+
+        assert [route["id"] for route in routes] == [
+            "hermes-agent",
+            "openai-codex/gpt-5.5",
+            "google-gemini-cli/gemini-3.1-pro-preview",
+            "xai-oauth/grok-4.3",
+        ]
+        assert routes[0]["profile_model"] is True
+        assert routes[-1]["provider"] == "xai-oauth"
+
+    def test_model_entry_sanitizes_provider_metadata_by_default(self):
+        entry = APIServerAdapter._model_entry({
+            "id": "hermes/architect",
+            "route": "alias",
+            "provider": "opencode-zen",
+            "model": "claude-opus-4-7",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "sk-secret",
+            "route_class": "frontier-architect",
+            "label": "Architect",
+        }, created=123)
+
+        assert entry["id"] == "hermes/architect"
+        assert entry["hermes"] == {
+            "route": "alias",
+            "profile_model": False,
+            "label": "Architect",
+            "route_class": "frontier-architect",
+        }
+        assert "provider" not in entry["hermes"]
+        assert "model" not in entry["hermes"]
+        assert "api_key" not in str(entry)
+
+    def test_available_model_routes_can_advertise_only_configured_aliases(self, adapter):
+        cfg = {
+            "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+            "fallback_providers": [{"provider": "xai-oauth", "model": "grok-4.3"}],
+            "api_server": {
+                "model_routes_only": True,
+                "model_aliases": [
+                    {
+                        "id": "hermes/architect",
+                        "provider": "opencode-zen",
+                        "model": "claude-opus-4-7",
+                        "route_class": "frontier-architect",
+                        "label": "Architect",
+                    }
+                ],
+            },
+        }
+        with patch("gateway.run._load_gateway_config", return_value=cfg), \
+             patch("gateway.run._resolve_gateway_model", return_value="gpt-5.5"), \
+             patch("gateway.run.get_fallback_chain", return_value=cfg["fallback_providers"]):
+            routes = adapter._available_model_routes()
+
+        assert [route["id"] for route in routes] == ["hermes/architect"]
+        assert routes[0]["provider"] == "opencode-zen"
+        assert routes[0]["model"] == "claude-opus-4-7"
+        assert routes[0]["accept_model_name"] is False
+
+    def test_route_for_requested_model_accepts_route_id_or_model_name(self, adapter):
+        routes = [
+            {"id": "hermes-agent", "route": "default", "provider": "openai-codex", "model": "gpt-5.5"},
+            {"id": "xai-oauth/grok-4.3", "route": "fallback", "provider": "xai-oauth", "model": "grok-4.3", "accept_model_name": True},
+            {"id": "hermes/architect", "route": "alias", "provider": "opencode-zen", "model": "claude-opus-4-7"},
+        ]
+        with patch.object(adapter, "_available_model_routes", return_value=routes):
+            assert adapter._route_for_requested_model("xai-oauth/grok-4.3") == routes[1]
+            assert adapter._route_for_requested_model("grok-4.3") == routes[1]
+            assert adapter._route_for_requested_model("hermes/architect") == routes[2]
+            assert adapter._route_for_requested_model("claude-opus-4-7") is None
+            assert adapter._route_for_requested_model("missing") is None
 
     @pytest.mark.asyncio
     async def test_models_requires_auth(self, auth_adapter):
@@ -671,6 +771,7 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["model_route_selection"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
@@ -874,6 +975,35 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_locked_model_routes_reject_raw_provider_id(self, adapter):
+        cfg = {
+            "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+            "api_server": {
+                "model_routes_only": True,
+                "model_aliases": [
+                    {"id": "hermes/architect", "provider": "openai-codex", "model": "gpt-5.5"}
+                ],
+            },
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.run._load_gateway_config", return_value=cfg), \
+                 patch("gateway.run._resolve_gateway_model", return_value="gpt-5.5"), \
+                 patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "openai-codex/gpt-5.5",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+                assert resp.status == 400
+                data = await resp.json()
+
+        assert data["error"]["code"] == "unsupported_model"
+        mock_run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):

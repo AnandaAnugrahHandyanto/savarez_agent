@@ -403,6 +403,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5",
         "gpt-5-codex",
         "gpt-5-nano",
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-opus-4-5",
         "claude-opus-4-1",

@@ -67,6 +67,122 @@ def make_agent_and_state():
     return acp_agent, state, fake, conn
 
 
+def test_acp_model_state_includes_configured_hermes_fallback_routes(monkeypatch):
+    """Paseo/Zed ACP model pickers should expose Hermes fallback routes."""
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.provider = "openai-codex"
+    fake.model = "gpt-5.5"
+    state.model = "gpt-5.5"
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod(
+            "hermes_cli.models",
+            curated_models_for_provider=lambda provider: [("gpt-5.5", "current family")],
+            normalize_provider=lambda provider: str(provider or "").strip().lower(),
+            provider_label=lambda provider: str(provider or "").strip(),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "gateway.run",
+        mod(
+            "gateway.run",
+            _load_gateway_config=lambda: {
+                "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+                "api_server": {
+                    "model_aliases": [
+                        {
+                            "id": "hermes/design",
+                            "provider": "opencode-zen",
+                            "model": "claude-opus-4-7",
+                            "label": "Creative Design / Claude Opus 4.7 Zen",
+                            "route_class": "creative-design",
+                        },
+                        {
+                            "id": "hermes/opus-zen",
+                            "provider": "opencode-zen",
+                            "model": "claude-opus-4-7",
+                            "label": "Claude Opus 4.7 / OpenCode Zen",
+                            "route_class": "frontier-architect",
+                        },
+                    ]
+                },
+            },
+            _resolve_gateway_model=lambda _cfg=None: "gpt-5.5",
+            get_fallback_chain=lambda _cfg=None: [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+                {"provider": "xai-oauth", "model": "grok-4.3"},
+            ],
+        ),
+    )
+
+    model_state = acp_agent._build_model_state(state)
+    assert model_state is not None
+
+    ids = [model.model_id for model in model_state.available_models]
+    names = [model.name for model in model_state.available_models]
+    assert "openai-codex:gpt-5.5" in ids
+    assert "openrouter:anthropic/claude-sonnet-4.6" in ids
+    assert "xai-oauth:grok-4.3" in ids
+    assert "hermes/design" in ids
+    assert "hermes/opus-zen" in ids
+    assert "Creative Design / Claude Opus 4.7 Zen" in names
+    assert "Claude Opus 4.7 / OpenCode Zen" in names
+    assert "xai-oauth/grok-4.3" in names
+
+
+def test_acp_model_selection_resolves_api_server_aliases(monkeypatch):
+    """ACP clients should be able to select curated Paseo/Hermes aliases."""
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(
+        sys.modules,
+        "gateway.run",
+        mod(
+            "gateway.run",
+            _load_gateway_config=lambda: {
+                "api_server": {
+                    "model_aliases": [
+                        {
+                            "id": "hermes/opus-zen",
+                            "provider": "opencode-zen",
+                            "model": "claude-opus-4-7",
+                        }
+                    ]
+                }
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod(
+            "hermes_cli.models",
+            normalize_provider=lambda provider: str(provider or "").strip().lower(),
+            parse_model_input=lambda raw, current: (current, raw),
+            detect_provider_for_model=lambda raw, current: None,
+        ),
+    )
+
+    assert HermesACPAgent._resolve_model_selection("hermes/opus-zen", "openai-codex") == (
+        "opencode-zen",
+        "claude-opus-4-7",
+    )
+
+
 def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     """ACP sessions persist to SessionDB; recall must receive the same DB handle."""
     captured = {}
