@@ -918,6 +918,30 @@ def save_permanent_allowlist(patterns: set):
 # Approval prompting + orchestration
 # =========================================================================
 
+def _risk_context_for_description(description: str) -> str:
+    """Return a concise user-facing risk explanation for an approval reason."""
+    desc = (description or "").lower()
+    if not desc:
+        return "Review the command carefully before approving it."
+    if "recursive delete" in desc or "delete files" in desc or "delete in root path" in desc:
+        return "May permanently remove many files; verify the target path before approving."
+    if any(term in desc for term in ("raw block device", "format filesystem", "mkfs", "wipe")):
+        return "Can overwrite or erase disks/filesystems and may be unrecoverable."
+    if any(term in desc for term in ("shutdown", "reboot", "poweroff", "kill all processes", "init 0/6", "telinit")):
+        return "Can interrupt running processes/services and may lose unsaved work."
+    if "sudo" in desc or "privilege" in desc or "privileged" in desc:
+        return "Runs with elevated privileges and can modify protected system files."
+    if "pipe" in desc and "shell" in desc:
+        return "Downloads or streams content into a shell, so the source must be trusted."
+    if "shell" in desc or "script execution" in desc or "-c flag" in desc:
+        return "Runs an arbitrary script or shell snippet; review the full command before approving."
+    if "drop" in desc or "delete without where" in desc or "database" in desc:
+        return "Can destroy database records and may be hard to recover."
+    if "security scan" in desc:
+        return "A security scanner flagged this command; review the finding before approving."
+    return "Review the command carefully; approving will let it run on this environment."
+
+
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
@@ -1202,10 +1226,12 @@ def check_dangerous_command(command: str, env_type: str,
         return {"approved": True, "message": None}
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+        risk_context = _risk_context_for_description(description)
         submit_pending(session_key, {
             "command": command,
             "pattern_key": pattern_key,
             "description": description,
+            "risk_context": risk_context,
         })
         return {
             "approved": False,
@@ -1213,9 +1239,11 @@ def check_dangerous_command(command: str, env_type: str,
             "status": "approval_required",
             "command": command,
             "description": description,
+            "risk_context": risk_context,
             "message": (
                 f"⚠️ This command is potentially dangerous ({description}). "
-                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+                f"Risk: {risk_context} Asking the user for approval.\n\n"
+                f"**Command:**\n```\n{command}\n```"
             ),
         }
 
@@ -1510,6 +1538,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Combine descriptions for a single approval prompt
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    risk_context = _risk_context_for_description(combined_desc)
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
@@ -1533,6 +1562,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "risk_context": risk_context,
                 # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
                 # "always" to session scope below, so the UI must not offer it.
                 "allow_permanent": not has_tirith,
@@ -1602,6 +1632,7 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": combined_desc,
+            "risk_context": risk_context,
         })
         return {
             "approved": False,
@@ -1610,8 +1641,10 @@ def check_all_command_guards(command: str, env_type: str,
             "approval_pending": True,
             "command": command,
             "description": combined_desc,
+            "risk_context": risk_context,
             "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+                f"⚠️ {combined_desc}. Risk: {risk_context} "
+                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
             ),
         }
 
