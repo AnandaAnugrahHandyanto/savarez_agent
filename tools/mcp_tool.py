@@ -541,6 +541,68 @@ def _cache_mcp_image_block(block) -> str:
     return f"MEDIA:{image_path}"
 
 
+def _coerce_mcp_block_to_text(block) -> str:
+    """Coerce a non-text, non-image MCP content block into a readable note.
+
+    MCP tool results can include block types beyond text and images:
+    ``resource_link`` (a pointer to a resource by URI), an embedded
+    ``resource`` (inline text or a binary blob), ``audio``, and occasionally
+    malformed or unknown shapes. The text and image branches in the caller
+    handle the common cases; this fallback ensures the remaining block types
+    are surfaced to the agent rather than silently dropped, which previously
+    left the agent with an empty or partial tool result and no way to tell
+    content was lost.
+
+    Probes by attribute rather than isinstance against MCP SDK classes: the
+    ``mcp`` package is an optional/lazy dependency that is not importable in
+    every process (e.g. cron without gateway deps), so the coercion must not
+    require importing SDK block types.
+
+    Does not inline binary payloads (blobs, audio, video) into the model
+    context; it notes the MIME type and that a binary block was returned.
+    Returns an empty string only when there is genuinely nothing to surface.
+    """
+    uri = getattr(block, "uri", None)
+    resource = getattr(block, "resource", None)
+
+    # resource_link: a bare pointer to a resource by URI (no embedded payload).
+    if uri is not None and resource is None:
+        bits = [f"uri={uri}"]
+        for attr in ("name", "title", "mimeType"):
+            value = getattr(block, attr, None)
+            if value:
+                bits.append(f"{attr}={value}")
+        return "[MCP resource_link " + ", ".join(bits) + "]"
+
+    # embedded resource: carries either inline text or a binary blob.
+    if resource is not None:
+        res_text = getattr(resource, "text", None)
+        if res_text:
+            return res_text
+        blob = getattr(resource, "blob", None)
+        if blob is not None:
+            mime = getattr(resource, "mimeType", None) or "application/octet-stream"
+            res_uri = getattr(resource, "uri", None)
+            tail = f", uri={res_uri}" if res_uri else ""
+            return f"[MCP binary resource: {mime}{tail} (not inlined)]"
+        return f"[MCP resource block (unrendered): {resource!r}]"
+
+    # audio (and any other base64 data block that did not cache as an image,
+    # including a malformed image): note the MIME type, do not inline base64.
+    mime_type = getattr(block, "mimeType", None)
+    if mime_type and getattr(block, "data", None) is not None:
+        family = str(mime_type).split("/", 1)[0].strip().lower()
+        label = {"audio": "audio", "image": "image", "video": "video"}.get(
+            family, "binary"
+        )
+        return f"[MCP {label} block: {mime_type} (not inlined)]"
+
+    # unknown block type: emit a compact note so nothing vanishes silently.
+    block_type = getattr(block, "type", None) or type(block).__name__
+    logger.debug("MCP tool result: surfacing unhandled block type %r", block_type)
+    return f"[MCP {block_type} block (unrendered): {block!r}]"
+
+
 # ---------------------------------------------------------------------------
 # Remote MCP URL validation
 # ---------------------------------------------------------------------------
@@ -2840,6 +2902,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)
+                    continue
+                # Any block that is neither text nor a cached image
+                # (resource_link, embedded resource, audio, unknown shapes)
+                # is coerced to a readable note instead of being silently
+                # dropped, so the agent never receives an empty result that
+                # hides content the MCP server actually returned.
+                coerced = _coerce_mcp_block_to_text(block)
+                if coerced:
+                    parts.append(coerced)
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.
