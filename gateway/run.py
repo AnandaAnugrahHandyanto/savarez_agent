@@ -2359,6 +2359,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
+        # shadow_clone inbox — thread-safe queue + per-delegation routing cache.
+        # Thread-safe enqueue from the worker thread; drain from the event loop.
+        # _shadow_clone_inbox: list of (delegation_id, routing_meta_dict) tuples.
+        # _shadow_clone_routing: delegation_id -> routing_meta_dict (pre-captured).
+        # _shadow_clone_drain_locks: asyncio.Lock per delegation_id (C1: prevents
+        #   concurrent drain of the same delegation).
+        import collections as _collections
+        self._shadow_clone_inbox: "_collections.deque[tuple]" = _collections.deque()
+        self._shadow_clone_inbox_lock = __import__("threading").Lock()
+        self._shadow_clone_routing: "Dict[str, Dict[str, Any]]" = {}
+        self._shadow_clone_drain_locks: "Dict[str, asyncio.Lock]" = {}
+
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
@@ -5512,6 +5524,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # result back into its originating session as a new turn, covering the
         # idle case where the subagent finishes with no agent turn running.
         asyncio.create_task(self._async_delegation_watcher())
+
+        # Recover in-flight shadow_clone tasks from SQLite (survive gateway restart).
+        # Rows dispatched within 2 h are still considered live; older rows become
+        # 'timeout' so GC can clean them up.  Best-effort — never prevents startup.
+        try:
+            from hermes_state import SessionDB
+            _sc_db = SessionDB()
+            _inflight = _sc_db.recover_inflight_shadow_clone_tasks(ttl_seconds=7200)
+            if _inflight:
+                logger.info(
+                    "shadow_clone: recovered %d in-flight task(s) from state.db "
+                    "(%d timed-out, %d still running)",
+                    len(_inflight),
+                    sum(1 for r in _inflight if r.get("status") == "timeout"),
+                    sum(1 for r in _inflight if r.get("status") == "running"),
+                )
+        except Exception as _sc_exc:
+            logger.debug("shadow_clone startup recovery skipped: %s", _sc_exc)
 
         logger.info("Press Ctrl+C to stop")
         
@@ -12554,9 +12584,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Mirrors the CLI's idle ``process_loop`` drain. Stays silent when the
         queue has nothing for us; ignores non-async event types (those are
         handled by ``_run_process_watcher`` / the post-turn drain).
+        Also runs shadow_clone GC every ~5 minutes (retain_hours=24).
         """
         await asyncio.sleep(3)  # let platforms finish connecting
         from tools.process_registry import process_registry as _pr
+        _gc_interval = max(1, int(300 / interval))  # ticks between GC runs
+        _tick = 0
         while self._running:
             try:
                 # Peek the queue for async-delegation events. We must NOT
@@ -12577,6 +12610,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pr.completion_queue.put(evt)
                 for evt in async_events:
                     self._enrich_async_delegation_routing(evt)
+                    # C4: shadow_clone routing branch — if this completion came
+                    # from a shadow_clone (background=true) delegation, enqueue
+                    # the routing metadata for SQLite persistence and drain it.
+                    if evt.get("shadow_clone"):
+                        delegation_id = evt.get("delegation_id", "")
+                        routing_meta = {
+                            k: evt.get(k)
+                            for k in ("platform", "chat_id", "thread_id",
+                                      "chat_type", "session_key")
+                            if evt.get(k)
+                        }
+                        self._shadow_clone_enqueue(delegation_id, routing_meta)
+                        await self._drain_shadow_clone_inbox()
                     synth_text = _format_gateway_process_notification(evt)
                     if not synth_text:
                         continue
@@ -12584,9 +12630,100 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self._inject_watch_notification(synth_text, evt)
                     except Exception as e:
                         logger.error("Async delegation injection error: %s", e)
+
+                # shadow_clone GC: every ~5 minutes, delete old terminal rows.
+                _tick += 1
+                if _tick % _gc_interval == 0:
+                    try:
+                        from hermes_state import SessionDB
+                        _n = await asyncio.to_thread(
+                            lambda: SessionDB().gc_shadow_clone_tasks(retain_hours=24)
+                        )
+                        if _n:
+                            logger.debug("shadow_clone GC: deleted %d expired row(s)", _n)
+                    except Exception as _gc_exc:
+                        logger.debug("shadow_clone GC error: %s", _gc_exc)
+
             except Exception as e:
                 logger.debug("Async delegation watcher error: %s", e)
             await asyncio.sleep(interval)
+
+    def _shadow_clone_enqueue(
+        self, delegation_id: str, routing_meta: "Dict[str, Any]"
+    ) -> None:
+        """Thread-safe O(1) enqueue for a completed shadow-clone result.
+
+        Called from the async-delegation worker thread (NOT the event loop).
+        routing_meta is pre-captured here (C1) so the event-loop drain can
+        route the notification without touching shared mutable state.
+        """
+        # C1: capture routing_meta on the CALLING thread (worker), before any
+        # await that could let the caller's context change.
+        with self._shadow_clone_inbox_lock:
+            self._shadow_clone_routing[delegation_id] = dict(routing_meta)
+            self._shadow_clone_inbox.append(delegation_id)
+
+    async def _drain_shadow_clone_inbox(self) -> None:
+        """Event-loop-side drain: process all queued shadow-clone completions.
+
+        C2: uses connect_closing() so every kanban DB connection is closed
+        after each operation — no FD leak in the long-lived gateway process.
+        C3: wraps kanban I/O in asyncio.to_thread() so SQLite writes don't
+        block the event loop.
+        """
+        # Snapshot and clear the inbox atomically (the lock is minimal: just
+        # swap the deque so the worker thread can immediately enqueue again).
+        with self._shadow_clone_inbox_lock:
+            if not self._shadow_clone_inbox:
+                return
+            pending = list(self._shadow_clone_inbox)
+            self._shadow_clone_inbox.clear()
+
+        for delegation_id in pending:
+            routing_meta = self._shadow_clone_routing.pop(delegation_id, {})
+            # Per-delegation asyncio.Lock (C1): prevents two concurrent drains
+            # of the same delegation_id if the inbox is drained from two paths.
+            if delegation_id not in self._shadow_clone_drain_locks:
+                self._shadow_clone_drain_locks[delegation_id] = asyncio.Lock()
+            async with self._shadow_clone_drain_locks[delegation_id]:
+                try:
+                    # C3: wrap SQLite I/O in asyncio.to_thread to avoid
+                    # blocking the event loop on disk writes.
+                    await asyncio.to_thread(
+                        self._shadow_clone_persist_routing,
+                        delegation_id,
+                        routing_meta,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "shadow_clone drain failed for %s: %s", delegation_id, exc
+                    )
+                finally:
+                    # Clean up the per-delegation lock once drained.
+                    self._shadow_clone_drain_locks.pop(delegation_id, None)
+
+    def _shadow_clone_persist_routing(
+        self, delegation_id: str, routing_meta: "Dict[str, Any]"
+    ) -> None:
+        """Persist routing_meta onto the shadow_clone row (runs in thread pool).
+
+        C2: uses connect_closing() via SessionDB — the _execute_write path
+        opens and closes the connection per transaction.
+        """
+        try:
+            from hermes_state import SessionDB
+            import json as _json
+            db = SessionDB()
+            db.update_shadow_clone_task(
+                delegation_id,
+                status="completed",
+                routing_meta=_json.dumps(routing_meta, default=str) if routing_meta else None,
+            )
+        except Exception as exc:
+            logger.debug(
+                "shadow_clone routing persist skipped for %s: %s",
+                delegation_id, exc,
+            )
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """

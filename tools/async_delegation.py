@@ -36,6 +36,7 @@ logic stays in one place.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -149,6 +150,58 @@ def _prune_completed_locked() -> None:
         _records.pop(rid, None)
 
 
+# ---------------------------------------------------------------------------
+# SQLite persistence helpers (shadow_clone only)
+# ---------------------------------------------------------------------------
+
+def _sqlite_insert_shadow_clone(
+    *,
+    delegation_id: str,
+    session_key: str,
+    goal: Optional[str],
+    kanban_ticket_id: Optional[str],
+    dispatched_at: float,
+) -> None:
+    """Write a new 'running' row to shadow_clone_tasks.  Best-effort."""
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        db.insert_shadow_clone_task(
+            delegation_id=delegation_id,
+            session_key=session_key,
+            goal=goal,
+            kanban_ticket_id=kanban_ticket_id,
+            dispatched_at=dispatched_at,
+        )
+    except Exception as exc:  # pragma: no cover — best-effort
+        logger.warning(
+            "shadow_clone SQLite insert failed for %s: %s", delegation_id, exc
+        )
+
+
+def _sqlite_update_shadow_clone(
+    *,
+    delegation_id: str,
+    status: str,
+    result: Dict[str, Any],
+    completed_at: float,
+) -> None:
+    """Update an existing shadow_clone_tasks row.  Best-effort."""
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        db.update_shadow_clone_task(
+            delegation_id,
+            status=status,
+            result_json=json.dumps(result, default=str) if result else None,
+            completed_at=completed_at,
+        )
+    except Exception as exc:  # pragma: no cover — best-effort
+        logger.warning(
+            "shadow_clone SQLite update failed for %s: %s", delegation_id, exc
+        )
+
+
 def dispatch_async_delegation(
     *,
     goal: str,
@@ -160,6 +213,8 @@ def dispatch_async_delegation(
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    shadow_clone: bool = False,
+    kanban_ticket_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -204,6 +259,8 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "shadow_clone": shadow_clone,
+        "kanban_ticket_id": kanban_ticket_id,
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -224,6 +281,19 @@ def dispatch_async_delegation(
                 ),
             }
         _records[delegation_id] = record
+
+    # Persist to SQLite BEFORE submitting the worker so the row exists if
+    # the runner finishes extremely fast (before the insert below).
+    # Only for shadow_clone delegations (background=True); sync delegations
+    # are ephemeral by design.
+    if shadow_clone:
+        _sqlite_insert_shadow_clone(
+            delegation_id=delegation_id,
+            session_key=session_key,
+            goal=goal,
+            kanban_ticket_id=kanban_ticket_id,
+            dispatched_at=dispatched_at,
+        )
 
     executor = _get_executor(max_async_children)
 
@@ -260,6 +330,7 @@ def dispatch_async_delegation(
         "Dispatched async delegation %s (session_key=%s): %s",
         delegation_id, session_key or "<cli>", (goal or "")[:80],
     )
+
     return {"status": "dispatched", "delegation_id": delegation_id}
 
 
@@ -275,6 +346,16 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
         _prune_completed_locked()
+
+    # Update SQLite persistence after releasing the in-memory lock (C3: no
+    # event-loop blocking here — _finalize runs on the worker thread already).
+    if event_record.get("shadow_clone"):
+        _sqlite_update_shadow_clone(
+            delegation_id=delegation_id,
+            status=status,
+            result=result,
+            completed_at=event_record["completed_at"],
+        )
 
     _push_completion_event(event_record, result, status)
 
@@ -323,6 +404,8 @@ def _push_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
+        # Carry through shadow_clone flag so the gateway watcher can branch (C4).
+        "shadow_clone": record.get("shadow_clone", False),
     }
     try:
         process_registry.completion_queue.put(evt)
