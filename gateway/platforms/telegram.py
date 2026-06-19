@@ -2685,9 +2685,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
-            return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize, metadata=metadata,
-            )
+            if not finalize:
+                # During streaming, truncate instead of splitting to avoid
+                # creating continuation messages that cause an infinite loop.
+                # The final message will be properly split when finalize=True.
+                content = self.truncate_message(
+                    content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+                )[0]
+            else:
+                return await self._edit_overflow_split(
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                )
 
         try:
             if not finalize:
@@ -2736,6 +2744,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] edit_message overflow (%d UTF-16 > %d), splitting",
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
+                if not finalize:
+                    # During streaming, truncate instead of splitting to avoid
+                    # creating continuation messages that cause an infinite loop.
+                    truncated = self.truncate_message(
+                        content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+                    )[0]
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=truncated,
+                    )
+                    return SendResult(success=True, message_id=message_id)
                 return await self._edit_overflow_split(
                     chat_id, message_id, content, finalize=finalize, metadata=metadata,
                 )
