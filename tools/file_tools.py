@@ -1258,6 +1258,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
+               patch_text: str = None,
                task_id: str = "default", cross_profile: bool = False) -> str:
     """Patch a file using replace mode or V4A patch format.
 
@@ -1289,6 +1290,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
                 )
             _paths_to_check.append(v4a_path)
+    if mode == "hashline" and patch_text:
+        import re as _hl_re
+        from tools.path_security import has_traversal_component as _hl_htc
+        for _hl_m in _hl_re.finditer(r'^\[?(.+?)#[0-9a-fA-F]{2,8}\]?\s*$', patch_text, _hl_re.MULTILINE):
+            hl_path = _hl_m.group(1).strip()
+            if _hl_htc(hl_path):
+                return tool_error(
+                    f"hashline patch header contains '..' traversal: {hl_path!r}. "
+                    "Use a cwd-relative path (no '..') or an absolute path."
+                )
+            _paths_to_check.append(hl_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
@@ -1358,6 +1370,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if not patch:
                     return tool_error("patch content required")
                 result = file_ops.patch_v4a(patch)
+            elif mode == "hashline":
+                if not patch_text:
+                    return tool_error("patch_text required for mode='hashline'")
+                result = file_ops.patch_hashline(patch_text)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1558,8 +1574,8 @@ PATCH_SCHEMA = {
         "properties": {
             "mode": {
                 "type": "string",
-                "enum": ["replace", "patch"],
-                "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only.",
+                "enum": ["replace", "patch", "hashline"],
+                "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only. 'hashline': content-hash-anchored line edits, requires patch_text.",
                 "default": "replace",
             },
             "path": {
@@ -1582,6 +1598,10 @@ PATCH_SCHEMA = {
             "patch": {
                 "type": "string",
                 "description": "REQUIRED when mode='patch'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+            },
+            "patch_text": {
+                "type": "string",
+                "description": "REQUIRED when mode='hashline'. Content-hash-anchored line edits. Format: [path#TAG] header then ops (replace A..B: / delete A / insert before|after N: / insert head|tail:). Body lines prefixed with +. TAG = 4-hex content hash; mismatch rejects the edit.",
             },
             "cross_profile": {
                 "type": "boolean",
@@ -1649,7 +1669,8 @@ def _handle_patch(args, **kw):
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
+        replace_all=args.get("replace_all", False), patch=args.get("patch"),
+        patch_text=args.get("patch_text"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
     )
 

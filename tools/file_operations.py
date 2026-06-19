@@ -462,6 +462,11 @@ class FileOperations(ABC):
         ...
 
     @abstractmethod
+    def patch_hashline(self, patch_text: str) -> PatchResult:
+        """Apply a content-hash-anchored, line-addressed patch."""
+        ...
+
+    @abstractmethod
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file. Returns WriteResult with .error set on failure."""
         ...
@@ -1542,7 +1547,83 @@ class ShellFileOperations(FileOperations):
             # syntax-check ``lint`` so the agent can read both signals.
             lsp_diagnostics=write_result.lsp_diagnostics,
         )
-    
+
+    def patch_hashline(self, patch_text: str) -> PatchResult:
+        """Apply a content-hash-anchored, line-addressed patch.
+
+        Unlike :meth:`patch_replace` (fuzzy string matching), this addresses
+        lines by number and verifies each target file via a 4-hex content TAG.
+        A stale TAG is REJECTED rather than guessed at. See
+        ``tools/hashline_core.py``.
+        """
+        from tools import hashline_core as hl
+
+        try:
+            edits = hl.parse_patch(patch_text)
+        except hl.HashlineError as e:
+            return PatchResult(error=f"hashline parse error: {e}")
+
+        resolved: List[tuple] = []
+        for fe in edits:
+            path = self._expand_path(fe.path)
+            if _is_write_denied(path):
+                return PatchResult(
+                    error=f"Write denied: '{path}' is a protected system/credential file."
+                )
+            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+            read_result = self._exec(read_cmd)
+            if read_result.exit_code != 0:
+                return PatchResult(error=f"Failed to read file: {path}")
+            content, _ = _strip_bom(read_result.stdout)
+            resolved.append((fe, path, content))
+
+        expanded_edits = []
+        for fe, path, _content in resolved:
+            fe2 = hl.FileEdit(path=path, tag=fe.tag, ops=fe.ops)
+            expanded_edits.append(fe2)
+
+        def _read_for(p: str) -> str:
+            for _fe, rpath, rcontent in resolved:
+                if rpath == p:
+                    return rcontent
+            raise FileNotFoundError(p)
+
+        errors = hl.preflight(expanded_edits, _read_for, root="/")
+        if errors:
+            return PatchResult(error="hashline rejected:\n  - " + "\n  - ".join(errors))
+
+        files_modified: List[str] = []
+        combined_diff_parts: List[str] = []
+        last_lsp: Optional[str] = None
+        last_lint: Optional[Dict[str, Any]] = None
+
+        for fe, path, content in resolved:
+            had_nl = content.endswith("\n")
+            lines = hl.split_lines(content)
+            new_lines = hl._apply_ops_to_lines(lines, fe.ops)
+            new_content = hl.join_lines(new_lines, had_nl)
+
+            write_result = self.write_file(path, new_content)
+            if write_result.error:
+                return PatchResult(error=write_result.error)
+
+            combined_diff_parts.append(self._unified_diff(content, new_content, path))
+            lint_result = self._check_lint_delta(
+                path, pre_content=content, post_content=new_content
+            )
+            if lint_result:
+                last_lint = lint_result.to_dict()
+            last_lsp = write_result.lsp_diagnostics or last_lsp
+            files_modified.append(path)
+
+        return PatchResult(
+            success=True,
+            diff="\n".join(d for d in combined_diff_parts if d),
+            files_modified=files_modified,
+            lint=last_lint,
+            lsp_diagnostics=last_lsp,
+        )
+
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """
         Apply a V4A format patch.
