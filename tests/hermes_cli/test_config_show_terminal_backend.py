@@ -19,6 +19,10 @@ def _backend_line(out: str) -> str:
     raise AssertionError(f"no 'Backend:' line in config show output:\n{out}")
 
 
+def _has_line(out: str, prefix: str) -> bool:
+    return any(line.strip().startswith(prefix) for line in out.splitlines())
+
+
 def _seed(home: Path, *, config_yaml: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(config_yaml)
@@ -55,6 +59,28 @@ def test_config_show_reports_config_backend_when_no_override(monkeypatch, capsys
     line = _backend_line(capsys.readouterr().out)
     assert "docker" in line
     assert "overrides" not in line
+
+
+def test_config_show_detail_block_follows_effective_backend(monkeypatch, capsys):
+    """The per-backend detail block must branch on the effective backend too.
+
+    With a docker override over a ``local`` config, the Backend line reports
+    docker, so the Docker image detail line must also appear — branching the
+    detail blocks on the raw config value would print no detail at all here.
+    """
+    from hermes_cli import config as config_mod
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    home = config_mod.get_hermes_home()
+    _seed(home, config_yaml="terminal:\n  backend: local\n")
+
+    config_mod.show_config()
+
+    out = capsys.readouterr().out
+    assert "docker" in _backend_line(out)
+    # The docker detail block (keyed on the effective backend) must appear.
+    assert _has_line(out, "Docker image:"), out
 
 
 def test_config_show_no_override_when_env_matches_config(monkeypatch, capsys):

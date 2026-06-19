@@ -6265,29 +6265,36 @@ def show_config():
     # agent is jailed in docker (and vice-versa). Mirrors hermes dump / hermes status.
     config_backend = terminal.get('backend', 'local')
     env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    # The effective backend is what terminal_tool actually uses: TERMINAL_ENV
+    # wins over config when set. Branch BOTH the Backend line and the per-backend
+    # detail blocks below on this same value so the diagnostic is internally
+    # consistent (e.g. a docker override shows the Docker image line, not the
+    # detail block for the shadowed config backend).
     if env_backend and env_backend != str(config_backend).strip().lower():
+        effective_backend = env_backend
         print(
             f"  Backend:      {env_backend}  (TERMINAL_ENV overrides config.yaml "
             f"terminal.backend={config_backend})"
         )
     else:
+        effective_backend = str(config_backend).strip().lower()
         print(f"  Backend:      {config_backend}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
-    
-    if terminal.get('backend') == 'docker':
+
+    if effective_backend == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
-    elif terminal.get('backend') == 'singularity':
+    elif effective_backend == 'singularity':
         print(f"  Image:        {terminal.get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')}")
-    elif terminal.get('backend') == 'modal':
+    elif effective_backend == 'modal':
         print(f"  Modal image:  {terminal.get('modal_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         modal_token = get_env_value('MODAL_TOKEN_ID')
         print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
-    elif terminal.get('backend') == 'daytona':
+    elif effective_backend == 'daytona':
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
-    elif terminal.get('backend') == 'ssh':
+    elif effective_backend == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
