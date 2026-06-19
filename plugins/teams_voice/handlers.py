@@ -487,16 +487,49 @@ class StreamingCallSessionHandler(BaseTeamsCallHandler):
         if not text or session is None:
             return
         await self._safe_expression(expression.infer_emotion(text))
-        from hermes_constants import get_hermes_home
+        synth = await self._synthesize(text)
+        if synth is None:
+            return
+        pcm16k, marks_payload = synth
+        if marks_payload:
+            try:
+                await session.send_speech_marks(marks_payload, ts=self._out_ts)
+            except Exception:  # noqa: BLE001
+                pass
+        frames, _ = audio.frame_pcm16(pcm16k, BYTES_PER_FRAME)
+        for frame in frames:
+            try:
+                await session.send_audio_frame(
+                    self._out_seq, self._out_ts, base64.b64encode(frame).decode("ascii")
+                )
+            except Exception:  # noqa: BLE001
+                return
+            self._out_seq += 1
+            self._out_ts += FRAME_DURATION_MS
 
-        from .streaming_audio import decode_to_pcm16k
+    async def _synthesize(self, text: str) -> tuple[bytes, list[dict]] | None:
+        """TTS → (PCM 16k, viseme marks). Prefers ElevenLabs ``/with-timestamps``
+        (real per-character timing); falls back to the configured TTS + estimator."""
+        from . import elevenlabs_tts
+        from .streaming_audio import decode_bytes_to_pcm16k, decode_to_pcm16k
+
+        el_cfg = elevenlabs_tts.resolve_config()
+        if el_cfg:
+            res = await elevenlabs_tts.synth_with_timestamps(text, el_cfg)
+            if res:
+                mp3, timing = res
+                pcm16k = await asyncio.to_thread(decode_bytes_to_pcm16k, mp3)
+                if pcm16k:
+                    marks = viseme_estimate.visemes_from_alignment(timing)  # real timing
+                    return pcm16k, viseme_estimate.marks_to_payload(marks)
+
+        from hermes_constants import get_hermes_home
+        from tools.tts_tool import text_to_speech_tool
 
         d = Path(get_hermes_home()) / "cache" / "teams_voice"
         d.mkdir(parents=True, exist_ok=True)
         out = d / f"tts_{uuid.uuid4().hex}.mp3"
         try:
-            from tools.tts_tool import text_to_speech_tool
-
             raw = await asyncio.to_thread(lambda: text_to_speech_tool(text, output_path=str(out)))
             path = str(out)
             try:
@@ -507,26 +540,10 @@ class StreamingCallSessionHandler(BaseTeamsCallHandler):
                 pass
             pcm16k = await asyncio.to_thread(decode_to_pcm16k, path)
             if not pcm16k:
-                return
-            # TODO(viseme): swap the estimator for real ElevenLabs /with-timestamps
-            # alignment when the TTS path exposes per-character timing.
+                return None
             dur_ms = (len(pcm16k) // 2) // PCM_SAMPLE_RATE_HZ_MS
             marks = viseme_estimate.estimate_visemes(text, dur_ms)
-            if marks:
-                try:
-                    await session.send_speech_marks(viseme_estimate.marks_to_payload(marks), ts=self._out_ts)
-                except Exception:  # noqa: BLE001
-                    pass
-            frames, _ = audio.frame_pcm16(pcm16k, BYTES_PER_FRAME)
-            for frame in frames:
-                try:
-                    await session.send_audio_frame(
-                        self._out_seq, self._out_ts, base64.b64encode(frame).decode("ascii")
-                    )
-                except Exception:  # noqa: BLE001
-                    return
-                self._out_seq += 1
-                self._out_ts += FRAME_DURATION_MS
+            return pcm16k, viseme_estimate.marks_to_payload(marks)
         finally:
             try:
                 Path(out).unlink(missing_ok=True)

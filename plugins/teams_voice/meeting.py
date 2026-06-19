@@ -10,7 +10,9 @@ cross-process delivery and DOCX creation are the agent's job, not the bridge's.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,27 @@ async def _deliver_to_teams(conversation_id: str, text: str) -> bool:
         return False
 
 
+def _save_docx_artifact(minutes: str) -> str | None:
+    """Write a Word-openable minutes .docx under the Hermes workspace; log the path.
+
+    Best-effort: cross-process attachment to the Teams chat is text-only, so this
+    produces a retrievable artifact rather than an inline chat attachment."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        from .meeting_docx import write_minutes_docx
+
+        d = Path(get_hermes_home()) / "workspace" / "teams_minutes"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"minutes_{uuid.uuid4().hex[:8]}.docx"
+        write_minutes_docx("Meeting minutes", minutes, str(path))
+        logger.info("[teams_voice] minutes document saved: %s", path)
+        return str(path)
+    except Exception:  # noqa: BLE001 — artifact is optional
+        logger.warning("[teams_voice] minutes .docx generation failed", exc_info=True)
+        return None
+
+
 async def post_minutes(
     consult, transcript: "MeetingTranscript", conversation_id: str, *, deliver=None
 ) -> str:
@@ -93,6 +116,7 @@ async def post_minutes(
     minutes = (minutes or "").strip()
     if not minutes:
         return "I couldn't summarize the meeting."
+    _save_docx_artifact(minutes)  # best-effort Word-openable artifact
     deliver = deliver or _deliver_to_teams
     ok = await deliver(conversation_id, f"📝 **Meeting minutes**\n\n{minutes}")
     return (

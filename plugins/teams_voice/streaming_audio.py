@@ -91,3 +91,19 @@ def decode_to_pcm16k(path: str) -> bytes:
     except (FileNotFoundError, OSError):
         return b""
     return proc.stdout if proc.returncode == 0 else b""
+
+
+def decode_bytes_to_pcm16k(data: bytes) -> bytes:
+    """Decode in-memory audio bytes (mp3/…) to PCM 16 kHz mono via ffmpeg stdin."""
+    if not data:
+        return b""
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "s16le", "-loglevel", "quiet", "pipe:1"],
+            input=data,
+            capture_output=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return b""
+    return proc.stdout if proc.returncode == 0 else b""

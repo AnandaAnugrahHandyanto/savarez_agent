@@ -53,6 +53,22 @@ _CHAR_VISEME: dict[str, int] = {
     "r": VISEME_OO,
 }
 
+# Arabic grapheme -> viseme id (so Arabic lip-sync isn't neutral-only). Maps the
+# common letters to their nearest mouth shape; diacritics/short vowels are handled
+# by the surrounding consonants.
+_ARABIC_VISEME: dict[str, int] = {
+    "ا": VISEME_AA, "أ": VISEME_AA, "إ": VISEME_AA, "آ": VISEME_AA, "ء": VISEME_AA,  # alif/hamza (open)
+    "و": VISEME_OO, "ؤ": VISEME_OO,  # waw (round)
+    "ي": VISEME_EE, "ى": VISEME_EE, "ئ": VISEME_EE,  # ya (wide)
+    "ب": VISEME_MBP, "م": VISEME_MBP,  # bilabial (closed)
+    "ف": VISEME_FV,  # fa (lip-teeth)
+    "س": VISEME_SS, "ص": VISEME_SS, "ز": VISEME_SS, "ش": VISEME_SS,  # sibilants (wide)
+    "ت": VISEME_L, "ث": VISEME_L, "د": VISEME_L, "ذ": VISEME_L, "ط": VISEME_L,
+    "ظ": VISEME_L, "ل": VISEME_L, "ن": VISEME_L, "ر": VISEME_L, "ة": VISEME_L,  # dental/alveolar
+    "ج": VISEME_AA, "ك": VISEME_AA, "ق": VISEME_AA, "غ": VISEME_AA, "خ": VISEME_AA,
+    "ح": VISEME_AA, "ع": VISEME_AA, "ه": VISEME_AA,  # velar/guttural (mouth open)
+}
+
 
 @dataclass(frozen=True)
 class VisemeMark:
@@ -72,10 +88,10 @@ def viseme_for_char(ch: str) -> int:
     lowered = ch.lower()
     if lowered in _CHAR_VISEME:
         return _CHAR_VISEME[lowered]
+    if ch in _ARABIC_VISEME:
+        return _ARABIC_VISEME[ch]
     if lowered.isalpha():
-        # TODO(arabic): map Arabic graphemes to their nearest shapes for true
-        # lip-sync instead of neutral-open (parity with viseme-estimate.ts).
-        return VISEME_NEUTRAL
+        return VISEME_NEUTRAL  # other scripts: mid-open default
     return VISEME_SILENCE
 
 

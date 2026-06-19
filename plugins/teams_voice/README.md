@@ -62,7 +62,7 @@ renders the avatar tile and is paired over the HMAC bridge.
 
 **Sessions** — `session_scope` per-call / per-thread / per-aad.
 
-Follow-ups: real ElevenLabs `/with-timestamps` viseme alignment (estimator today), DOCX minutes attachment (standalone delivery is text-only), full Arabic visemes.
+Recent: real ElevenLabs `/with-timestamps` viseme alignment (streaming path; estimator fallback), Arabic visemes, and a Word-openable `.docx` minutes artifact. Remaining: inline DOCX *attachment* to the Teams chat (cross-process delivery is text-only — the artifact is generated and saved).
 
 ## Wire contract (fixed by the worker — do not drift)
 
