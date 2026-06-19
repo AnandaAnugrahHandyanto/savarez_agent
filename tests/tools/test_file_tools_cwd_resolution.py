@@ -299,6 +299,7 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     """patch_tool (replace mode) must put the absolute on-disk path in files_modified."""
     workspace, decoy = _isolated_cwd
     monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    monkeypatch.setenv("LC_ALL", "C")
 
     import json
     out = json.loads(ft.patch_tool(
