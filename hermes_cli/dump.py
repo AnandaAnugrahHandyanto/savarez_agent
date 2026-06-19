@@ -171,9 +171,12 @@ def _configured_platforms() -> list[str]:
         if not val:
             continue
         # WHATSAPP_ENABLED is a boolean toggle, not a credential. Mirror the
-        # runtime parser (gateway/config.py) so an explicit WHATSAPP_ENABLED=false
-        # / 0 / no is not reported as a configured platform.
-        if name == "whatsapp" and val.strip().lower() not in truthy:
+        # runtime parser EXACTLY: gateway/config.py enables WhatsApp iff
+        # os.getenv("WHATSAPP_ENABLED", "").lower() in {"true", "1", "yes"} —
+        # note it does NOT .strip(), so a padded value like " true " is
+        # disabled at runtime. Stripping here would over-report it as
+        # configured, so we match the runtime (no .strip()).
+        if name == "whatsapp" and val.lower() not in truthy:
             continue
         configured.append(name)
     return configured

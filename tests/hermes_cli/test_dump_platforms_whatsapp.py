@@ -41,7 +41,7 @@ def _platforms_line(out: str) -> str:
     raise AssertionError(f"no 'platforms:' line in dump output:\n{out}")
 
 
-def _isolate(monkeypatch, home: Path, tmp_path: Path) -> None:
+def _isolate(monkeypatch, home: Path, _tmp_path: Path) -> None:
     """Clear ambient platform env and stop .env fallbacks from leaking in."""
     for var in _PLATFORM_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -84,6 +84,23 @@ def test_whatsapp_zero_not_listed(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
     _isolate(monkeypatch, get_hermes_home(), tmp_path)
     monkeypatch.setenv("WHATSAPP_ENABLED", "0")
+
+    dump.run_dump(SimpleNamespace(show_keys=False))
+
+    line = _platforms_line(capsys.readouterr().out)
+    assert "whatsapp" not in line
+
+
+def test_whatsapp_padded_true_not_listed(monkeypatch, capsys, tmp_path):
+    # Runtime-mirror: gateway/config.py does NOT .strip() WHATSAPP_ENABLED, so
+    # a padded " true " is disabled at runtime. The dump must report the same
+    # effective state — it must NOT strip and over-report it as configured.
+    from hermes_cli import dump
+    from hermes_cli.config import get_hermes_home
+
+    monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
+    _isolate(monkeypatch, get_hermes_home(), tmp_path)
+    monkeypatch.setenv("WHATSAPP_ENABLED", " true ")
 
     dump.run_dump(SimpleNamespace(show_keys=False))
 
