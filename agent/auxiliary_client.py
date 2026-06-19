@@ -1041,7 +1041,12 @@ class _AnthropicCompletionsAdapter:
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
-        response = self._client.messages.create(**anthropic_kwargs)
+        # Some Anthropic-compatible gateways are streaming-only and never
+        # honor non-streaming requests; aggregate the stream instead. This
+        # matches the main turn path and is a no-op for native Anthropic.
+        anthropic_kwargs.pop("stream", None)
+        with self._client.messages.stream(**anthropic_kwargs) as _stream:
+            response = _stream.get_final_message()
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth

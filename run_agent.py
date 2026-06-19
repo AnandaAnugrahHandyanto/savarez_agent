@@ -4080,7 +4080,12 @@ class AIAgent:
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(self, "log_prefix", "")
         )
-        return self._anthropic_client.messages.create(**api_kwargs)
+        # Some Anthropic-compatible gateways are streaming-only and never
+        # honor non-streaming requests; aggregate the stream instead. This
+        # matches the main turn path and is a no-op for native Anthropic.
+        api_kwargs.pop("stream", None)
+        with self._anthropic_client.messages.stream(**api_kwargs) as _stream:
+            return _stream.get_final_message()
 
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.
