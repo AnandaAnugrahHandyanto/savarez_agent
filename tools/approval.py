@@ -393,7 +393,10 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # Scoped (?-i:-D) overrides the module-wide re.IGNORECASE so the safe
+    # merged-only `-d` delete does not match the force-delete `-D`. Relies on
+    # _lower_except_flags() preserving flag case at the detection call sites.
+    (r'\bgit\s+branch\s+(?-i:-D)\b', "git branch force delete"),
     # Script execution after chmod +x — catches the two-step pattern where
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
