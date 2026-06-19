@@ -147,7 +147,7 @@ function selectActivePwaManifest(
 }
 
 function RootRedirect() {
-  return <Navigate to={isDashboardEmbeddedChatEnabled() ? "/chat" : "/sessions"} replace />;
+  return <Navigate to="/sessions" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -155,7 +155,7 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
     return null;
   }
-  return <Navigate to={isDashboardEmbeddedChatEnabled() ? "/chat" : "/sessions"} replace />;
+  return <Navigate to="/sessions" replace />;
 }
 
 const CHAT_NAV_ITEM: NavItem = {
@@ -164,8 +164,6 @@ const CHAT_NAV_ITEM: NavItem = {
   label: "Chat",
   icon: Terminal,
 };
-
-const MOBILE_PRIMARY_NAV_PATHS = ["/chat", "/sessions", "/files"] as const;
 
 /**
  * Built-in routes except /chat.  Chat is rendered persistently (outside
@@ -489,15 +487,6 @@ export default function App() {
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
-  );
-  const mobilePrimaryNav = useMemo(
-    () =>
-      builtinNav.filter((item) =>
-        MOBILE_PRIMARY_NAV_PATHS.includes(
-          item.path as (typeof MOBILE_PRIMARY_NAV_PATHS)[number],
-        ),
-      ),
-    [builtinNav],
   );
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
@@ -887,11 +876,8 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  isMobile
-                    ? "pb-[calc(5.5rem+env(safe-area-inset-bottom,0px))]"
-                    : !isChatRoute
-                      ? "lg:pb-8"
-                      : "",
+                  !isChatRoute &&
+                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
@@ -943,66 +929,6 @@ export default function App() {
           </PageHeaderProvider>
         </div>
       </div>
-
-      {isMobile && mobilePrimaryNav.length > 0 && (
-        <div
-          className={cn(
-            "lg:hidden fixed inset-x-0 bottom-0 z-40",
-            "border-t border-current/20 bg-background-base/95 backdrop-blur-md",
-            "px-2 pb-[max(env(safe-area-inset-bottom,0px),0.35rem)] pt-2",
-          )}
-          style={{
-            background: "var(--component-header-background)",
-            borderImage: "var(--component-header-border-image)",
-          }}
-        >
-          <div className="mx-auto grid max-w-screen-sm grid-cols-4 gap-1">
-            {mobilePrimaryNav.map((item) => {
-              const Icon = item.icon;
-              const navLabel = item.labelKey
-                ? ((t.app.nav as Record<string, string>)[item.labelKey] ?? item.label)
-                : item.label;
-              return (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  end={item.path === "/sessions"}
-                  onClick={closeMobile}
-                  className={({ isActive }) =>
-                    cn(
-                      "flex min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1 py-2",
-                      "text-[0.65rem] font-medium uppercase tracking-[0.08em]",
-                      isActive
-                        ? "text-midground bg-midground/10"
-                        : "text-text-secondary hover:text-midground hover:bg-midground/5",
-                    )
-                  }
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span className="truncate">{navLabel}</span>
-                </NavLink>
-              );
-            })}
-
-            <Button
-              ghost
-              onClick={() => setMobileOpen(true)}
-              aria-label={t.app.openNavigation}
-              aria-expanded={mobileOpen}
-              aria-controls="app-sidebar"
-              className={cn(
-                "flex h-auto min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1 py-2",
-                "text-[0.65rem] font-medium uppercase tracking-[0.08em] text-text-secondary",
-                "hover:text-midground hover:bg-midground/5",
-              )}
-            >
-              <Menu className="h-4 w-4 shrink-0" />
-              <span className="truncate">More</span>
-            </Button>
-          </div>
-        </div>
-      )}
-
       <PluginSlot name="overlay" />
     </div>
     </ProfileProvider>
