@@ -44,6 +44,26 @@ Validated on a live Teams call (realtime): connect, recording gate, expression
 cues, avatar rendered, audio out, clean teardown. The Windows .NET media worker
 renders the avatar tile and is paired over the HMAC bridge.
 
+## Features
+
+**Voice** — `msteams` over **realtime** (OpenAI/Azure speech-to-speech) **and streaming** (STT→agent→TTS), with barge-in; caller allowlist (AAD-id, closed when configured); recording-status gate before any media-derived data; realtime delegation (`hermes_agent_consult` inline + `hermes_agent_task` background); deterministic verbal interrupts (EN + Arabic, wake-phrase + filler stripping, whole-utterance); **DTMF / IVR**; **bilingual Arabic/English**; roster greeting by first name; "thinking" expression.
+
+**Inbound video vision** — `video.frame` ingestion + `look_at_screen` (camera + screen-share); **realtime continuous vision** (latest changed frame pushed ~6s, no forced response); scene-change ambient (per source) + **retroactive** (`scope:"history"`, 16-keyframe ring, attributed); per-call **vision spend cap** (`maxVisionPerMinute`).
+
+**CVI rendering drivers** — **expression cues** (neutral/happy/sad/surprised + thinking); **viseme `speech.marks`** lip-sync; **`show_to_caller`** → `display.image` fullscreen or PiP overlay, captions, paced slideshow.
+
+**Group / meeting** — per-participant attribution; **speak only when addressed** (2+ humans, wake phrases, follow-up window; 1:1 always responds), race-free on realtime (auto-response off in meetings).
+
+**Outbound (call me back)** — `call_me_back` via the worker's HMAC, SSRF-guarded endpoint; **greet-on-answer**; pending-result correlation with TTL.
+
+**Chat & governance** (`plugins/platforms/teams`) — **"Ask Hermes about this"** message action; **voice-message transcription** (opt-in); **audit-log channel** (opt-in, loop-guarded); **DLP outbound redaction** (opt-in) on text, adaptive cards, and captions.
+
+**Meeting productivity** — **end-of-meeting recap** (opt-in) + on-demand **`post_meeting_minutes`** / "summarize the meeting", posted to the Teams chat; per-speaker attribution from unmixed audio.
+
+**Sessions** — `session_scope` per-call / per-thread / per-aad.
+
+Follow-ups: real ElevenLabs `/with-timestamps` viseme alignment (estimator today), DOCX minutes attachment (standalone delivery is text-only), full Arabic visemes.
+
 ## Wire contract (fixed by the worker — do not drift)
 
 * **Handshake:** `HMAC-SHA256(sharedSecret, "{timestampMs}.{callId}")`, lowercase
