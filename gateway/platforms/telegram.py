@@ -4449,7 +4449,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
 
         audio_path = self._resolve_workspace_path(audio_path)
         try:
@@ -4679,7 +4679,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
 
         image_path = self._resolve_workspace_path(image_path)
         try:
@@ -4777,7 +4777,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
 
         file_path = self._resolve_workspace_path(file_path)
         try:
@@ -4831,7 +4831,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
 
         video_path = self._resolve_workspace_path(video_path)
         try:
