@@ -54,6 +54,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from agent.tool_call_scrubber import strip_tool_call_markup
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -349,10 +350,17 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """
     if not text:
         return text
+    text = strip_tool_call_markup(str(text)).strip()
+    if not text:
+        return (
+            "⚠️ The model produced an internal tool call as plain text instead "
+            "of a user-visible reply. I suppressed it to avoid leaking tool "
+            "arguments into chat. Please try again."
+        )
     if _gateway_platform_value(platform) != "telegram":
         return text
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _redact_gateway_user_facing_secrets(text)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
