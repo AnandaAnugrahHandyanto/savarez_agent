@@ -5862,6 +5862,87 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    def _is_user_auth_early(self, message: Message) -> bool:
+        """Check user authorization before building a MessageEvent.
+
+        This rejects messages from removed users and unauthorized channel
+        posts at the adapter level, before text batching or event
+        construction can leak prompt content into the agent context
+        (fixes #40863).
+        """
+        user = getattr(message, "from_user", None)
+        chat = getattr(message, "chat", None)
+        raw_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        chat_type = "dm"
+        if raw_type in {"group", "supergroup"}:
+            chat_type = "group"
+        elif raw_type == "channel":
+            chat_type = "channel"
+
+        # Resolve the identity to authorize: from_user for normal
+        # messages, sender_chat for channel posts, or None for service
+        # messages (which are always allowed through).
+        auth_id: str | None = None
+        auth_name: str | None = None
+        if user is not None:
+            auth_id = str(getattr(user, "id", "")).strip() or None
+            auth_name = getattr(user, "username", None) or getattr(user, "first_name", None)
+        if not auth_id:
+            sender_chat = getattr(message, "sender_chat", None)
+            if sender_chat is not None:
+                auth_id = str(getattr(sender_chat, "id", "")).strip() or None
+                auth_name = getattr(sender_chat, "title", None)
+            # Still no identity — genuine service message (pin, delete,
+            # new_chat_members, etc.) from a group chat.  Let the cold
+            # path decide.  BUT channel posts without sender_chat have
+            # no user identity to authorize — reject them here to close
+            # the pre-auth event-construction gap (#40863).
+            if not auth_id:
+                if chat_type == "channel":
+                    logger.debug(
+                        "[Telegram] Rejected channel post with no identity (chat=%s) before event construction",
+                        getattr(chat, "id", "?"),
+                    )
+                    return False
+                return True
+
+        chat_id = str(getattr(chat, "id", auth_id))
+        thread_id = getattr(message, "message_thread_id", None)
+
+        # Try runner auth first (authoritative).
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                from gateway.session import SessionSource
+                from gateway.config import Platform
+
+                source = SessionSource(
+                    platform=Platform.TELEGRAM,
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    user_id=auth_id,
+                    user_name=str(auth_name).strip() if auth_name else None,
+                    thread_id=str(thread_id) if thread_id is not None else None,
+                )
+                if not auth_fn(source):
+                    logger.debug(
+                        "[Telegram] Rejected message from unauthorized %s %s before event construction",
+                        "channel" if chat_type == "channel" else "user",
+                        auth_id,
+                    )
+                    return False
+                return True
+            except Exception:
+                logger.debug("[Telegram] Early auth check via runner failed, trying env fallback", exc_info=True)
+
+        # Env-based fallback (fail-closed when no allowlist).
+        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed_ids or auth_id in allowed_ids
+
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.
 
@@ -5911,6 +5992,10 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
+        # Reject unauthorized users before event construction / text batching
+        # to prevent prompt injection into agent context (#40863).
+        if not self._is_user_auth_early(msg):
+            return
         await self._ensure_forum_commands(update.message)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
@@ -5925,6 +6010,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not msg or not msg.text:
             return
         if not self._should_process_message(msg, is_command=True):
+            return
+        if not self._is_user_auth_early(msg):
             return
         await self._ensure_forum_commands(msg)
 
@@ -5942,6 +6029,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+            return
+        if not self._is_user_auth_early(msg):
             return
 
         venue = getattr(msg, "venue", None)
@@ -6132,6 +6221,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
                 )
+            return
+        if not self._is_user_auth_early(update.message):
             return
 
         msg = update.message
