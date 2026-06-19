@@ -98,7 +98,7 @@ def test_install_ps1_overrides_known_dead_npm_registry_for_bootstrap_invocations
 
     # The override must be keyed by exact registry host, not substring, so
     # private/corporate mirrors are not bypassed to public npm.
-    assert "$NpmDeadRegistryHosts -contains $host" in text
+    assert "$NpmDeadRegistryHosts -contains $registryHost" in text
     assert "$registry -match $NpmDeadRegistryPattern" not in text
 
 
