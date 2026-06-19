@@ -175,6 +175,9 @@ class TestTimelineStorage:
         assert "fmtEvent" in html
         assert "class=\"abs\"" in html
         assert "class=\"rel\"" in html
+        assert "thread-group" in html
+        assert "Slack thread" in html
+        assert "session=" in html
 
     def test_timeline_server_serves_html_and_json(self, tmp_path, monkeypatch):
         import threading

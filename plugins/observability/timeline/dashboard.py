@@ -100,7 +100,12 @@ def render_dashboard_html(data: dict[str, Any], *, api_url: str = "", poll_ms: i
     .stats {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 14px; }}
     .stat, .run, .detail {{ border: 1px solid var(--line); background: rgba(21,27,25,.82); border-radius: 22px; box-shadow: 0 22px 60px rgba(0,0,0,.25); }}
     .stat {{ padding: 15px; }} .stat b {{ display: block; font: 28px var(--mono); color: var(--green); }} .stat span {{ color: var(--muted); font-size: 12px; }}
-    .runlist {{ display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 230px); overflow: auto; padding-right: 4px; }}
+    .runlist {{ display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 230px); overflow: auto; padding-right: 4px; }}
+    .thread-group {{ border: 1px solid rgba(42,54,49,.64); border-radius: 24px; padding: 10px; background: rgba(8,12,11,.22); }}
+    .thread-head {{ display:flex; justify-content:space-between; gap:10px; align-items:start; padding: 4px 4px 10px; color: var(--muted); font: 11px var(--mono); }}
+    .thread-title {{ color: var(--green); word-break: break-all; }}
+    .thread-sub {{ margin-top:4px; color: var(--muted); }}
+    .thread-runs {{ display:flex; flex-direction:column; gap:10px; }}
     .run {{ cursor: pointer; padding: 14px; transition: transform .14s ease, border-color .14s ease; }} .run:hover, .run.active {{ transform: translateY(-1px); border-color: rgba(135,247,165,.55); }}
     .run-top {{ display:flex; justify-content:space-between; gap:10px; align-items:start; }}
     .rid {{ font: 12px var(--mono); color: var(--ink); word-break: break-all; }}
@@ -122,9 +127,9 @@ def render_dashboard_html(data: dict[str, Any], *, api_url: str = "", poll_ms: i
     .lane-body {{ padding: 12px; display:flex; flex-direction:column; gap:12px; }}
     .lane-empty {{ color:var(--muted); font:12px var(--mono); padding:10px; }}
     .timeline {{ margin-top: 20px; position: relative; display:flex; flex-direction:column; gap: 12px; }}
-    .event {{ position: relative; display:grid; grid-template-columns: 154px 1fr; gap: 14px; align-items:start; }}
-    .event::before {{ content:""; position:absolute; left: 140px; top: 21px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 18px rgba(136,200,255,.65); }}
-    .etime {{ color: var(--muted); font: 11px var(--mono); padding-top: 1px; text-align:right; line-height:1.35; }}
+    .event {{ position: relative; display:grid; grid-template-columns: 182px 1fr; gap: 20px; align-items:start; }}
+    .event::before {{ content:""; position:absolute; left: 170px; top: 21px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 18px rgba(136,200,255,.65); }}
+    .etime {{ color: var(--muted); font: 11px var(--mono); padding-top: 1px; padding-right: 18px; text-align:right; line-height:1.35; }}
     .etime .abs {{ display:block; color:#d5e4db; }}
     .etime .rel {{ display:block; color:var(--muted); }}
     .ecard {{ background: var(--panel-2); border: 1px solid var(--line); border-radius: 18px; padding: 13px 14px; }}
@@ -191,6 +196,31 @@ function eventCard(e, start) {{
   const relative = `+${{(eventTs - start).toFixed(3)}}s`;
   return `<div class="event"><div class="etime"><span class="abs">${{esc(fmtEvent(eventTs))}}</span><span class="rel">${{relative}}</span></div><div class="ecard"><div class="ename"><span class="etype ${{esc(String(e.event_type||'').replaceAll('.','-'))}}">${{esc(e.event_type)}} / ${{esc(e.name || '')}}</span><span class="badge ${{esc(e.status || '')}}">${{esc(e.status || '')}}</span></div>${{e.summary ? `<div class="summary">${{esc(e.summary)}}</div>` : ''}}<details><summary>payload</summary><pre>${{esc(JSON.stringify(e.payload || {{}}, null, 2))}}</pre></details></div></div>`;
 }}
+function conversationOf(run) {{
+  const source = String(run.source || '');
+  let platform = run.platform || '-';
+  let chat = '';
+  let thread = '';
+  const agentSlack = source.match(/agent:[^:]+:slack:([^:]+):([^:]+):(.+)$/);
+  const directSlack = source.match(/^slack:([^:]+):(.+)$/);
+  if (agentSlack) {{ platform = 'slack'; chat = agentSlack[2]; thread = agentSlack[3]; }}
+  else if (directSlack) {{ platform = 'slack'; chat = directSlack[1]; thread = directSlack[2]; }}
+  const key = platform === 'slack' && chat && thread ? `slack:${{chat}}:${{thread}}` : (source || `${{platform}}:unknown`);
+  const label = platform === 'slack' && chat && thread ? `Slack thread ${{thread}}` : (source || 'Unknown conversation');
+  const sub = platform === 'slack' && chat && thread ? `channel ${{chat}}` : platform;
+  return {{key, label, sub, chat, thread, platform}};
+}}
+function runCard(r) {{
+  const m = runMetrics(r);
+  return `<article class="run ${{r.run_id===selected?'active':''}}" data-run="${{esc(r.run_id)}}"><div class="run-top"><div class="rid">${{esc(r.run_id)}}</div><span class="badge ${{esc(r.status)}}">${{esc(r.status)}}</span></div><div class="meta"><span>${{esc(r.platform || '-')}}</span><span>${{esc(r.model || '-')}}</span><span>${{ms(r.duration_ms) || 'live'}}</span><span>${{esc(fmt(r.started_at))}}</span></div><div class="quick"><span class="chip">${{m.total}} events</span><span class="chip">${{m.deliveries}} deliveries</span><span class="chip">${{m.tools}} tool</span><span class="chip">${{m.errors}} errors</span></div><div class="meta">session=${{esc(r.session_id || '-')}}</div></article>`;
+}}
+function renderThreadGroup(group) {{
+  const runs = group.runs;
+  const events = runs.flatMap(r => r.events || []);
+  const sessions = new Set(runs.map(r => r.session_id).filter(Boolean));
+  const latest = runs[0]?.started_at ? fmt(runs[0].started_at) : '';
+  return `<div class="thread-group" data-thread="${{esc(group.key)}}"><div class="thread-head"><div><div class="thread-title">${{esc(group.label)}}</div><div class="thread-sub">${{esc(group.sub)}} · ${{sessions.size}} sessions · latest ${{esc(latest)}}</div></div><span class="badge">${{runs.length}} runs · ${{events.length}} events</span></div><div class="thread-runs">${{runs.map(runCard).join('')}}</div></div>`;
+}}
 function renderRuns() {{
   const rows = visibleRuns();
   const visibleEvents = rows.flatMap(r => r.events || []);
@@ -201,7 +231,14 @@ function renderRuns() {{
   $('deliveryCount').textContent = visibleEvents.filter(e => e.event_type === 'gateway.delivery').length;
   $('errorCount').textContent = visibleEvents.filter(isError).length;
   if (!selected && rows[0]) selected = rows[0].run_id;
-  $('runs').innerHTML = rows.map(r => {{ const m = runMetrics(r); return `<article class="run ${{r.run_id===selected?'active':''}}" data-run="${{esc(r.run_id)}}"><div class="run-top"><div class="rid">${{esc(r.run_id)}}</div><span class="badge ${{esc(r.status)}}">${{esc(r.status)}}</span></div><div class="meta"><span>${{esc(r.platform || '-')}}</span><span>${{esc(r.model || '-')}}</span><span>${{ms(r.duration_ms) || 'live'}}</span><span>${{esc(fmt(r.started_at))}}</span></div><div class="quick"><span class="chip">${{m.total}} events</span><span class="chip">${{m.deliveries}} deliveries</span><span class="chip">${{m.tools}} tool</span><span class="chip">${{m.errors}} errors</span></div><div class="meta">${{esc(r.source || '')}}</div></article>`; }}).join('') || '<div class="empty">No matching runs.</div>';
+  const groups = [];
+  const byKey = new Map();
+  rows.forEach(r => {{
+    const convo = conversationOf(r);
+    if (!byKey.has(convo.key)) {{ byKey.set(convo.key, {{...convo, runs: []}}); groups.push(byKey.get(convo.key)); }}
+    byKey.get(convo.key).runs.push(r);
+  }});
+  $('runs').innerHTML = groups.map(renderThreadGroup).join('') || '<div class="empty">No matching runs.</div>';
   document.querySelectorAll('.run[data-run]').forEach(el => el.onclick = () => {{ selected = el.dataset.run; render(); }});
 }}
 function laneStateKey(runId, lane) {{ return `${{runId}}::${{lane}}`; }}
