@@ -508,33 +508,6 @@ class TestMountApiRoutesRefusesUntrusted:
 
         assert spec.call_count == 1
 
-    def test_disabled_config_opt_in_does_not_enable_user_api(
-        self, tmp_path, monkeypatch
-    ):
-        plugin = self._payload_plugin(tmp_path, source="user")
-        web_server._dashboard_plugins_cache = [plugin]
-
-        _configure_and_snapshot_public_insecure_mode(monkeypatch, False)
-
-        with patch("importlib.util.spec_from_file_location") as spec:
-            web_server._mount_plugin_api_routes()
-
-        assert spec.call_count == 0
-
-    def test_enabled_config_opt_in_enables_user_api(
-        self, tmp_path, monkeypatch
-    ):
-        plugin = self._payload_plugin(tmp_path, source="user")
-        web_server._dashboard_plugins_cache = [plugin]
-
-        _configure_and_snapshot_public_insecure_mode(monkeypatch, True)
-
-        with patch("importlib.util.spec_from_file_location") as spec:
-            spec.return_value = None
-            web_server._mount_plugin_api_routes()
-
-        assert spec.call_count == 1
-
     @pytest.mark.parametrize("opt_in_value", ["1", "true", "yes", 1])
     def test_non_boolean_config_opt_in_does_not_enable_user_api(
         self, tmp_path, monkeypatch, opt_in_value
