@@ -73,6 +73,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"auxiliary\s+.+\s+failed"
     r"|compression\s+summary\s+failed"
     r"|fallback\s+context\s+marker"
+    r"|primary\s+model\s+failed\s+[—-]\s+switching\s+to\s+fallback"
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
@@ -93,7 +94,11 @@ _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"|provider\s+authentication\s+failed"
     r"|non-retryable\s+error"
     r"|rate\s+limited\s+after\s+\d+\s+retries"
+    r"|codex\s+response\s+remained\s+incomplete\s+after\s+\d+\s+continuation\s+attempts"
+    r"|response\s+remained\s+truncated\s+after\s+\d+\s+continuation\s+attempts"
     r"|error\s+code\s*:"
+    r"|you\s+exceeded\s+your\s+current\s+quota"
+    r"|insufficient[_\s-]+quota"
     r"|\bhttp\s*\d{3}\b"
     r"|incorrect\s+api\s+key"
     r"|invalid\s+api\s+key"
@@ -195,6 +200,48 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _gateway_profile_slug() -> str:
+    """Return the active gateway profile slug, if it can be inferred cheaply."""
+    explicit = os.environ.get("HERMES_PROFILE", "").strip().lower()
+    if explicit:
+        return explicit
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if not hermes_home:
+        return "default"
+    try:
+        home_path = Path(hermes_home).expanduser()
+        if home_path.parent.name == "profiles":
+            return home_path.name.lower()
+        if home_path.name == ".hermes":
+            return "default"
+        return home_path.name.lower()
+    except Exception:
+        return ""
+
+
+_AUDIENCE_SAFE_PROFILE_PROVIDER_ERROR_REPLIES = {
+    "ochied": (
+        "Maaf kak, sistem Ochied sedang gangguan sebentar. "
+        "Mohon ulangi pesannya beberapa saat lagi ya.\n- Ochied"
+    ),
+}
+
+
+def _audience_safe_profile_provider_error_reply() -> Optional[str]:
+    """Return profile-scoped user-safe provider wording for external chats."""
+    return _AUDIENCE_SAFE_PROFILE_PROVIDER_ERROR_REPLIES.get(_gateway_profile_slug())
+
+
+def _should_sanitize_gateway_delivery(platform: Any) -> bool:
+    """True when this platform/profile should hide provider internals in chat."""
+    platform_value = _gateway_platform_value(platform)
+    if platform_value == "telegram":
+        return True
+    if platform_value == "whatsapp" and _audience_safe_profile_provider_error_reply():
+        return True
+    return False
+
+
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return True for transient network errors safe to log + swallow.
 
@@ -283,7 +330,10 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
 
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    """Map raw provider/API errors to a short user-safe reply."""
+    audience_safe_reply = _audience_safe_profile_provider_error_reply()
+    if audience_safe_reply:
+        return audience_safe_reply
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
             "⚠️ Provider authentication failed. Check the configured credentials; "
@@ -308,7 +358,11 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"|provider\s+authentication\s+failed"
     r"|non-retryable\s+error"
     r"|rate\s+limited\s+after\s+\d+\s+retries"
+    r"|codex\s+response\s+remained\s+incomplete\s+after\s+\d+\s+continuation\s+attempts"
+    r"|response\s+remained\s+truncated\s+after\s+\d+\s+continuation\s+attempts"
     r"|error\s+code\s*:"
+    r"|you\s+exceeded\s+your\s+current\s+quota"
+    r"|insufficient[_\s-]+quota"
     r"|http\s*\d{3}\b"
     r"|incorrect\s+api\s+key"
     r"|invalid\s+api\s+key"
@@ -343,13 +397,14 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+    Mobile/group inboxes should receive concise, safe provider failure
+    categories instead of raw HTTP bodies, request IDs, or policy text.  The
+    default/admin WhatsApp profile keeps existing diagnostics; guest/staff
+    WhatsApp profiles opt in through profile-scoped safe wording.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
+    if not _should_sanitize_gateway_delivery(platform):
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
@@ -363,7 +418,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    if not _should_sanitize_gateway_delivery(platform):
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
