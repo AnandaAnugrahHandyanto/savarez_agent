@@ -4673,8 +4673,24 @@ class BasePlatformAdapter(ABC):
                 # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
-                    del self._session_tasks[session_key]
+                    # Try to release the guard first. If the guard was
+                    # overridden by another path (e.g. a drain task that
+                    # took over ``_active_sessions[session_key]`` at L4526
+                    # or L4647), ``_release_session_guard`` returns early
+                    # on the guard-mismatch check at L3700 and the lock
+                    # stays installed. The task reference must therefore
+                    # stay in ``_session_tasks`` so the next inbound
+                    # message's on-entry self-heal can see the done task
+                    # and clear the orphaned guard (#48300).  Without
+                    # this reordering the previous implementation
+                    # ``del self._session_tasks[session_key]`` ran first
+                    # and left the adapter in a split-brain state — the
+                    # session is locked indefinitely while ``_session_task_is_stale``
+                    # reports "not stale" because there is no task to
+                    # check.
                     self._release_session_guard(session_key, guard=interrupt_event)
+                    if session_key not in self._active_sessions:
+                        del self._session_tasks[session_key]
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
