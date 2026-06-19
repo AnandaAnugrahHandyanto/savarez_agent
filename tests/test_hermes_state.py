@@ -1719,6 +1719,188 @@ class TestPruneSessions:
             assert db.get_session(sid) is None
 
 
+class TestDefaultDBPathResolvesAtCallTime:
+    """``_default_db_path()`` must honor the current ``HERMES_HOME`` env var,
+    not the value frozen at module import.
+
+    Historical bug: ``DEFAULT_DB_PATH`` was a module-level constant. Code
+    that called ``SessionDB()`` without ``db_path=`` would write to the
+    cached value (the real ``~/.hermes/state.db``), bypassing test
+    fixtures that set ``HERMES_HOME`` to a per-test tempdir. The result
+    was test pollution: e.g. fixtures using ``user_id="u1"`` left orphan
+    rows in production state.db. See ``hermes_state._default_db_path``
+    docstring for full postmortem.
+    """
+
+    def test_default_db_path_honors_hermes_home_change(self, tmp_path, monkeypatch):
+        """Setting HERMES_HOME after hermes_state is imported must be picked
+        up by ``_default_db_path()`` on the very next call — not require
+        a re-import."""
+        # _hermetic_environment has already set HERMES_HOME=tmp_path, so the
+        # first call returns the test tempdir. We then simulate the
+        # "load hermes_state at import, override env var later" sequence
+        # explicitly to lock in the contract.
+        from hermes_state import _default_db_path, get_hermes_home
+
+        # 1. Current HERMES_HOME (set by autouse fixture) is the tempdir.
+        assert str(_default_db_path()).startswith(str(tmp_path)), (
+            f"expected default to honor HERMES_HOME={tmp_path}, "
+            f"got {_default_db_path()}"
+        )
+
+        # 2. Override HERMES_HOME at runtime. The next call MUST pick it up.
+        new_home = tmp_path / "rewritten_home"
+        new_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+        assert _default_db_path() == new_home / "state.db"
+        assert get_hermes_home() == new_home
+
+    def test_sessiondb_default_honors_hermes_home(self, tmp_path, monkeypatch):
+        """``SessionDB()`` with no args must use the current default path,
+        not the value frozen at import. This is the regression that allowed
+        test pollution to leak into the real ``~/.hermes/state.db``."""
+        from hermes_state import SessionDB, _default_db_path
+
+        new_home = tmp_path / "explicit_home"
+        new_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+
+        db = SessionDB()  # no db_path= — must use current HERMES_HOME
+        assert db.db_path == _default_db_path()
+        assert str(db.db_path).startswith(str(new_home)), (
+            f"SessionDB() wrote outside the new HERMES_HOME: {db.db_path}"
+        )
+
+    def test_explicit_db_path_overrides_default(self, tmp_path, monkeypatch):
+        """When the caller passes ``db_path=`` explicitly, that wins over
+        HERMES_HOME. This is the standard test isolation pattern."""
+        from hermes_state import SessionDB
+
+        explicit = tmp_path / "explicit_state.db"
+        db = SessionDB(db_path=explicit)
+        assert db.db_path == explicit
+
+
+class TestPruneEmptyOrphanSessions:
+    """``prune_empty_orphan_sessions`` — clean up rows that were created for
+    inbound platform events that never invoked the LLM.
+
+    Background: gateway platforms call ``ensure_session`` for every event
+    (group observation, callback query, edited message, reaction, etc.).
+    When the handler bails before invoking the agent, a session row is
+    left with ``model=NULL``, ``message_count=0``, and ``ended_at=NULL``.
+    These ghost rows pollute ``hermes insights`` ("unknown" model bucket)
+    and inflate session counts. See hermes-agent #43XXX for the production
+    observation that drove this regression test.
+    """
+
+    def test_prunes_old_telegram_orphan(self, db):
+        import time as _t
+        old = _t.time() - 7200  # 2h ago
+        db.create_session(session_id="orphan-old", source="telegram", user_id="u1")
+        # Force started_at to be old
+        db._execute_write(
+            lambda c: c.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?", (old, "orphan-old")
+            )
+        )
+        pruned = db.prune_empty_orphan_sessions()
+        assert pruned == 1
+        assert db.get_session("orphan-old") is None
+
+    def test_preserves_recent_orphan_until_grace(self, db):
+        """Sessions younger than the cutoff must be left alone, even if
+        they're empty — the event might still be filling in."""
+        db.create_session(session_id="orphan-recent", source="telegram", user_id="u1")
+        pruned = db.prune_empty_orphan_sessions(older_than_seconds=3600)
+        assert pruned == 0
+        assert db.get_session("orphan-recent") is not None
+
+    def test_preserves_real_session_with_messages(self, db):
+        """A telegram session that has been bound to an LLM (model set,
+        message_count > 0) must NEVER be pruned even if other criteria
+        look like an orphan."""
+        import time as _t
+        old = _t.time() - 86400  # 1 day ago
+        db.create_session(
+            session_id="real-telegram",
+            source="telegram",
+            user_id="u1",
+            model="MiniMax-M3",
+        )
+        db._execute_write(
+            lambda c: c.execute(
+                "UPDATE sessions SET started_at = ?, message_count = 1, "
+                "input_tokens = 500 WHERE id = ?",
+                (old, "real-telegram"),
+            )
+        )
+        pruned = db.prune_empty_orphan_sessions(older_than_seconds=60)
+        assert pruned == 0
+        assert db.get_session("real-telegram") is not None
+
+    def test_preserves_session_with_messages_even_if_model_null(self, db):
+        """Some legitimate cron / LLM-driven sessions transiently have
+        model=NULL while the model is being resolved. If messages have
+        been recorded, the row is in active use and must not be pruned."""
+        import time as _t
+        old = _t.time() - 86400
+        db.create_session(session_id="legit-no-model-yet", source="telegram", user_id="u1")
+        db._execute_write(
+            lambda c: c.execute(
+                "UPDATE sessions SET started_at = ?, message_count = 3 WHERE id = ?",
+                (old, "legit-no-model-yet"),
+            )
+        )
+        pruned = db.prune_empty_orphan_sessions(older_than_seconds=60)
+        assert pruned == 0
+        assert db.get_session("legit-no-model-yet") is not None
+
+    def test_does_not_touch_non_target_sources(self, db):
+        """``prune_empty_orphan_sessions`` only operates on the sources in
+        its ``sources`` tuple. tui and cli orphans must survive untouched."""
+        import time as _t
+        old = _t.time() - 86400
+        for source, sid in [("tui", "tui-orphan"), ("cli", "cli-orphan")]:
+            db.create_session(session_id=sid, source=source)
+            db._execute_write(
+                lambda c, s=sid, t=old: c.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?", (t, s)
+                )
+            )
+        pruned = db.prune_empty_orphan_sessions()  # default: telegram/discord/slack
+        assert pruned == 0
+        assert db.get_session("tui-orphan") is not None
+        assert db.get_session("cli-orphan") is not None
+
+    def test_covers_all_default_sources(self, db):
+        """Verify the default source list covers the platforms that
+        showed orphan pollution in production: telegram, discord, slack."""
+        import time as _t
+        old = _t.time() - 7200
+        for source, sid in [
+            ("telegram", "tg-orphan"),
+            ("discord", "dc-orphan"),
+            ("slack", "sl-orphan"),
+        ]:
+            db.create_session(session_id=sid, source=source, user_id="u1")
+            db._execute_write(
+                lambda c, s=sid, t=old: c.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?", (t, s)
+                )
+            )
+        pruned = db.prune_empty_orphan_sessions()
+        assert pruned == 3
+        for sid in ("tg-orphan", "dc-orphan", "sl-orphan"):
+            assert db.get_session(sid) is None
+
+    def test_empty_sources_is_noop(self, db):
+        """Passing an empty sources tuple must be a safe no-op, not a
+        SQL syntax error from an empty IN clause."""
+        pruned = db.prune_empty_orphan_sessions(sources=())
+        assert pruned == 0
+
+
 class TestDeleteSessionOrphansChildren:
     def test_delete_orphans_children(self, db):
         """Deleting a parent session orphans its children."""

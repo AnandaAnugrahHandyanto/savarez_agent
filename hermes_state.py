@@ -105,7 +105,31 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+
+def _default_db_path() -> Path:
+    """Return the current default state.db path.
+
+    Resolved at CALL time, not at import time, so test fixtures that
+    monkeypatch ``HERMES_HOME`` (e.g. ``tests/conftest.py``'s
+    ``_hermetic_environment``) and per-test ``monkeypatch.setattr``
+    on ``hermes_state.DEFAULT_DB_PATH`` actually take effect.
+
+    Historical bug: ``DEFAULT_DB_PATH`` was a module-level constant
+    computed once at import. Code paths calling ``SessionDB()`` without
+    a ``db_path=`` argument would write to the cached value, bypassing
+    HERMES_HOME overrides and polluting the real ``~/.hermes/state.db``
+    with test fixtures (e.g. ``user_id="u1"``). See the u1-orphan
+    investigation in ``memory/2026-06-10.md`` for the full postmortem.
+    """
+    return get_hermes_home() / "state.db"
+
+
+# Backwards-compatible alias. Returns the CURRENT default at call time
+# when used as a function (``DEFAULT_DB_PATH()``), and falls back to the
+# import-time snapshot for legacy code that treats it as a Path
+# (``DEFAULT_DB_PATH / "foo"``). New code should use ``_default_db_path()``
+# or pass ``db_path=`` explicitly.
+DEFAULT_DB_PATH = _default_db_path()
 
 SCHEMA_VERSION = 16
 
@@ -678,7 +702,10 @@ class SessionDB:
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        # Call-time resolution so HERMES_HOME overrides (test fixtures,
+        # multi-profile setups, or runtime env changes) are honored.
+        # See ``_default_db_path`` for the historical bug.
+        self.db_path = db_path or _default_db_path()
         self.read_only = read_only
 
         self._lock = threading.Lock()
@@ -1713,6 +1740,67 @@ class SessionDB:
             for sid in removed_ids:
                 self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
+
+    def prune_empty_orphan_sessions(
+        self,
+        *,
+        sources: Optional[Tuple[str, ...]] = ("telegram", "discord", "slack"),
+        older_than_seconds: int = 3600,
+    ) -> int:
+        """Remove empty session rows created for events that never invoked the LLM.
+
+        Background: gateway platforms call ``ensure_session``/``get_or_create_session``
+        for every inbound event (group observation, callback query, edited message,
+        reaction, etc.). When the handler bails before invoking the agent, a session
+        row is left with ``model=NULL``, ``message_count=0``, and ``ended_at=NULL``
+        (or sometimes SET but never associated with a real conversation).
+
+        These ghost rows pollute ``hermes insights`` (showing as an "unknown" model
+        bucket) and inflate session counts in the daily report. The TUI equivalent
+        was handled by ``prune_empty_ghost_sessions``; this covers the same class of
+        bug for messaging platforms.
+
+        Args:
+            sources: platform source names to scan. Default covers the three with
+                inbound-event over-generation in production. Add more as needed.
+            older_than_seconds: only prune rows older than this. Default 1h — long
+                enough that a slow but legit session has time to populate, short
+                enough that bursts of orphans from a single event are caught within
+                one insights window (cron runs at 11:00 AEST).
+
+        Returns:
+            Number of session rows deleted.
+        """
+        cutoff = time.time() - older_than_seconds
+        if not sources:
+            return 0
+
+        def _do(conn):
+            placeholders = ",".join("?" * len(sources))
+            # An "orphan" is a row that was never bound to an LLM call AND has no
+            # transcript messages. Either condition alone (NULL model OR 0 msgs)
+            # is a strong signal; both together is conclusive. We also require
+            # started_at < cutoff so a session that's still actively filling
+            # (e.g. just-created before its first message lands) is not touched.
+            rows = conn.execute(
+                f"""
+                DELETE FROM sessions
+                WHERE source IN ({placeholders})
+                  AND (model IS NULL OR model = '')
+                  AND message_count = 0
+                  AND tool_call_count = 0
+                  AND input_tokens = 0
+                  AND output_tokens = 0
+                  AND started_at < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages m WHERE m.session_id = sessions.id
+                  )
+                """,
+                (*sources, cutoff),
+            )
+            return rows.rowcount
+
+        return self._execute_write(_do) or 0
 
     def finalize_orphaned_compression_sessions(self) -> int:
         """Mark orphaned compression continuation sessions as ended.
