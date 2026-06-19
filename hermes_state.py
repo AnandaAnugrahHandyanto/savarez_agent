@@ -2047,7 +2047,10 @@ class SessionDB:
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
         if min_message_count > 0:
-            where_clauses.append("s.message_count >= ?")
+            where_clauses.append(
+                "MAX(COALESCE(s.message_count, 0), "
+                "(SELECT COUNT(*) FROM messages mc WHERE mc.session_id = s.id)) >= ?"
+            )
             params.append(min_message_count)
         if archived_only:
             where_clauses.append("s.archived = 1")
@@ -2121,6 +2124,7 @@ class SessionDB:
                     GROUP BY root_id
                 )
                 SELECT s.*,
+                    (SELECT COUNT(*) FROM messages mc WHERE mc.session_id = s.id) AS _actual_message_count,
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -2145,6 +2149,7 @@ class SessionDB:
         else:
             query = f"""
                 SELECT s.*,
+                    (SELECT COUNT(*) FROM messages mc WHERE mc.session_id = s.id) AS _actual_message_count,
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -2168,6 +2173,12 @@ class SessionDB:
         sessions = []
         for row in rows:
             s = dict(row)
+            actual_count = s.pop("_actual_message_count", None)
+            if actual_count is not None:
+                s["message_count"] = max(
+                    int(s.get("message_count") or 0),
+                    int(actual_count or 0),
+                )
             # Build the preview from the raw substring
             raw = s.pop("_preview_raw", "").strip()
             if raw:
@@ -2288,6 +2299,7 @@ class SessionDB:
         """
         query = """
             SELECT s.*,
+                (SELECT COUNT(*) FROM messages mc WHERE mc.session_id = s.id) AS _actual_message_count,
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
@@ -2308,6 +2320,12 @@ class SessionDB:
         if not row:
             return None
         s = dict(row)
+        actual_count = s.pop("_actual_message_count", None)
+        if actual_count is not None:
+            s["message_count"] = max(
+                int(s.get("message_count") or 0),
+                int(actual_count or 0),
+            )
         raw = s.pop("_preview_raw", "").strip()
         if raw:
             text = raw[:60]
@@ -3708,7 +3726,10 @@ class SessionDB:
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
         if min_message_count > 0:
-            where_clauses.append("s.message_count >= ?")
+            where_clauses.append(
+                "MAX(COALESCE(s.message_count, 0), "
+                "(SELECT COUNT(*) FROM messages mc WHERE mc.session_id = s.id)) >= ?"
+            )
             params.append(min_message_count)
         if archived_only:
             where_clauses.append("s.archived = 1")
