@@ -68,6 +68,37 @@ def test_dump_reports_config_model_when_no_override(monkeypatch, capsys, tmp_pat
     assert "overrides" not in line
 
 
+def test_dump_reports_env_model_when_config_sets_none(monkeypatch, capsys, tmp_path):
+    """Env-only setup: config configures no model, HERMES_INFERENCE_MODEL is set.
+
+    The env value is the effective model, so it must be surfaced — but framed as
+    "config sets none" rather than "overrides config.yaml model.default=(not
+    set)", which would be a misleading diagnostic.
+    """
+    from hermes_cli import dump
+    from hermes_cli.config import get_hermes_home
+
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
+
+    home = get_hermes_home()
+    # No `model:` section at all in config.
+    _seed(
+        home,
+        config_yaml="agent:\n  max_turns: 90\n",
+        env_text="HERMES_INFERENCE_MODEL=anthropic/claude-opus-4\n",
+    )
+
+    dump.run_dump(SimpleNamespace(show_keys=False))
+
+    line = _model_line(capsys.readouterr().out)
+    assert "anthropic/claude-opus-4" in line
+    assert "config sets none" in line
+    # Must NOT claim it overrides a configured default that doesn't exist.
+    assert "overrides config.yaml" not in line
+    assert "(not set)" not in line
+
+
 def test_dump_no_override_when_env_matches_config(monkeypatch, capsys, tmp_path):
     from hermes_cli import dump
     from hermes_cli.config import get_hermes_home

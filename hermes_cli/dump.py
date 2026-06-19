@@ -276,10 +276,15 @@ def run_dump(args):
     # actually runs (same shape as the terminal-backend block below).
     env_model = (os.environ.get("HERMES_INFERENCE_MODEL") or "").strip()
     if env_model and env_model != str(model).strip():
-        model = (
-            f"{env_model}  (HERMES_INFERENCE_MODEL overrides config.yaml "
-            f"model.default={model})"
-        )
+        if model == "(not set)":
+            # config configures no model — env isn't "overriding" a value, it IS
+            # the effective model (the env-only setup).  Mirror the provider line.
+            model = f"{env_model}  (HERMES_INFERENCE_MODEL, config sets none)"
+        else:
+            model = (
+                f"{env_model}  (HERMES_INFERENCE_MODEL overrides config.yaml "
+                f"model.default={model})"
+            )
 
     # Profile
     try:
