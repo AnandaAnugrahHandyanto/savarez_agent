@@ -387,6 +387,86 @@ class TestMediaHelpers:
         with pytest.raises(ValueError, match="placeholder was not replaced"):
             await adapter._load_outbound_media("<path>")
 
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_serves_in_cwd_file(self, tmp_path, monkeypatch):
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.chdir(tmp_path)
+        media = tmp_path / "hello.txt"
+        media.write_bytes(b"hello world")
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        data, _content_type, resolved_name = await adapter._load_outbound_media(
+            str(media)
+        )
+
+        assert data == b"hello world"
+        assert resolved_name == "hello.txt"
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_rejects_traversal(self, tmp_path, monkeypatch):
+        from gateway.platforms.wecom import WeComAdapter
+
+        # Working dir is a subdirectory; target escapes it via ``..``.
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        secret = tmp_path / "secret.txt"
+        secret.write_bytes(b"top secret")
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with pytest.raises(ValueError, match="outside the allowed directory"):
+            await adapter._load_outbound_media("../secret.txt")
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_rejects_allowed_root_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """The allowed root directory itself is not a servable media file.
+
+        Addresses the review note on #45734: an exact match to cwd/HERMES_HOME
+        must be rejected by the boundary, not merely deferred to ``is_file()``.
+        """
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # Pass the cwd itself (an existing directory) as the media source.
+        with pytest.raises(ValueError, match="outside the allowed directory"):
+            await adapter._load_outbound_media(str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_fail_closed_on_resolve_error(
+        self, tmp_path, monkeypatch
+    ):
+        """If path resolution raises, the guard must refuse rather than bypass."""
+        import gateway.platforms.wecom as wecom_module
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.chdir(tmp_path)
+        media = tmp_path / "hello.txt"
+        media.write_bytes(b"hello world")
+
+        original_resolve = Path.resolve
+
+        def exploding_resolve(self, *args, **kwargs):
+            # Simulate resolution failure (e.g. broken symlink / OS error)
+            # specifically for our absolute target path so the relative
+            # cwd-join earlier in the method still works.
+            if self.name == "hello.txt":
+                raise OSError("simulated resolve failure")
+            return original_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(wecom_module.Path, "resolve", exploding_resolve)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with pytest.raises(ValueError, match="unable to resolve path safely"):
+            await adapter._load_outbound_media(str(media))
+
 
 class TestMediaUpload:
     @pytest.mark.asyncio
