@@ -38,7 +38,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import _get_platform_default_hermes_home, get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -990,8 +990,23 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             f"({scripts_dir_resolved}): {script_path!r}"
         )
 
+    # Fallback: when running inside a non-default profile, also check the
+    # default ~/.hermes/scripts/ directory.  Users who place scripts in the
+    # global scripts dir expect them to work regardless of which profile
+    # the cron scheduler is running under.
     if not path.exists():
-        return False, f"Script not found: {path}"
+        default_home = _get_platform_default_hermes_home()
+        default_scripts = default_home / "scripts"
+        if default_scripts.resolve() != scripts_dir_resolved:
+            default_candidate = (default_scripts / raw).resolve() if not raw.is_absolute() else path
+            try:
+                default_candidate.relative_to(default_scripts.resolve())
+                if default_candidate.exists() and default_candidate.is_file():
+                    path = default_candidate
+            except ValueError:
+                pass
+        if not path.exists():
+            return False, f"Script not found: {path}"
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
