@@ -353,10 +353,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         if (isinstance(image_url, str) and image_url.strip()) or reference_image_urls:
             return error_response(
                 error=(
-                    "Image-to-image / editing is not supported by the OpenAI "
-                    "(Codex auth) backend. Use the 'openai' (API key), 'fal', "
-                    "or 'xai' image backend for editing — switch via "
-                    "`hermes tools` → Image Generation."
+                    "This model is not capable of image-to-image / editing. "
+                    "Please provide a text-only prompt (drop image_url and "
+                    "reference_image_urls)."
                 ),
                 error_type="modality_unsupported",
                 provider="openai-codex",

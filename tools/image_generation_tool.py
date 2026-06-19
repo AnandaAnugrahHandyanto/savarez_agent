@@ -900,11 +900,10 @@ def image_generate_tool(
         # silently dropping the images and producing an unrelated picture.
         if source_images and not edit_endpoint:
             raise ValueError(
-                f"Model '{meta.get('display', model_id)}' ({model_id}) does not "
-                f"support image-to-image / editing. Pick a model with edit "
-                f"support (e.g. nano-banana-pro, gpt-image-2, flux-2-pro) via "
-                f"`hermes tools` → Image Generation, or omit image_url for "
-                f"text-to-image."
+                f"Model '{meta.get('display', model_id)}' ({model_id}) is not "
+                f"capable of image-to-image / editing. Provide a text-only "
+                f"prompt (omit image_url), or switch to an edit-capable model "
+                f"via `hermes tools` → Image Generation."
             )
 
         aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
@@ -1525,10 +1524,10 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
         )
     else:
         parts.append(
-            "- this model is text-to-image only — image_url / "
-            "reference_image_urls are NOT supported and will be rejected; "
-            "switch to an edit-capable model (e.g. nano-banana-pro, "
-            "gpt-image-2, flux-2-pro) via `hermes tools` → Image Generation"
+            "- this model is text-to-image only — it is NOT capable of "
+            "image-to-image / editing; do not pass image_url or "
+            "reference_image_urls (they will be rejected). Provide a "
+            "text-only prompt."
         )
 
     return {"description": "\n".join(parts)}

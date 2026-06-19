@@ -325,7 +325,7 @@ class TestDynamicSchema:
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/z-image/turbo"}})
         desc = _build_dynamic_image_schema()["description"]
         assert "text-to-image only" in desc
-        assert "NOT supported" in desc
+        assert "NOT capable of image-to-image" in desc
 
     def test_plugin_both_provider_advertises_refs(self, cfg_home, monkeypatch):
         from tools.image_generation_tool import _build_dynamic_image_schema
