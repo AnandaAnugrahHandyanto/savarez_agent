@@ -8,6 +8,7 @@ import { AudioLines, Layers3, Loader2, Square, SteeringWheel } from '@/lib/icons
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
+import { CwdPill } from './cwd-pill'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
 import type { ChatBarState, VoiceStatus } from './types'
@@ -44,6 +45,7 @@ export function ComposerControls({
   canSteer,
   canSubmit,
   conversation,
+  cwd,
   disabled,
   hasComposerPayload,
   state,
@@ -56,6 +58,7 @@ export function ComposerControls({
   canSteer: boolean
   canSubmit: boolean
   conversation: ConversationProps
+  cwd?: null | string
   disabled: boolean
   hasComposerPayload: boolean
   state: ChatBarState
@@ -139,6 +142,7 @@ export function ComposerControls({
           </Button>
         </Tip>
       )}
+      <CwdPill cwd={cwd} />
     </div>
   )
 }
