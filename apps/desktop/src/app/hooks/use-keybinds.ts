@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { $rightSidebarView, $terminalTakeover, setRightSidebarView, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
@@ -9,6 +9,7 @@ import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/key
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
 import {
+  $fileBrowserOpen,
   CHAT_SIDEBAR_PANE_ID,
   FILE_BROWSER_PANE_ID,
   requestSessionSearchFocus,
@@ -109,6 +110,19 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     setTerminalTakeover(false)
   }
 
+  const showSourceControl = () => {
+    // Toggle: if the sidebar is already open on source control, close it.
+    if ($fileBrowserOpen.get() && $rightSidebarView.get() === 'source-control') {
+      setFileBrowserOpen(false)
+
+      return
+    }
+
+    setFileBrowserOpen(true)
+    setTerminalTakeover(false)
+    setRightSidebarView('source-control')
+  }
+
   handlersRef.current = {
     'keybinds.openPanel': toggleKeybindPanel,
 
@@ -155,6 +169,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'view.showFiles': showFiles,
+    'view.showSourceControl': showSourceControl,
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
     'view.flipPanes': togglePanesFlipped,
 
