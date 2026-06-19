@@ -140,6 +140,31 @@ def finalize_turn(
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
+    _visible_assistant_text = None
+    if _turn_exit_reason == "partial_stream_recovery" and final_response:
+        _visible_assistant_text = final_response
+    elif interrupted:
+        _visible_assistant_text = agent._strip_think_blocks(
+            getattr(agent, "_current_streamed_assistant_text", "") or ""
+        ).strip()
+
+    if _visible_assistant_text:
+        _expected = agent._normalize_interim_visible_text(_visible_assistant_text)
+        _already_persisted = False
+        for _msg in reversed(messages):
+            if not isinstance(_msg, dict):
+                continue
+            if _msg.get("role") == "assistant":
+                _candidate = agent._normalize_interim_visible_text(
+                    agent._strip_think_blocks(_msg.get("content") or "")
+                )
+                if _candidate == _expected:
+                    _already_persisted = True
+                    break
+            if _msg.get("role") == "user":
+                break
+        if not _already_persisted:
+            messages.append({"role": "assistant", "content": _visible_assistant_text})
     agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
