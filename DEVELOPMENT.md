@@ -254,7 +254,7 @@ git merge upstream/main
 # ...
 
 # Verify after merge
-hermes --version
+savarez --version
 python -m py_compile hermes_cli/main.py
 scripts/run_tests.sh
 ```
@@ -395,8 +395,8 @@ npm ls --depth=0
 ### Verify Full Stack
 
 ```bash
-hermes --version
-hermes --help
+savarez --version
+savarez --help
 ```
 
 ---
