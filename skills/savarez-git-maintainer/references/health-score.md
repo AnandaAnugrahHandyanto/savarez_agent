@@ -5,6 +5,10 @@
 The Savarez Health Score provides a quantified measure of fork health.
 Score ranges from 0-100, composed of four weighted components.
 
+**Design Principle:** Measure fork health realistically. A maintained fork should score high even if not perfectly synced with upstream.
+
+---
+
 ## Component 1: Runtime Stability (40 points)
 
 ### Checks
@@ -45,6 +49,15 @@ sleep 2
 # Check if process is running
 ```
 
+### Expected References (Not Flagged)
+
+These are internal runtime requirements, NOT branding issues:
+
+- `from hermes_cli` imports
+- `HERMES_HOME` environment variable
+- `hermes-agent` package references
+- Gateway internals
+
 ---
 
 ## Component 2: Upstream Compatibility (30 points)
@@ -58,15 +71,49 @@ sleep 2
 | Conflict risk | 5% | Overlap of modified files |
 | Update logic | 5% | Update mechanism intact |
 
-### Graded Scoring
+### Graded Divergence Thresholds
 
-| Score | Status | Indicators |
-|-------|--------|------------|
-| 30 | Perfect | 0 commits behind, minimal divergence |
-| 20 | Minor drift | 1-5 commits behind, easy merge |
-| 10 | Significant drift | 6-20 commits behind, conflict possible |
-| 5 | Major drift | 20+ commits behind, complex merge |
-| 0 | Diverged | Incompatible changes, manual resolution |
+**Key Principle:** A maintained fork SHOULD have some divergence. Perfect sync is not required for health.
+
+| Commits Behind | Score | Status | Description |
+|----------------|-------|--------|-------------|
+| 0-20 | 30/30 | Excellent | Fork is current, easy merge |
+| 21-100 | 25/30 | Good | Minor drift, manageable merge |
+| 101-500 | 20/30 | Acceptable | Moderate drift, planned merge |
+| 501-1000 | 10/30 | Significant | Major drift, needs attention |
+| >1000 | 0/30 | Critical | Fork is abandoned or incompatible |
+
+### Why These Thresholds?
+
+- **0-20 commits:** Normal maintenance window. Most projects merge within this range.
+- **21-100 commits:** Acceptable for actively developed forks. Merge is straightforward.
+- **101-500 commits:** Fork is diverging but still maintainable. Requires planning.
+- **501-1000 commits:** Fork is significantly behind. Major effort to sync.
+- **>1000 commits:** Fork is likely abandoned or incompatible with upstream.
+
+### Fetch Verification
+
+**Critical:** Always verify upstream is fetched before counting divergence.
+
+```bash
+# Verify upstream exists
+if ! git remote get-url upstream >/dev/null 2>&1; then
+    STATUS="NO_UPSTREAM"
+    BEHIND="N/A"
+else
+    # Fetch latest
+    git fetch upstream 2>/dev/null
+    
+    # Verify upstream/main exists
+    if ! git rev-parse upstream/main >/dev/null 2>&1; then
+        STATUS="UNAVAILABLE"
+        BEHIND="N/A"
+    else
+        STATUS="FETCHED"
+        BEHIND=$(git rev-list --count HEAD..upstream/main)
+    fi
+fi
+```
 
 ### How to Check
 
@@ -84,6 +131,15 @@ git diff --stat upstream/main
 # Check update mechanism
 grep -n "update" hermes_cli/main.py | head -5
 ```
+
+### Expected References (Not Flagged)
+
+These are NOT upstream compatibility issues:
+
+- Local feature branches
+- Documentation-only changes
+- Branding customizations
+- Installer modifications
 
 ---
 
@@ -132,10 +188,31 @@ git diff --name-only | grep -E "hermes_cli/|gateway/|agent/" | wc -l
 
 | Check | Weight | Description |
 |-------|--------|-------------|
-| Display text | 3% | User-facing says Savarez |
-| Internal IDs | 2% | Internal stays Hermes |
-| Docs commands | 3% | Documentation uses savarez |
+| Display text | 4% | User-facing says Savarez |
+| Docs commands | 4% | Documentation uses savarez |
 | Installer URLs | 2% | Point to Savarez fork |
+
+### User-Facing Audit Surfaces
+
+**ONLY these files are audited for branding:**
+
+| Surface | Examples |
+|---------|----------|
+| Documentation | README.md, CONTRIBUTING.md, DEVELOPMENT.md |
+| Installer banners | install.sh, install.ps1, install.cmd output |
+| CLI help text | --help output, version strings |
+| Release notes | CHANGELOG.md, RELEASES.md |
+
+**NOT audited (expected internal references):**
+
+| Pattern | Reason |
+|---------|--------|
+| `HERMES_HOME` | Environment variable, required for runtime |
+| `hermes_cli` | Python module path, required for imports |
+| `hermes-agent` | Package name, required for pip |
+| `from hermes_` | Python imports, required for functionality |
+| Gateway internals | Runtime code, not user-facing |
+| Update logic | Runtime code, not user-facing |
 
 ### Graded Scoring
 
@@ -150,17 +227,39 @@ git diff --name-only | grep -E "hermes_cli/|gateway/|agent/" | wc -l
 ### How to Check
 
 ```bash
-# User-facing hermes (should be 0)
-grep -r "hermes " README.md DEVELOPMENT.md CONTRIBUTING.md | grep -v "HERMES_HOME\|hermes-agent\|equivalent to" | wc -l
+# Define user-facing surfaces
+USER_FACING="README.md DEVELOPMENT.md CONTRIBUTING.md"
 
-# Internal hermes (expected, unchanged)
+# User-facing hermes (FLAGGED)
+grep -r "hermes " $USER_FACING | \
+    grep -v "HERMES_HOME\|hermes-agent\|equivalent to\|HermesClaw\|fork of\|Based on" | \
+    wc -l
+
+# Internal hermes (EXPECTED, not flagged)
 grep -r "from hermes_" --include="*.py" . | wc -l
+grep -r "HERMES_HOME" --include="*.py" . | wc -l
 
 # Documentation savarez commands
-grep -r "savarez" DEVELOPMENT.md CONTRIBUTING.md | wc -l
+grep -r "savarez" $USER_FACING | wc -l
 
 # Installer URLs
 grep "savarez_agent" scripts/install.sh scripts/install.ps1 | wc -l
+```
+
+### Expected Output Format
+
+```
+=== Branding Consistency ===
+
+User-facing issues: 0
+- "Hermes Agent" in text: 0
+- hermes commands in docs: 0
+- Installer URLs wrong: 0
+
+Expected internal references (not flagged):
+- Python imports: 5,086
+- HERMES_HOME: 2,608
+- hermes_cli: 1,200
 ```
 
 ---
@@ -173,15 +272,26 @@ grep "savarez_agent" scripts/install.sh scripts/install.ps1 | wc -l
 Total = Runtime + Upstream + Merge + Branding
 ```
 
-### Example
+### Example (Healthy Maintained Fork)
 
 ```
-Runtime Stability:     40/40 (Perfect)
-Upstream Compatibility: 25/30 (Minor drift)
-Ease of Merge:         18/20 (Good)
-Branding Consistency:   9/10 (Good)
+Runtime Stability:      40/40 (Perfect)
+Upstream Compatibility: 25/30 (Good - 50 commits behind)
+Ease of Merge:          18/20 (Good)
+Branding Consistency:    8/10 (Good)
 
-Total: 92/100 (Excellent)
+Total: 91/100 (Excellent)
+```
+
+### Example (v1.0 False Positive)
+
+```
+Runtime Stability:      20/40 (WRONG - flagged internal imports)
+Upstream Compatibility:  8/30 (WRONG - fetch not verified)
+Ease of Merge:          12/20 (OK)
+Branding Consistency:    8/10 (WRONG - flagged internal refs)
+
+Total: 48/100 (FALSE NEGATIVE)
 ```
 
 ### Interpretation
@@ -212,6 +322,8 @@ Total: 92/100 (Excellent)
 3. Resolve conflicts
 4. Verify update mechanism
 
+**Note:** Score of 20-29 is normal for active forks. Only act if score < 20.
+
 ### If Ease of Merge < 20
 
 1. Clean working tree
@@ -221,7 +333,7 @@ Total: 92/100 (Excellent)
 
 ### If Branding Consistency < 10
 
-1. Search user-facing files
-2. Replace hermes with savarez
-3. Keep internal identifiers
+1. Search user-facing files only
+2. Replace hermes with savarez in user-facing text
+3. Keep internal identifiers unchanged
 4. Verify installer URLs

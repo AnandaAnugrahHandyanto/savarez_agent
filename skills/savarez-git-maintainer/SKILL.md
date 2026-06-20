@@ -1,7 +1,7 @@
 ---
 name: savarez-git-maintainer
 description: "Audit fork health, upstream sync, rebranding status, release readiness, maintenance mode compliance, and installer integrity for Savarez Agent."
-version: 1.0.0
+version: 1.1.0
 author: Savarez Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -61,13 +61,17 @@ Cocok digunakan sebelum release, saat maintenance rutin, atau ketika memecah mas
 
 #### Upstream Compatibility (30 points max)
 
-| Score | Status | Description |
-|-------|--------|-------------|
-| 30 | Perfect | Fully synced, zero divergence |
-| 20 | Minor drift | Few commits behind, easy merge |
-| 10 | Significant drift | Many commits behind, conflict risk |
-| 5 | Major drift | Substantial divergence, complex merge |
-| 0 | Diverged | Incompatible changes, manual resolution needed |
+**Design Principle:** A maintained fork SHOULD have some divergence. Perfect sync is not required.
+
+| Commits Behind | Score | Status | Description |
+|----------------|-------|--------|-------------|
+| 0-20 | 30/30 | Excellent | Fork is current, easy merge |
+| 21-100 | 25/30 | Good | Minor drift, manageable merge |
+| 101-500 | 20/30 | Acceptable | Moderate drift, planned merge |
+| 501-1000 | 10/30 | Significant | Major drift, needs attention |
+| >1000 | 0/30 | Critical | Fork is abandoned or incompatible |
+
+**Important:** Always verify upstream is fetched before counting divergence.
 
 #### Ease of Merge (20 points max)
 
@@ -80,6 +84,20 @@ Cocok digunakan sebelum release, saat maintenance rutin, atau ketika memecah mas
 | 0 | Blocked | Runtime files modified, merge not recommended |
 
 #### Branding Consistency (10 points max)
+
+**User-Facing Audit Surfaces (FLAGGED):**
+- README.md, CONTRIBUTING.md, DEVELOPMENT.md
+- Installer banners and output
+- CLI help text and version strings
+- Release notes
+
+**NOT Audited (Expected Internal References):**
+- `HERMES_HOME` — environment variable, required for runtime
+- `hermes_cli` — Python module path, required for imports
+- `hermes-agent` — package name, required for pip
+- `from hermes_` — Python imports, required for functionality
+- Gateway internals — runtime code, not user-facing
+- Update logic — runtime code, not user-facing
 
 | Score | Status | Description |
 |-------|--------|-------------|

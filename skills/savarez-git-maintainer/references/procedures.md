@@ -47,15 +47,25 @@ fi
    git status --short
    ```
 
-3. **Fetch upstream**
+3. **Fetch upstream** (with verification)
    ```bash
-   git fetch upstream 2>/dev/null
+   if git remote get-url upstream >/dev/null 2>&1; then
+       git fetch upstream 2>/dev/null
+       UPSTREAM_STATUS="FETCHED"
+   else
+       UPSTREAM_STATUS="NO_UPSTREAM"
+   fi
    ```
 
-4. **Check divergence**
+4. **Check divergence** (only if upstream available)
    ```bash
-   BEHIND=$(git rev-list --count HEAD..upstream/main 2>/dev/null || echo "0")
-   AHEAD=$(git rev-list --count upstream/main..HEAD 2>/dev/null || echo "0")
+   if [ "$UPSTREAM_STATUS" = "FETCHED" ]; then
+       BEHIND=$(git rev-list --count HEAD..upstream/main 2>/dev/null || echo "N/A")
+       AHEAD=$(git rev-list --count upstream/main..HEAD 2>/dev/null || echo "N/A")
+   else
+       BEHIND="N/A"
+       AHEAD="N/A"
+   fi
    ```
 
 5. **Verify remotes**
@@ -66,7 +76,7 @@ fi
 6. **Calculate score component**
    - Clean tree: +5
    - On main branch: +5
-   - Synced with upstream: +10
+   - Upstream fetched: +5
    - Remotes configured: +5
    - No uncommitted changes: +5
    - Recent commits (last 7 days): +10
@@ -74,8 +84,9 @@ fi
 **Expected Output:**
 - Branch: main
 - Status: Clean/Dirty
-- Behind upstream: N commits
-- Ahead of upstream: N commits
+- Upstream: FETCHED/NO_UPSTREAM
+- Behind upstream: N commits (or N/A)
+- Ahead of upstream: N commits (or N/A)
 - Remotes: origin, upstream
 
 ---
@@ -86,47 +97,82 @@ fi
 
 **Steps:**
 
-1. **Fetch latest from upstream**
+1. **Verify upstream exists**
    ```bash
-   git fetch upstream
+   if ! git remote get-url upstream >/dev/null 2>&1; then
+       echo "ERROR: No upstream remote configured"
+       echo "Run: git remote add upstream https://github.com/NousResearch/hermes-agent.git"
+       exit 1
+   fi
    ```
 
-2. **Count divergence**
+2. **Fetch latest from upstream**
+   ```bash
+   git fetch upstream 2>/dev/null
+   ```
+
+3. **Verify upstream/main exists**
+   ```bash
+   if ! git rev-parse upstream/main >/dev/null 2>&1; then
+       echo "ERROR: upstream/main branch not available"
+       exit 1
+   fi
+   ```
+
+4. **Count divergence**
    ```bash
    BEHIND=$(git rev-list --count HEAD..upstream/main)
    AHEAD=$(git rev-list --count upstream/main..HEAD)
    ```
 
-3. **List recent upstream commits**
+5. **List recent upstream commits**
    ```bash
    git log --oneline HEAD..upstream/main | head -10
    ```
 
-4. **Analyze conflict potential**
+6. **Analyze conflict potential**
    ```bash
    git diff --name-only upstream/main | head -20
    ```
 
-5. **Check file overlap**
+7. **Check file overlap**
    ```bash
    git diff --name-only HEAD | sort > /tmp/local.txt
    git diff --name-only upstream/main | sort > /tmp/upstream.txt
    comm -12 /tmp/local.txt /tmp/upstream.txt
    ```
 
-6. **Calculate score component**
-   - 0 commits behind: +30
-   - 1-5 commits behind: +20
-   - 6-20 commits behind: +10
-   - 20+ commits behind: +5
-   - No overlapping files: +5 (bonus)
+8. **Calculate score component** (graded thresholds)
+   ```bash
+   if [ "$BEHIND" = "N/A" ]; then
+       SCORE=0
+       STATUS="UNAVAILABLE"
+   elif [ "$BEHIND" -le 20 ]; then
+       SCORE=30
+       STATUS="Excellent"
+   elif [ "$BEHIND" -le 100 ]; then
+       SCORE=25
+       STATUS="Good"
+   elif [ "$BEHIND" -le 500 ]; then
+       SCORE=20
+       STATUS="Acceptable"
+   elif [ "$BEHIND" -le 1000 ]; then
+       SCORE=10
+       STATUS="Significant"
+   else
+       SCORE=0
+       STATUS="Critical"
+   fi
+   ```
 
 **Expected Output:**
-- Commits behind: N
-- Commits ahead: N
+- Upstream: Available/Not available
+- Commits behind: N (or N/A)
+- Commits ahead: N (or N/A)
 - Recent upstream: list
 - Overlapping files: list
 - Conflict risk: Low/Medium/High
+- Score: N/30 (Status)
 
 ---
 
@@ -149,7 +195,11 @@ fi
 3. **Verify latest tag reachable**
    ```bash
    LATEST=$(git describe --tags --abbrev=0 2>/dev/null)
-   git merge-base --is-ancestor $LATEST HEAD && echo "Reachable" || echo "Not reachable"
+   if [ -n "$LATEST" ]; then
+       git merge-base --is-ancestor $LATEST HEAD && echo "Reachable" || echo "Not reachable"
+   else
+       echo "No tags found"
+   fi
    ```
 
 4. **Check documentation**
@@ -179,34 +229,51 @@ fi
 
 **Steps:**
 
-1. **Check user-facing text**
+1. **Define user-facing surfaces**
    ```bash
-   grep -r "Hermes Agent" README.md CONTRIBUTING.md DEVELOPMENT.md 2>/dev/null | \
-       grep -v "fork of\|Based on\|upstream" | wc -l
+   USER_FACING="README.md DEVELOPMENT.md CONTRIBUTING.md"
    ```
 
-2. **Verify internal identifiers**
+2. **Check user-facing text** (FLAGGED)
    ```bash
-   grep -r "from hermes_" --include="*.py" . | wc -l
+   grep -r "Hermes Agent" $USER_FACING 2>/dev/null | \
+       grep -v "fork of\|Based on\|upstream\|HermesClaw" | wc -l
    ```
 
-3. **Check documentation commands**
+3. **Check documentation commands** (FLAGGED)
    ```bash
-   grep -r "hermes " README.md DEVELOPMENT.md CONTRIBUTING.md 2>/dev/null | \
-       grep -v "HERMES_HOME\|hermes-agent\|equivalent to" | wc -l
+   grep -r "hermes " $USER_FACING 2>/dev/null | \
+       grep -v "HERMES_HOME\|hermes-agent\|equivalent to\|HermesClaw" | wc -l
    ```
 
-4. **Verify installer URLs**
+4. **Verify installer URLs** (FLAGGED)
    ```bash
    grep "REPO_URL" scripts/install.sh
    grep "RepoUrl" scripts/install.ps1
    ```
 
+5. **Report internal references** (NOT FLAGGED - expected)
+   ```bash
+   echo "Internal references (expected, not flagged):"
+   grep -r "from hermes_" --include="*.py" . 2>/dev/null | wc -l | \
+       xargs -I {} echo "  Python imports: {}"
+   grep -r "HERMES_HOME" --include="*.py" . 2>/dev/null | wc -l | \
+       xargs -I {} echo "  HERMES_HOME: {}"
+   ```
+
 **Expected Output:**
-- User-facing hermes: 0
-- Internal hermes: N (expected)
-- Doc hermes commands: 0
-- Installer URLs: Savarez fork
+```
+=== Branding Consistency ===
+
+User-facing issues: 0
+- "Hermes Agent" in text: 0
+- hermes commands in docs: 0
+- Installer URLs wrong: 0
+
+Expected internal references (not flagged):
+- Python imports: N
+- HERMES_HOME: N
+```
 
 ---
 
@@ -216,35 +283,35 @@ fi
 
 **Steps:**
 
-1. **Check HERMES_HOME**
+1. **Check HERMES_HOME** (expected, not flagged)
    ```bash
    grep -r "HERMES_HOME" --include="*.py" . | wc -l
    ```
 
-2. **Check internal modules**
+2. **Check internal modules** (expected, not flagged)
    ```bash
    grep -r "from hermes_" --include="*.py" . | wc -l
    ```
 
-3. **Check Python imports**
+3. **Check Python imports** (expected, not flagged)
    ```bash
    grep -r "import hermes" --include="*.py" . | wc -l
    ```
 
-4. **Check gateway code**
+4. **Check gateway code** (should be unchanged)
    ```bash
-   git diff upstream/main -- gateway/ | wc -l
+   git diff upstream/main -- gateway/ 2>/dev/null | wc -l
    ```
 
 5. **Verify allowed changes**
    ```bash
-   git diff upstream/main --stat | grep -E "README|CONTRIBUTING|DEVELOPMENT|install"
+   git diff upstream/main --stat 2>/dev/null | grep -E "README|CONTRIBUTING|DEVELOPMENT|install"
    ```
 
 **Expected Output:**
-- HERMES_HOME: N (unchanged)
-- Internal modules: N (unchanged)
-- Imports: N (unchanged)
+- HERMES_HOME: N (unchanged - expected)
+- Internal modules: N (unchanged - expected)
+- Imports: N (unchanged - expected)
 - Gateway diff: 0 lines
 - Allowed files: list of changed
 
