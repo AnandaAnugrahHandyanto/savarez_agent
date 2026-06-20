@@ -1579,6 +1579,17 @@ EOF
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
+    # Create savarez alias (same entrypoint, different command name)
+    rm -f "$command_link_dir/savarez"
+    cat > "$command_link_dir/savarez" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "\$@"
+EOF
+    chmod +x "$command_link_dir/savarez"
+    log_success "Installed savarez launcher → $command_link_display_dir/savarez"
+
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"
         log_info "$command_link_display_dir is the native Termux command path"

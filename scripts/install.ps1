@@ -1770,6 +1770,16 @@ function Set-PathVariable {
     $env:Path = "$hermesBin;$env:Path"
     
     Write-Success "hermes command ready"
+
+    # Create savarez alias (same entrypoint, different command name)
+    $hermesExe = Join-Path $hermesBin "hermes.exe"
+    $savarezExe = Join-Path $hermesBin "savarez.exe"
+    if (Test-Path $hermesExe) {
+        Copy-Item -Path $hermesExe -Destination $savarezExe -Force -ErrorAction SilentlyContinue
+        if (Test-Path $savarezExe) {
+            Write-Success "savarez command ready"
+        }
+    }
 }
 
 function Write-BootstrapMarker {
