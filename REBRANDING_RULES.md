@@ -184,8 +184,38 @@ If a rebranding change causes regression:
 
 ---
 
+## Phase Status
+
+| Phase | Status | Tag | Date |
+|-------|--------|-----|------|
+| Phase 0 | ✅ Complete | `savarez/phase-1` (includes Phase 0) | 2026-06-19 |
+| Phase 1 | ✅ Complete | `savarez/phase-1` | 2026-06-19 |
+| Phase 1.1 | ✅ Complete | `savarez/phase-1.1` | 2026-06-19 |
+| Maintenance | ✅ Complete | `savarez/maintenance-complete` | 2026-06-19 |
+| Phase 2 | 📋 Planning Approved | — | — |
+
+### Phase 1 Summary
+- Text-only rebranding (README, pyproject.toml, banner, CLI help text)
+- 6 files modified
+- Zero runtime changes
+
+### Phase 1.1 Summary
+- Documentation updates (DEVELOPMENT.md, README repo links)
+- Installer fork routing (install.sh, install.ps1, install.cmd)
+- 7 files modified
+- Zero runtime changes
+
+### Maintenance Summary
+- Installer URLs aligned with fork routing
+- README installer commands point to Savarez fork
+- Zero runtime changes
+
+---
+
 ## Changelog
 
 | Date | Change | Reason |
 |------|--------|--------|
 | 2026-06-19 | Initial rules created | Fork stabilization |
+| 2026-06-19 | Added Phase Status section | Maintenance checkpoint |
+| 2026-06-19 | Phase 1, 1.1, Maintenance marked complete | Checkpoint finalized |
