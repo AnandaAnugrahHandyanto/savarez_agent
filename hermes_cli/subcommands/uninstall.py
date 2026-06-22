@@ -16,7 +16,7 @@ def build_uninstall_parser(subparsers, *, cmd_uninstall: Callable) -> None:
     # =========================================================================
     uninstall_parser = subparsers.add_parser(
         "uninstall",
-        help="Uninstall Hermes Agent",
+        help="Uninstall Savarez Agent",
         description="Remove Hermes Agent from your system. Can keep configs/data for reinstall.",
     )
     uninstall_parser.add_argument(

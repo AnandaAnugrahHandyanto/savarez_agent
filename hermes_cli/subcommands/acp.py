@@ -15,7 +15,7 @@ def build_acp_parser(subparsers, *, cmd_acp: Callable) -> None:
     """Attach the ``acp`` subcommand to ``subparsers``."""
     acp_parser = subparsers.add_parser(
         "acp",
-        help="Run Hermes Agent as an ACP (Agent Client Protocol) server",
+        help="Run Savarez Agent as an ACP (Agent Client Protocol) server",
         description="Start Hermes Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
     )
     add_accept_hooks_flag(acp_parser)

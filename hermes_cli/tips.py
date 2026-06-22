@@ -77,7 +77,7 @@ TIPS = [
 
     # --- CLI Subcommands ---
     "hermes doctor --fix diagnoses and auto-repairs config and dependency issues.",
-    "hermes dump outputs a compact setup summary — great for bug reports.",
+    "savarez dump outputs a compact setup summary — great for bug reports.",
     "hermes config set KEY VALUE auto-routes secrets to .env and everything else to config.yaml.",
     "hermes config edit opens config.yaml in your default editor.",
     "hermes config check scans for missing or stale configuration options.",
@@ -92,7 +92,7 @@ TIPS = [
     "hermes mcp serve runs Hermes itself as an MCP server for other agents.",
     "hermes auth add lets you add multiple API keys for credential pool rotation.",
     "hermes completion bash >> ~/.bashrc enables tab completion for all commands and profiles.",
-    "hermes logs -f follows agent.log in real time. --level WARNING --since 1h filters output.",
+    "savarez logs -f follows agent.log in real time. --level WARNING --since 1h filters output.",
     "hermes backup creates a zip backup of your entire Hermes home directory.",
     "hermes profile create coder creates an isolated profile that becomes its own command.",
     "hermes profile create work --clone copies your current config and keys to a new profile.",
@@ -128,7 +128,7 @@ TIPS = [
     "provider_routing controls OpenRouter provider sorting, whitelisting, and blacklisting.",
 
     # --- Tools & Capabilities ---
-    "execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.",
+    "execute_code runs Python scripts that call Savarez tools programmatically — results stay out of context.",
     "delegate_task spawns up to 3 concurrent sub-agents by default (delegation.max_concurrent_children) with isolated contexts for parallel work.",
     "web_extract works on PDF URLs — pass any PDF link and it converts to markdown.",
     "search_files is ripgrep-backed and faster than grep — use it instead of terminal grep.",
@@ -158,7 +158,7 @@ TIPS = [
     # --- Sessions ---
     "Sessions auto-generate descriptive titles after the first exchange — no manual naming needed.",
     "Session titles support lineage: \"my project\" → \"my project #2\" → \"my project #3\".",
-    "When exiting, Hermes prints a resume command with session ID and stats.",
+    "When exiting, Savarez prints a resume command with session ID and stats.",
     "hermes sessions export backup.jsonl exports all sessions for backup or analysis.",
     "hermes -r SESSION_ID resumes any specific past session by its ID.",
 
@@ -195,7 +195,7 @@ TIPS = [
     "Hermes runs on 21 messaging platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, email, and more.",
     "hermes gateway install sets it up as a system service that starts on boot.",
     "DingTalk uses Stream Mode — no webhooks or public URL needed.",
-    "BlueBubbles brings iMessage to Hermes via a local macOS server.",
+    "BlueBubbles brings iMessage to Savarez via a local macOS server.",
     "Webhook routes support HMAC validation, rate limiting, and event filtering.",
     "The API server exposes an OpenAI-compatible endpoint compatible with Open WebUI and LibreChat.",
     "Discord voice channel mode: the bot joins VC, transcribes speech, and talks back.",
@@ -340,8 +340,8 @@ TIPS = [
 
     # --- Advanced Slash Commands ---
     '/steer <prompt> injects a note after the next tool call — nudge direction mid-task without interrupting.',
-    '/goal <text> sets a standing Ralph-loop objective — Hermes auto-continues turn after turn until a judge says done.',
-    '/snapshot create [label] saves a full state snapshot of Hermes config; /snapshot restore <id> reverts later.',
+    '/goal <text> sets a standing Ralph-loop objective — Savarez auto-continues turn after turn until a judge says done.',
+    '/snapshot create [label] saves a full state snapshot of Savarez config; /snapshot restore <id> reverts later.',
     '/copy [N] copies the last assistant response to your clipboard, or the Nth-from-last with a number.',
     '/redraw forces a full UI repaint, fixing terminal drift after tmux resize or mouse selection artifacts.',
     '/agents (alias /tasks) shows active agents and running background tasks across the current session.',
@@ -431,11 +431,11 @@ TIPS = [
     'hermes chat --image path/to/pic.png attaches a local image to a single -q query without a separate upload step.',
     'hermes chat --ignore-user-config skips the active user config — reproducible bug reports and CI runs.',
     "hermes chat --source tool tags programmatic chats so they don't clutter hermes sessions list.",
-    'hermes dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
+    'savarez dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
     'hermes sessions rename <ID> "new title" renames any past session; hermes sessions delete <ID> removes one.',
     'hermes import restores a session export or profile archive produced by sessions export or profile export.',
     'hermes fallback manages the fallback_model chain interactively — no hand-editing config.yaml.',
-    'hermes pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.',
+    'savarez pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.',
     'hermes setup walks first-time users through provider, keys, and platform wiring in one interactive flow.',
     'hermes status --deep runs the full health sweep across every component; plain hermes status is the quick view.',
 
@@ -462,7 +462,7 @@ TIPS = [
     'AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.',
 
     # --- Security ---
-    'security.tirith_fail_open: false makes Hermes block commands when the tirith scanner itself errors out.',
+    'security.tirith_fail_open: false makes Savarez block commands when the tirith scanner itself errors out.',
     'TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.yaml.',
 
     # --- Sessions & Source Tags ---
